@@ -1,0 +1,16 @@
+universe: ["600519", "600036", "601318", "600900", "000333",
+           "600030", "600276", "601088", "600887", "601899"]
+benchmark: "000300"
+backtest:
+  start: "2016-01-01"
+  capital: 5000000
+costs:
+  commission_rate: 0.00025
+  commission_min: 5.0
+  stamp_tax:                       # 仅卖出，按成交日分段（spec 决策5）
+    - {until: "2023-08-27", rate: 0.001}
+    - {from: "2023-08-28", rate: 0.0005}
+  slippage: 0.001
+strategies:
+  ma_cross: {fast: 20, slow: 60}
+  donchian: {entry_n: 20, exit_n: 10, amount_n: 20, amount_ratio: 1.5}
