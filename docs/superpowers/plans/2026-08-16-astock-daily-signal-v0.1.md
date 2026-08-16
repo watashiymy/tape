@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-16-astock-daily-signal-v0.1-design.md`（实现中所有取舍以 spec 为准；本计划引用其决策编号，如"决策5=分段印花税"）
 
+**验证状态：** 本计划中的全部离线代码与测试已在临时环境实际执行验证（pandas 3.0.5 / Python 3.14）——42 项单测全部通过，并用合成数据（含除权、停牌）跑通了"数据服务 → 策略 → 回测 → 指标 → 图表 → 信号"端到端链路。所有手算断言数值经实跑核对无误。**未经验证的部分只有 baostock 联网代码**（Task 4/13/14 的网络路径），故 Task 0 的探针脚本是其字段口径的事实基准。
+
 **约定：**
 - 所有命令在项目根目录 `/Users/watashi/workspace/pycharm-project/quant_demo` 执行，Python 一律用 `.venv/bin/python`（若 Task 0 降级则为 `.venv312/bin/python`，后续所有命令同步替换）。
 - 单元测试一律离线（fixture 数据），网络测试标记 `@pytest.mark.network`，默认跳过。
@@ -119,9 +121,11 @@ rs = bs.query_history_k_data_plus(
 df = rs.get_data()
 print("K线列:", list(df.columns)); print(df.head(3))
 
-rs2 = bs.query_adjust_factor(code="sh.600519", start_date="2015-01-01", end_date="2024-12-31")
+rs2 = bs.query_adjust_factor(code="sh.600519", start_date="1990-01-01", end_date="2024-12-31")
 fac = rs2.get_data()
-print("复权因子列:", list(fac.columns)); print(fac.tail(3))
+print("复权因子列:", list(fac.columns)); print(fac.to_string())
+# 关键确认：backAdjustFactor 必须是"自上市累积"口径（随时间单调不减、只在除权日出现新记录），
+# Task 4 的 ffill 到日频才成立。若它是"单次事件因子"（每条都接近 1），必须改为累乘后再 ffill。
 
 rs3 = bs.query_trade_dates(start_date="2024-01-01", end_date="2024-01-15")
 print(rs3.get_data().head(5))
@@ -352,6 +356,10 @@ def make_bars(rows: list[dict]) -> pd.DataFrame:
     for col, default in [("adj_factor", 1.0), ("trade_status", 1), ("is_st", 0)]:
         if col not in df.columns:
             df[col] = default
+        else:
+            # 关键：只有部分行显式给了该列时，pandas 会把其余行填成 NaN。
+            # 少了这一步，"只给一行 trade_status=0"的用例会让全部行都不等于 1 而被过滤光。
+            df[col] = df[col].fillna(default)
     return df
 ```
 
@@ -511,6 +519,18 @@ def test_ohlc_sanity():
     df, warns = prepare_bars(bad)
     assert len(df) == 0
     assert any("OHLC" in w for w in warns)
+
+
+def test_st_period_warns_but_keeps_rows():
+    # spec 决策7：股票池应剔除 ST，但历史区间内曾被 ST 的标的要告警提醒（数据仍保留）
+    raw = make_bars([
+        _row("2024-01-02", 10.0),
+        _row("2024-01-03", 10.0, is_st=1),
+        _row("2024-01-04", 10.0, is_st=1),
+    ])
+    df, warns = prepare_bars(raw)
+    assert len(df) == 3
+    assert any("ST" in w for w in warns)
 ```
 
 - [ ] **Step 2: 运行确认失败**
@@ -557,6 +577,13 @@ def prepare_bars(raw: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     if jump.any():
         warns.append(f"异常跳变（|涨跌|>{JUMP_THRESHOLD:.0%} 且非除权日）: "
                      f"{[d.strftime('%Y-%m-%d') for d in df.index[jump]]}")
+
+    st_rows = df["is_st"] == 1
+    if st_rows.any():
+        # 保留数据但提醒：ST 期间涨跌幅限制为 5%，本引擎按 10% 建模（spec 决策7/8）
+        warns.append(f"该标的在 {df.index[st_rows].min():%Y-%m-%d} ~ "
+                     f"{df.index[st_rows].max():%Y-%m-%d} 期间为 ST（共 {int(st_rows.sum())} 天），"
+                     f"涨跌停建模与实际不符，建议从股票池剔除")
     return df, warns
 ```
 
@@ -795,6 +822,8 @@ class BaostockProvider(DataProvider):
             frequency="d", adjustflag="3")
         _check(rs)
         df = rs.get_data()
+        if df.empty:
+            raise ValueError(f"指数 {index_code} 在 {start}~{end} 无数据（检查代码前缀是否为 sh./sz.）")
         df["date"] = pd.to_datetime(df["date"])
         df = df.set_index("date").sort_index()
         df["close"] = pd.to_numeric(df["close"], errors="coerce")
@@ -1608,13 +1637,16 @@ def test_one_word_limit_board_blocks_buy():
 
 
 def test_limit_down_blocks_sell_then_fills_next_day():
+    """positions=[1,0,0,0] → desired=shift(1)=[0,1,0,0]：
+    01-03 买入；01-04 目标转 0 但低开 10%（9.0 ≤ 10.0×0.905）触发跌停顺延；01-05 正常卖出。
+    注意不可写成 [1,1,0,0]——那样 01-04 的目标仓位仍是 1，根本不会尝试卖出，测不到跌停分支。"""
     df = _df([
         dict(date="2024-01-02", open=10.0, high=10.0, low=10.0, close=10.0, volume=1e6, amount=1e7),
         dict(date="2024-01-03", open=10.0, high=10.2, low=9.9, close=10.0, volume=1e6, amount=1e7),
         dict(date="2024-01-04", open=9.0, high=9.0, low=8.8, close=8.9, volume=1e6, amount=1e7),   # 低开10%
         dict(date="2024-01-05", open=8.8, high=9.0, low=8.5, close=8.6, volume=1e6, amount=1e7),
     ])
-    res = Backtester({"TEST": df}, {"TEST": _positions(df, [1, 1, 0, 0])}, settings()).run()
+    res = Backtester({"TEST": df}, {"TEST": _positions(df, [1, 0, 0, 0])}, settings()).run()
     assert any("跌停" in r[2] for r in res.skipped)
     sells = [t for t in res.trades if t.action == "sell"]
     assert len(sells) == 1 and sells[0].date == pd.Timestamp("2024-01-05")
@@ -2203,11 +2235,16 @@ def main() -> None:
 
     stale = {s: df.index.max().date() for s, df in bars.items()
              if df.index.max().date() < expected}
+    if len(stale) == len(bars):
+        # 全部落后 → 数据源尚未更新（baostock 约 17:30 后才有当日数据）
+        print(f"全部标的数据均未更新到 {expected}，稍后再试（最新: {sorted(set(stale.values()))}）")
+        sys.exit(1)
     if stale:
-        print(f"以下标的数据未更新到 {expected}（baostock 约 17:30 后更新，稍后再试）：")
+        # 部分落后 → 多半是个股停牌，跳过它们继续扫描其余标的
+        print(f"以下标的数据落后于 {expected}（多为停牌），本次跳过：")
         for s, d in stale.items():
             print(f"  {s}: 最新 {d}")
-        sys.exit(1)
+        bars = {s: df for s, df in bars.items() if s not in stale}
 
     signals = scan(bars, build_strategies(settings.strategies))
     print(f"\n===== {expected} 信号 =====")
@@ -2259,6 +2296,7 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components  # 显式导入：部分版本下 st.components 不自动可用
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
@@ -2297,8 +2335,8 @@ def page_backtest() -> None:
         text = "—" if v is None else (f"{v:.2%}" if k in
                 ("total_return", "cagr", "max_drawdown", "win_rate") else f"{v:.2f}")
         cols[i % 4].metric(label, text)
-    st.components.v1.html((run / "report.html").read_text(encoding="utf-8"),
-                          height=650, scrolling=True)
+    components.html((run / "report.html").read_text(encoding="utf-8"),
+                    height=650, scrolling=True)
     st.subheader("交易明细")
     st.dataframe(pd.read_csv(run / "trades.csv"), use_container_width=True)
     skipped = run / "skipped.csv"
