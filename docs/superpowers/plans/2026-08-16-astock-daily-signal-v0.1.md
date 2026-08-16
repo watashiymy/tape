@@ -776,6 +776,21 @@ def _check(rs) -> None:
         raise RuntimeError(f"baostock 错误 {rs.error_code}: {rs.error_msg}")
 
 
+def _fetch(rs) -> pd.DataFrame:
+    """把 baostock 结果集读成 DataFrame。
+
+    **必须用这个函数，不要用 rs.get_data()。** baostock 0.9.3 的 get_data() 在翻页分支里
+    调用了 pandas 2.0 已删除的 DataFrame.append，任何首页恰好返回 2000 行（分页大小）的
+    查询都会抛 AttributeError——10 年日线（约 2579 行）正好命中，实测必崩。
+    官方惯用的 next()+get_row_data() 逐行迭代没有这个问题，已用真实数据验证通过。
+    """
+    _check(rs)
+    rows = []
+    while rs.error_code == "0" and rs.next():
+        rows.append(rs.get_row_data())
+    return pd.DataFrame(rows, columns=rs.fields)
+
+
 class BaostockProvider(DataProvider):
     def __enter__(self):
         _check(bs.login())
@@ -790,8 +805,7 @@ class BaostockProvider(DataProvider):
         rs = bs.query_history_k_data_plus(
             code, _K_FIELDS, start_date=str(start), end_date=str(end),
             frequency="d", adjustflag="3")  # 3 = 不复权（原始价）
-        _check(rs)
-        df = rs.get_data()
+        df = _fetch(rs)
         if df.empty:
             return pd.DataFrame(columns=_EMPTY_COLS,
                                 index=pd.DatetimeIndex([], name="date"))
@@ -806,10 +820,11 @@ class BaostockProvider(DataProvider):
 
     @staticmethod
     def _adj_factor_series(code: str, end: date) -> pd.Series:
-        # 从上市早期拉全量因子记录（只在除权除息日有记录），ffill 到日频
+        # 从上市早期拉全量因子记录（只在除权除息日有记录），ffill 到日频。
+        # 探针已确认 backAdjustFactor 是"自上市累积"口径（单调不减、每个除权日一条、日期无重复），
+        # 所以直接 ffill 即可，无需累乘。
         rs = bs.query_adjust_factor(code=code, start_date="1990-01-01", end_date=str(end))
-        _check(rs)
-        fac = rs.get_data()
+        fac = _fetch(rs)
         if fac.empty:
             return pd.Series(dtype=float)
         idx = pd.to_datetime(fac["dividOperateDate"])
@@ -820,8 +835,7 @@ class BaostockProvider(DataProvider):
         rs = bs.query_history_k_data_plus(
             code, "date,close", start_date=str(start), end_date=str(end),
             frequency="d", adjustflag="3")
-        _check(rs)
-        df = rs.get_data()
+        df = _fetch(rs)
         if df.empty:
             raise ValueError(f"指数 {index_code} 在 {start}~{end} 无数据（检查代码前缀是否为 sh./sz.）")
         df["date"] = pd.to_datetime(df["date"])
@@ -830,9 +844,10 @@ class BaostockProvider(DataProvider):
         return df
 
     def get_trade_calendar(self, start: date, end: date) -> list[date]:
+        # 注意：query_trade_dates 返回的是**日历日**（含周末节假日），需按 is_trading_day 过滤。
+        # 10 年区间约 3879 个日历日 → 2579 个交易日（实测）。
         rs = bs.query_trade_dates(start_date=str(start), end_date=str(end))
-        _check(rs)
-        df = rs.get_data()
+        df = _fetch(rs)
         trading = df[df["is_trading_day"] == "1"]
         return [d.date() for d in pd.to_datetime(trading["calendar_date"])]
 ```
@@ -862,6 +877,20 @@ def test_fetch_real_bars_and_calendar():
         assert len(cal) == len(df)  # 该月茅台无停牌，交易日数与K线行数一致
         idx = p.get_index_daily("000300", date(2024, 1, 1), date(2024, 1, 31))
         assert len(idx) == len(cal)
+
+
+def test_large_range_crosses_pagination_boundary():
+    """回归测试：baostock 0.9.3 的 get_data() 在翻页时用了 pandas 已删除的 DataFrame.append，
+    首页恰好 2000 行就会抛 AttributeError。10 年日线约 2579 行必然触发，因此
+    provider 必须走 _fetch() 的逐行迭代。区间务必 > 2000 行，否则测不到这个分支。"""
+    with BaostockProvider() as p:
+        df = p.get_daily_bars("600519", date(2016, 1, 1), date(2026, 8, 14))
+        assert len(df) > 2000, f"区间太小测不到翻页分支（{len(df)} 行）"
+        assert df.index.is_monotonic_increasing
+        assert not df.index.has_duplicates
+        assert df["adj_factor"].notna().all()
+        cal = p.get_trade_calendar(date(2016, 1, 1), date(2026, 8, 14))
+        assert len(cal) > 2000
 ```
 
 - [ ] **Step 8: 运行（含网络测试一次性验证）**
