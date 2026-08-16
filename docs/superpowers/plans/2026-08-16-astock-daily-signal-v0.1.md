@@ -962,6 +962,27 @@ def test_refresh_forces_full_fetch(tmp_path):
     svc.get_bars("600519", date(2024, 1, 1), date(2024, 1, 31))
     svc.get_bars("600519", date(2024, 1, 1), date(2024, 1, 31), refresh=True)
     assert provider.calls[1][1] == date(2024, 1, 1)
+
+
+def test_returned_range_is_clamped_to_request(tmp_path):
+    """缓存比请求区间长是常态。不夹住 end，样本外的行会被悄悄喂给回测且无告警。"""
+    provider, cache = FakeProvider(), BarCache(tmp_path)
+    svc = DataService(provider, cache)
+    svc.get_bars("600519", date(2024, 1, 1), date(2024, 1, 31))   # 缓存整月
+    df, _ = svc.get_bars("600519", date(2024, 1, 8), date(2024, 1, 10))
+    assert df.index.min().date() >= date(2024, 1, 8)
+    assert df.index.max().date() <= date(2024, 1, 10)   # 不夹 end 时这里会拿到 1/31
+
+
+def test_earlier_start_backfills_cache_head(tmp_path):
+    """先跑近期、后来想回溯更早——缓存头部的缺口必须回补，
+    否则 get_bars 静默返回比请求区间更短的数据，回测在自己没要过的区间上出结论。"""
+    provider, cache = FakeProvider(), BarCache(tmp_path)
+    svc = DataService(provider, cache)
+    svc.get_bars("600519", date(2024, 1, 22), date(2024, 1, 31))
+    df, _ = svc.get_bars("600519", date(2024, 1, 1), date(2024, 1, 31))
+    assert len(df) == len(ALL_DAYS)                     # 修复前只有 8 行且无告警
+    assert provider.calls[1][1] == date(2024, 1, 1)
 ```
 
 测试文件顶部需 `import pandas as pd`、`from datetime import date, timedelta`，并从 `quant.data.service` 导入 `OVERLAP_DAYS`。
@@ -999,6 +1020,10 @@ class DataService:
         cached = None if refresh else self.cache.load(symbol)
         if cached is None or cached.empty:
             fetch_start = start
+        elif cached.index.min().date() > start:
+            # 缓存头部有缺口（本次 start 早于缓存最早一行）。仍按"缓存最新日回拉重叠"取数的话，
+            # 缺的那段历史永远补不回来，get_bars 会静默返回比请求区间更短的数据。
+            fetch_start = start
         else:
             # 回拉 OVERLAP_DAYS 天重叠，而不是从"最新日+1天"开始。
             # 原因：若曾在交易日盘中运行过，当天那根**未收盘**的 K 线会被写进缓存；
@@ -1014,7 +1039,10 @@ class DataService:
         if merged is None or merged.empty:
             raise ValueError(f"{symbol}: 无可用数据（{start}~{end}）")
         df, warns = prepare_bars(merged)
-        return df[df.index.date >= start], warns
+        # 必须双向裁剪：缓存通常比本次请求的区间更长，不夹住 end 会把 end 之后的行
+        # 一并交给回测（样本外区间被悄悄吃掉），且完全无告警。
+        in_range = (df.index.date >= start) & (df.index.date <= end)
+        return df[in_range], warns
 ```
 
 注意：缓存里已有的历史行不会因为后来的分红而失效——baostock 的**后**复权因子是"从上市日累积"的口径，新除权只新增新日期的因子记录，旧行照旧有效（这正是 spec 决策1 选后复权的第二个原因）。
@@ -1022,7 +1050,7 @@ class DataService:
 - [ ] **Step 5: 运行确认通过**
 
 Run: `.venv/bin/python -m pytest tests/test_service.py -v`
-Expected: 3 passed
+Expected: 6 passed
 
 - [ ] **Step 6: 实现 src/quant/data/baostock_provider.py（字段以 Task 0 探针实际输出为准）**
 
@@ -1064,6 +1092,9 @@ def _fetch(rs) -> pd.DataFrame:
     rows = []
     while rs.error_code == "0" and rs.next():
         rows.append(rs.get_row_data())
+    # 翻页请求失败时 next() 只是把服务端错误码写进 rs.error_code 后 return False，不抛异常，
+    # 与"读完了"无法区分。少查这一次，残缺的半截历史会被当成完整数据喂给回测。
+    _check(rs)
     return pd.DataFrame(rows, columns=rs.fields)
 
 
@@ -1130,7 +1161,73 @@ class BaostockProvider(DataProvider):
 
 注意：沪深300 指数在 baostock 的代码是 `sh.000300`，而深市股票 000333 是 `sz.000333`——**指数与个股的前缀规则不同**，所以 `get_index_daily` 单独处理，不复用 `to_bs_code`。
 
-- [ ] **Step 7: 写网络集成测试（默认跳过）**
+- [ ] **Step 7: 写 provider 单元测试（离线）+ 网络集成测试（默认跳过）**
+
+离线部分 `tests/test_baostock_provider.py` 用假结果集覆盖 `_fetch` 的失败路径：baostock 的
+`next()` 翻页失败时只把服务端错误码写进 `rs.error_code` 后 `return False`，不抛异常，
+因此循环结束后必须再 `_check(rs)` 一次，否则半截历史会被静默当成完整数据。
+
+```python
+# tests/test_baostock_provider.py —— 不联网的单元测试（联网用例见 test_baostock_integration.py）
+import pytest
+
+from quant.data.baostock_provider import _fetch, to_bs_code
+
+
+class FakeResultSet:
+    """模拟 baostock 的 ResultData。
+
+    关键行为（照抄 baostock/data/resultset.py 的 next()）：翻页请求失败时**不抛异常**，
+    只是把服务端返回的错误码写进 self.error_code 然后 return False——与"数据读完了"
+    在调用方看来完全一样。
+    """
+    fields = ["date", "close"]
+
+    def __init__(self, rows, fail_after=None):
+        self._rows = rows
+        self._i = 0
+        self._fail_after = fail_after
+        self.error_code = "0"
+        self.error_msg = ""
+
+    def next(self):
+        if self._fail_after is not None and self._i == self._fail_after:
+            self.error_code = "10002"
+            self.error_msg = "网络接收错误"
+            return False
+        return self._i < len(self._rows)
+
+    def get_row_data(self):
+        row = self._rows[self._i]
+        self._i += 1
+        return row
+
+
+def test_to_bs_code():
+    assert to_bs_code("600519") == "sh.600519"
+    assert to_bs_code("000333") == "sz.000333"
+    assert to_bs_code("300750") == "sz.300750"
+
+
+def test_fetch_reads_all_rows():
+    df = _fetch(FakeResultSet([["2024-01-02", "10"], ["2024-01-03", "11"]]))
+    assert list(df["close"]) == ["10", "11"]
+
+
+def test_fetch_raises_when_first_page_failed():
+    rs = FakeResultSet([])
+    rs.error_code, rs.error_msg = "10001", "登录失效"
+    with pytest.raises(RuntimeError, match="10001"):
+        _fetch(rs)
+
+
+def test_fetch_raises_when_pagination_fails_midway():
+    """翻到第二页时服务端报错：修复前循环"正常"结束，半截数据被当成完整历史返回，
+    回测于是在残缺行情上跑完且无任何异常。"""
+    rows = [["2024-01-02", "10"], ["2024-01-03", "11"], ["2024-01-04", "12"]]
+    with pytest.raises(RuntimeError, match="10002"):
+        _fetch(FakeResultSet(rows, fail_after=2))
+```
 
 ```python
 # tests/test_baostock_integration.py
@@ -1171,13 +1268,13 @@ def test_large_range_crosses_pagination_boundary():
 
 - [ ] **Step 8: 运行（含网络测试一次性验证）**
 
-Run: `.venv/bin/python -m pytest tests/test_service.py -v && .venv/bin/python -m pytest -m network -v`
+Run: `.venv/bin/python -m pytest tests/test_service.py tests/test_baostock_provider.py -v && .venv/bin/python -m pytest -m network -v`
 Expected: 全部 passed（网络测试若因网络环境失败，记录原因；字段不符则回到 Step 6 按探针输出修正）
 
 - [ ] **Step 9: Commit**
 
 ```bash
-git add src/quant/data tests/test_service.py tests/test_baostock_integration.py
+git add src/quant/data tests/test_service.py tests/test_baostock_provider.py tests/test_baostock_integration.py
 git commit -m "feat: baostock 数据源与增量数据服务"
 ```
 

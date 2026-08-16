@@ -35,6 +35,9 @@ def _fetch(rs) -> pd.DataFrame:
     rows = []
     while rs.error_code == "0" and rs.next():
         rows.append(rs.get_row_data())
+    # 翻页请求失败时 next() 只是把服务端错误码写进 rs.error_code 后 return False，不抛异常，
+    # 与"读完了"无法区分。少查这一次，残缺的半截历史会被当成完整数据喂给回测。
+    _check(rs)
     return pd.DataFrame(rows, columns=rs.fields)
 
 

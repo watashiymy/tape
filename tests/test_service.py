@@ -77,3 +77,24 @@ def test_refresh_forces_full_fetch(tmp_path):
     svc.get_bars("600519", date(2024, 1, 1), date(2024, 1, 31))
     svc.get_bars("600519", date(2024, 1, 1), date(2024, 1, 31), refresh=True)
     assert provider.calls[1][1] == date(2024, 1, 1)
+
+
+def test_returned_range_is_clamped_to_request(tmp_path):
+    """缓存比请求区间长是常态。不夹住 end，样本外的行会被悄悄喂给回测且无告警。"""
+    provider, cache = FakeProvider(), BarCache(tmp_path)
+    svc = DataService(provider, cache)
+    svc.get_bars("600519", date(2024, 1, 1), date(2024, 1, 31))   # 缓存整月
+    df, _ = svc.get_bars("600519", date(2024, 1, 8), date(2024, 1, 10))
+    assert df.index.min().date() >= date(2024, 1, 8)
+    assert df.index.max().date() <= date(2024, 1, 10)   # 不夹 end 时这里会拿到 1/31
+
+
+def test_earlier_start_backfills_cache_head(tmp_path):
+    """先跑近期、后来想回溯更早——缓存头部的缺口必须回补，
+    否则 get_bars 静默返回比请求区间更短的数据，回测在自己没要过的区间上出结论。"""
+    provider, cache = FakeProvider(), BarCache(tmp_path)
+    svc = DataService(provider, cache)
+    svc.get_bars("600519", date(2024, 1, 22), date(2024, 1, 31))
+    df, _ = svc.get_bars("600519", date(2024, 1, 1), date(2024, 1, 31))
+    assert len(df) == len(ALL_DAYS)                     # 修复前只有 8 行且无告警
+    assert provider.calls[1][1] == date(2024, 1, 1)
