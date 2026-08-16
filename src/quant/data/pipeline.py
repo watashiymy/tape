@@ -18,6 +18,14 @@ def prepare_bars(raw: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
 
     df = df[(df["trade_status"] == 1) & (df["volume"] > 0)].copy()
 
+    # NaN（如 baostock 空串经 to_numeric 转换而来）与任何数比较恒为 False：既躲得过下面的
+    # OHLC 谓词，又会让 adj_* 全变 NaN、让自身与次日的 pct_change 双双失效（跳变漏报）。
+    na_price = df[["open", "high", "low", "close", "amount", "adj_factor"]].isna().any(axis=1)
+    if na_price.any():
+        warns.append(f"价格/成交额缺失 {int(na_price.sum())} 行，已剔除: "
+                     f"{[d.strftime('%Y-%m-%d') for d in df.index[na_price]]}")
+        df = df[~na_price].copy()
+
     bad_ohlc = (df["high"] < df["low"]) | (df["high"] < df[["open", "close"]].max(axis=1)) \
         | (df["low"] > df[["open", "close"]].min(axis=1))
     if bad_ohlc.any():
