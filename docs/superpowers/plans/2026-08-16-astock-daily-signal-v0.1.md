@@ -426,8 +426,11 @@ git commit -m "feat: 配置加载与分段印花税规则"
 import pandas as pd
 
 
+REQUIRED = ["open", "high", "low", "close", "volume", "amount"]
+
+
 def make_bars(rows: list[dict]) -> pd.DataFrame:
-    """手工构造日线 DataFrame。rows 每项至少含 date/open/high/low/close/volume/amount，
+    """手工构造日线 DataFrame。rows 每项须含 date + REQUIRED 全部列，
     可选 adj_factor（默认1.0）/trade_status（默认1）/is_st（默认0）。"""
     df = pd.DataFrame(rows)
     df["date"] = pd.to_datetime(df["date"])
@@ -437,8 +440,15 @@ def make_bars(rows: list[dict]) -> pd.DataFrame:
             df[col] = default
         else:
             # 关键：只有部分行显式给了该列时，pandas 会把其余行填成 NaN。
-            # 少了这一步，"只给一行 trade_status=0"的用例会让全部行都不等于 1 而被过滤光。
-            df[col] = df[col].fillna(default)
+            # 少了 fillna，"只给一行 trade_status=0"的用例会让全部行都不等于 1 而被过滤光；
+            # 少了 astype，dtype 会变成 float，与线上永远是 int 的形态不符
+            # （断言 [1, 0] 察觉不到，因为 1.0 == 1）。
+            df[col] = df[col].fillna(default).astype(type(default))
+    # 必填列漏写只会得到一列 NaN，而 NaN 参与比较恒为 False：
+    # 例如 Task 7 的成交额过滤会静默不出信号，测试还"通过"——测的却是错的东西。
+    missing = [c for c in REQUIRED if c not in df.columns or df[c].isna().any()]
+    if missing:
+        raise ValueError(f"make_bars: 必填列缺失或含 NaN: {missing}")
     return df
 ```
 
@@ -446,6 +456,9 @@ def make_bars(rows: list[dict]) -> pd.DataFrame:
 
 ```python
 # tests/test_cache.py
+import pandas as pd
+import pytest
+
 from quant.data.cache import BarCache
 from tests.conftest import make_bars
 
@@ -462,19 +475,87 @@ def test_save_and_load_roundtrip(tmp_path):
     assert loaded is not None
     assert list(loaded.index) == list(df.index)
     assert loaded["close"].tolist() == [10.0, 11.0]
+    # 缓存层最该保证的是整个 schema 原样回来，不只是 close 这一列
+    assert list(loaded.columns) == list(df.columns)
+    assert loaded.dtypes.equals(df.dtypes)
+    assert loaded.index.name == "date"
 
 
 def test_load_missing_returns_none(tmp_path):
     assert BarCache(tmp_path).load("600519") is None
 
 
-def test_merge_dedup_keeps_last(tmp_path):
+def test_merge_dedup_keeps_last():
     old = make_bars([_row("2024-01-02", 10.0), _row("2024-01-03", 11.0)])
     new = make_bars([_row("2024-01-03", 11.5), _row("2024-01-04", 12.0)])
-    merged = BarCache(tmp_path).merge(old, new)
+    merged = BarCache.merge(old, new)
     assert len(merged) == 3
     assert merged.loc["2024-01-03", "close"] == 11.5  # 重叠日期以新数据为准
     assert merged.index.is_monotonic_increasing
+
+
+def test_merge_from_empty_cache():
+    """每个标的第一次取数都走这条分支（cached is None），必须钉住。"""
+    new = make_bars([_row("2024-01-03", 11.0), _row("2024-01-02", 10.0)])
+    merged = BarCache.merge(None, new)
+    assert len(merged) == 2
+    assert merged.index.is_monotonic_increasing
+
+
+def test_merge_with_empty_new_preserves_dtypes():
+    """pandas 3.0 的 concat 不再忽略空块的 dtype：拼一张空表会把所有列变成 object，
+    而 object 下的算术照样不报错——只在当次进程里错，重跑又对，最难查的那类。"""
+    old = make_bars([_row("2024-01-02", 10.0), _row("2024-01-03", 11.0)])
+    empty = pd.DataFrame(columns=old.columns, index=pd.DatetimeIndex([], name="date"))
+    merged = BarCache.merge(old, empty)
+    assert len(merged) == 2
+    assert merged.dtypes.equals(old.dtypes)
+
+
+def test_merge_mismatched_columns_raises():
+    """加字段后本地旧缓存全是旧 schema。静默合并会让缺失列变 NaN，
+    且 prepare_bars 一条告警都不发——指标全 NaN、净值一条直线、全程不报错。"""
+    old = make_bars([_row("2024-01-02", 10.0)])
+    new = make_bars([_row("2024-01-03", 11.0)]).drop(columns=["adj_factor"])
+    with pytest.raises(ValueError, match="列不一致"):
+        BarCache.merge(old, new)
+
+
+def test_save_is_atomic_and_leaves_no_temp_file(tmp_path):
+    cache = BarCache(tmp_path)
+    df = make_bars([_row("2024-01-02", 10.0)])
+    cache.save("600519", df)
+    assert list(tmp_path.glob("*.tmp")) == []
+    assert (tmp_path / "600519.parquet").exists()
+
+
+def test_make_bars_fills_partially_specified_optional_columns():
+    """make_bars 被 9 个后续测试文件依赖。只有部分行显式给了 trade_status 时，
+    pandas 会把其余行填成 NaN——若不回填默认值，Task 3 的停牌过滤测试会把所有行滤光。"""
+    df = make_bars([
+        dict(date="2024-01-02", open=10, high=10, low=10, close=10, volume=1000, amount=1e4),
+        dict(date="2024-01-03", open=10, high=10, low=10, close=10, volume=0, amount=0,
+             trade_status=0),
+    ])
+    assert df["trade_status"].tolist() == [1, 0]   # 未给的那行必须是 1，不能是 NaN
+    assert df["adj_factor"].tolist() == [1.0, 1.0]
+    assert df["is_st"].tolist() == [0, 0]
+    assert df.index.name == "date"
+    # 必须断言 dtype：只比值察觉不到 float 污染（1.0 == 1 恒成立），
+    # 而线上 provider 永远产出 int，fixture 造出 float 就是在测线上不存在的形态。
+    assert df["trade_status"].dtype == "int64"
+    assert df["is_st"].dtype == "int64"
+    assert df["adj_factor"].dtype == "float64"
+
+
+def test_make_bars_rejects_missing_required_column():
+    """必填列漏写只会得到一列 NaN，而 NaN 参与比较恒为 False：
+    Task 7 的成交额过滤会静默不出信号，测试还"通过"——测的却是错的东西。"""
+    with pytest.raises(ValueError, match="必填列"):
+        make_bars([
+            dict(date="2024-01-02", open=10, high=10, low=10, close=10, volume=1000, amount=1e4),
+            dict(date="2024-01-03", open=10, high=10, low=10, close=10, volume=1000),  # 漏 amount
+        ])
 ```
 
 - [ ] **Step 3: 运行确认失败**
@@ -508,14 +589,28 @@ class BarCache:
         return pd.read_parquet(p)
 
     def save(self, symbol: str, df: pd.DataFrame) -> None:
-        df.to_parquet(self._path(symbol))
+        # 先写临时文件再原子替换：刷新 10 只标的时按 Ctrl-C 不会留下半截 parquet
+        tmp = self._path(symbol).with_suffix(".parquet.tmp")
+        df.to_parquet(tmp)
+        tmp.replace(self._path(symbol))
 
     @staticmethod
     def merge(old: pd.DataFrame | None, new: pd.DataFrame) -> pd.DataFrame:
         if old is None or old.empty:
             return new.sort_index()
+        if new is None or new.empty:
+            # 必须挡：pandas 3.0 的 concat 不再忽略空块的 dtype，
+            # 拼一张空表会把 9 列全部污染成 object，而后续算术照样不报错
+            return old.sort_index()
+        if set(old.columns) != set(new.columns):
+            # 静默合并会让缺失列变 NaN，且 prepare_bars 一条告警都不会发：
+            # 指标全 NaN → 策略无信号 → 净值一条直线，全程无异常。必须响亮失败。
+            raise ValueError(
+                f"缓存列与新数据列不一致，请删除缓存目录或用 refresh=True 重拉；"
+                f"缓存独有={set(old.columns) - set(new.columns)}，"
+                f"新数据独有={set(new.columns) - set(old.columns)}")
         merged = pd.concat([old, new])
-        merged = merged[~merged.index.duplicated(keep="last")]
+        merged = merged[~merged.index.duplicated(keep="last")]  # 重叠日期以新数据为准
         return merged.sort_index()
 ```
 
@@ -729,11 +824,13 @@ def _row(d, px):
                 volume=1000, amount=px * 1000)
 
 
+ALL_DAYS = [d.date() for d in pd.bdate_range("2024-01-01", "2024-01-31")]
+
+
 class FakeProvider(DataProvider):
     def __init__(self):
         self.calls: list[tuple] = []
-        self.data = make_bars([_row("2024-01-02", 10.0), _row("2024-01-03", 11.0),
-                               _row("2024-01-04", 12.0)])
+        self.data = make_bars([_row(str(d), 10.0 + i) for i, d in enumerate(ALL_DAYS)])
 
     def get_daily_bars(self, symbol, start, end):
         self.calls.append((symbol, start, end))
@@ -744,35 +841,56 @@ class FakeProvider(DataProvider):
         raise NotImplementedError
 
     def get_trade_calendar(self, start, end):
-        return [d for d in [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)]
-                if start <= d <= end]
+        return [d for d in ALL_DAYS if start <= d <= end]
 
 
 def test_first_fetch_pulls_full_range_and_caches(tmp_path):
     provider, cache = FakeProvider(), BarCache(tmp_path)
     svc = DataService(provider, cache)
-    df, _ = svc.get_bars("600519", date(2024, 1, 1), date(2024, 1, 4))
-    assert len(df) == 3
-    assert provider.calls[0] == ("600519", date(2024, 1, 1), date(2024, 1, 4))
+    df, _ = svc.get_bars("600519", date(2024, 1, 1), date(2024, 1, 31))
+    assert len(df) == len(ALL_DAYS)
+    assert provider.calls[0] == ("600519", date(2024, 1, 1), date(2024, 1, 31))
     assert cache.load("600519") is not None
 
 
-def test_second_fetch_is_incremental(tmp_path):
+def test_second_fetch_is_incremental_with_overlap(tmp_path):
     provider, cache = FakeProvider(), BarCache(tmp_path)
     svc = DataService(provider, cache)
-    svc.get_bars("600519", date(2024, 1, 1), date(2024, 1, 3))
-    svc.get_bars("600519", date(2024, 1, 1), date(2024, 1, 4))
-    # 第二次只拉缺失区间：start 应为缓存最新日的次日
-    assert provider.calls[1][1] == date(2024, 1, 4)
+    svc.get_bars("600519", date(2024, 1, 1), date(2024, 1, 20))
+    svc.get_bars("600519", date(2024, 1, 1), date(2024, 1, 31))
+    cached_max = date(2024, 1, 19)  # 2024-01-20 是周六，最后一个工作日为 19 日
+    # 增量：不从头拉，但要回拉 OVERLAP_DAYS 天重叠（不是"最新日+1天"）
+    assert provider.calls[1][1] == cached_max - timedelta(days=OVERLAP_DAYS)
+    assert provider.calls[1][1] > date(2024, 1, 1)
+
+
+def test_overlap_refetch_corrects_stale_intraday_bar(tmp_path):
+    """盘中运行会把当天未收盘的 bar 写进缓存。回拉重叠 + merge 的 keep='last'
+    必须能用收盘后的正确数据覆盖它——否则这根脏 bar 永久污染此后所有回测。"""
+    provider, cache = FakeProvider(), BarCache(tmp_path)
+    svc = DataService(provider, cache)
+    svc.get_bars("600519", date(2024, 1, 1), date(2024, 1, 19))
+
+    # 篡改缓存中最后一根，模拟盘中抓到的半截 K 线
+    dirty = cache.load("600519")
+    dirty.loc[dirty.index.max(), "close"] = 999.0
+    cache.save("600519", dirty)
+    assert cache.load("600519")["close"].iloc[-1] == 999.0
+
+    df, _ = svc.get_bars("600519", date(2024, 1, 1), date(2024, 1, 31))
+    good = provider.data.loc[pd.Timestamp("2024-01-19"), "close"]
+    assert df.loc[pd.Timestamp("2024-01-19"), "close"] == good  # 已被修正
 
 
 def test_refresh_forces_full_fetch(tmp_path):
     provider, cache = FakeProvider(), BarCache(tmp_path)
     svc = DataService(provider, cache)
-    svc.get_bars("600519", date(2024, 1, 1), date(2024, 1, 4))
-    svc.get_bars("600519", date(2024, 1, 1), date(2024, 1, 4), refresh=True)
+    svc.get_bars("600519", date(2024, 1, 1), date(2024, 1, 31))
+    svc.get_bars("600519", date(2024, 1, 1), date(2024, 1, 31), refresh=True)
     assert provider.calls[1][1] == date(2024, 1, 1)
 ```
+
+测试文件顶部需 `import pandas as pd`、`from datetime import date, timedelta`，并从 `quant.data.service` 导入 `OVERLAP_DAYS`。
 
 - [ ] **Step 3: 运行确认失败**
 
@@ -793,6 +911,8 @@ from quant.data.cache import BarCache
 from quant.data.pipeline import prepare_bars
 from quant.data.provider import DataProvider
 
+OVERLAP_DAYS = 5  # 增量取数时回拉的重叠天数，用于覆盖盘中运行留下的未收盘 bar
+
 
 class DataService:
     def __init__(self, provider: DataProvider, cache: BarCache):
@@ -806,12 +926,15 @@ class DataService:
         if cached is None or cached.empty:
             fetch_start = start
         else:
-            fetch_start = cached.index.max().date() + timedelta(days=1)
+            # 回拉 OVERLAP_DAYS 天重叠，而不是从"最新日+1天"开始。
+            # 原因：若曾在交易日盘中运行过，当天那根**未收盘**的 K 线会被写进缓存；
+            # 用"最新日+1天"会永远跳过它，这根错误的 bar 将永久污染此后所有回测且无告警。
+            # 重叠重拉让 merge 的 keep="last" 自动修正，代价只是每次多几行网络数据。
+            fetch_start = max(start, cached.index.max().date() - timedelta(days=OVERLAP_DAYS))
         if fetch_start <= end:
             new = self.provider.get_daily_bars(symbol, fetch_start, end)
-            merged = self.cache.merge(cached, new) if not new.empty else cached
-            if merged is not None:
-                self.cache.save(symbol, merged)
+            merged = self.cache.merge(cached, new)  # merge 自己会处理 new 为空
+            self.cache.save(symbol, merged)
         else:
             merged = cached
         if merged is None or merged.empty:
