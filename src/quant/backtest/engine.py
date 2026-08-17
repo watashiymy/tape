@@ -49,10 +49,17 @@ class Backtester:
         return BacktestResult(pd.Series(equity).sort_index(), trades, skipped)
 
     def _apply_factor(self, slot: Slot, row: pd.Series) -> None:
-        """除权除息日按后复权因子比率调整持仓股数（等效分红再投资，spec §8 步骤4）。"""
+        """除权除息日按后复权因子比率调整持仓股数（等效分红再投资，spec §8 步骤4），
+        并把「昨收」折算到今日价格体系。少了后半步，除权造成的原始价缺口（10送10 直接腰斩）
+        会被涨跌停判定当成真实跌幅：卖单被误判跌停顺延，除权日的真实涨停板反而漏判。"""
         f = float(row["adj_factor"])
-        if slot.shares > 0 and slot.last_factor is not None and f != slot.last_factor:
-            slot.shares *= f / slot.last_factor
+        if slot.last_factor is None or f == slot.last_factor:
+            return
+        ratio = f / slot.last_factor
+        if slot.shares > 0:
+            slot.shares *= ratio
+        if slot.last_close is not None:
+            slot.last_close /= ratio      # 昨收 → 除权参考价（与今日原始价同一体系）
 
     def _limit_up(self, row: pd.Series, prev_close: float | None) -> bool:
         if prev_close is None:
