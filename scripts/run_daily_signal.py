@@ -19,14 +19,35 @@ from quant.strategy import build_strategies
 SIGNAL_DIR = Path("output/signals")
 
 
+def require_strategies(strategy_cfg: dict[str, dict]) -> list:
+    """构造策略，空表则退出。
+
+    "今日无新信号"是多数日子的正常结果，与"一个策略都没跑"的输出**逐字相同**：
+    同样打印无信号、同样写出只有表头的 CSV、同样退出码 0。而 config.py 的
+    `raw.get("strategies") or {}` 让 settings.yaml 的 strategies 段缺失/为空/
+    键名拼错时静默得到 {}——不挡住，信号系统会天天空跑且零告警，用户永远发现不了。
+    在联网取数之前就退出，免得白抓十只标的的行情。
+    """
+    strategies = build_strategies(strategy_cfg)
+    if not strategies:
+        sys.exit("配置里没有任何策略（settings.yaml 的 strategies 段缺失或为空），拒绝空跑")
+    return strategies
+
+
 def main() -> None:
     settings = load_settings("config/settings.yaml")
+    strategies = require_strategies(settings.strategies)
     bars = {}
     with BaostockProvider() as provider:
         cal = provider.get_trade_calendar(date.today() - timedelta(days=21), date.today())
         if not cal:
             sys.exit("近三周无交易日？交易日历异常，退出")
         expected = cal[-1]  # 最近一个交易日（含今天）
+        if expected != date.today():
+            # 周末/长假补跑上一交易日的信号是真实且合理的用法，故不像 spec §11 那样硬退出；
+            # 但必须显式说破，否则用户会把上一交易日的旧信号当成今天的新信号。
+            print(f"[注意] 今天 {date.today()} 非交易日，以下是最近交易日 {expected} 的信号"
+                  f"（重算结果与当日一致，会覆盖同名 CSV）")
         service = DataService(provider, BarCache("data/cache"))
         for sym in settings.universe:
             df, warns = service.get_bars(sym, settings.start)
@@ -47,8 +68,8 @@ def main() -> None:
             print(f"  {s}: 最新 {d}")
         bars = {s: df for s, df in bars.items() if s not in stale}
 
-    signals = scan(bars, build_strategies(settings.strategies))
-    print(f"\n===== {expected} 信号 =====")
+    signals = scan(bars, strategies)
+    print(f"\n===== {expected} 信号 =====（扫描 {len(bars)} 只 × {len(strategies)} 个策略）")
     if not signals:
         print("今日无新信号")
     else:

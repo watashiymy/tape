@@ -3324,7 +3324,7 @@ git commit -m "feat: 回测入口（含基准对比与报告输出）"
 
 **Files:**
 - Create: `src/quant/signal/__init__.py`, `src/quant/signal/scan.py`, `scripts/run_daily_signal.py`
-- Test: `tests/test_signal_scan.py`
+- Test: `tests/test_signal_scan.py`, `tests/test_run_daily_signal.py`
 
 - [ ] **Step 1: 写失败测试**
 
@@ -3349,7 +3349,8 @@ class StubStrategy(Strategy):
 
 
 def _bars(symbol, n=3):
-    rows = [dict(date=f"2024-01-{d:02d}", open=10, high=11, low=9, close=10,
+    # close 与 open 必须逐根不同，否则"取首根收盘/取当日开盘"这类错法测不出来
+    rows = [dict(date=f"2024-01-{d:02d}", open=1 + d, high=30, low=1, close=10 * (d - 1),
                  volume=1e6, amount=1e7) for d in range(2, 2 + n)]
     df = make_bars(rows)
     df.attrs["symbol"] = symbol
@@ -3365,7 +3366,35 @@ def test_scan_detects_new_buy_and_sell():
     assert {(s["symbol"], s["action"]) for s in signals} == {("AAA", "BUY"), ("BBB", "SELL")}
     assert all(s["strategy"] == "stub" for s in signals)
     assert all(s["date"] == "2024-01-04" for s in signals)
+
+
+def test_scan_uses_previous_bar_not_first_bar_and_reports_latest_close():
+    """仓位必须与**上一根**比（与首根比会漏掉"昨买今卖"），close 必须是最新一根的收盘价。"""
+    df = _bars("AAA")           # close = 10, 20, 30；open = 3, 4, 5
+    signals = scan({"AAA": df}, [StubStrategy({"AAA": [0, 1, 0]})])
+    assert [(s["symbol"], s["action"], s["date"], s["close"]) for s in signals] == [
+        ("AAA", "SELL", "2024-01-04", 30.0)]
+
+
+def test_scan_runs_every_strategy():
+    """线上配了 2 个策略；只跑第一个会让另一个的信号静默消失。"""
+    df = _bars("AAA")
+    a, b = StubStrategy({"AAA": [0, 0, 1]}), StubStrategy({"AAA": [1, 1, 0]})
+    a.name, b.name = "s1", "s2"
+    assert {(s["strategy"], s["action"]) for s in scan({"AAA": df}, [a, b])} == {
+        ("s1", "BUY"), ("s2", "SELL")}
+
+
+def test_scan_skips_symbol_with_single_bar():
+    """新股上市首日只有一根K线，取 iloc[-2] 会 IndexError 把整轮扫描炸掉。"""
+    df = _bars("AAA", n=1)
+    assert scan({"AAA": df}, [StubStrategy({"AAA": [1]})]) == []
 ```
+
+> 变异测试记录：初版只有 `test_scan_detects_new_buy_and_sell`，10 个真实变异体存活 6 个
+> （`len(pos) < 2 → < 0`、`close` 取首根/读 open 列/写死 0.0、`strategies[:1]`、
+> `pos.iloc[-2] → pos.iloc[0]`）。补上上面三个用例并让 `_bars` 的 close/open 逐根不同后，
+> 10 个变异体全部 KILLED。
 
 - [ ] **Step 2: 运行确认失败**
 
@@ -3406,7 +3435,7 @@ def scan(bars: dict[str, pd.DataFrame], strategies: list[Strategy]) -> list[dict
 - [ ] **Step 4: 运行确认通过**
 
 Run: `.venv/bin/python -m pytest tests/test_signal_scan.py -v`
-Expected: 1 passed
+Expected: 4 passed
 
 - [ ] **Step 5: 实现 scripts/run_daily_signal.py**
 
@@ -3432,14 +3461,35 @@ from quant.strategy import build_strategies
 SIGNAL_DIR = Path("output/signals")
 
 
+def require_strategies(strategy_cfg: dict[str, dict]) -> list:
+    """构造策略，空表则退出。
+
+    "今日无新信号"是多数日子的正常结果，与"一个策略都没跑"的输出**逐字相同**：
+    同样打印无信号、同样写出只有表头的 CSV、同样退出码 0。而 config.py 的
+    `raw.get("strategies") or {}` 让 settings.yaml 的 strategies 段缺失/为空/
+    键名拼错时静默得到 {}——不挡住，信号系统会天天空跑且零告警，用户永远发现不了。
+    在联网取数之前就退出，免得白抓十只标的的行情。
+    """
+    strategies = build_strategies(strategy_cfg)
+    if not strategies:
+        sys.exit("配置里没有任何策略（settings.yaml 的 strategies 段缺失或为空），拒绝空跑")
+    return strategies
+
+
 def main() -> None:
     settings = load_settings("config/settings.yaml")
+    strategies = require_strategies(settings.strategies)
     bars = {}
     with BaostockProvider() as provider:
         cal = provider.get_trade_calendar(date.today() - timedelta(days=21), date.today())
         if not cal:
             sys.exit("近三周无交易日？交易日历异常，退出")
         expected = cal[-1]  # 最近一个交易日（含今天）
+        if expected != date.today():
+            # 周末/长假补跑上一交易日的信号是真实且合理的用法，故不像 spec §11 那样硬退出；
+            # 但必须显式说破，否则用户会把上一交易日的旧信号当成今天的新信号。
+            print(f"[注意] 今天 {date.today()} 非交易日，以下是最近交易日 {expected} 的信号"
+                  f"（重算结果与当日一致，会覆盖同名 CSV）")
         service = DataService(provider, BarCache("data/cache"))
         for sym in settings.universe:
             df, warns = service.get_bars(sym, settings.start)
@@ -3460,8 +3510,8 @@ def main() -> None:
             print(f"  {s}: 最新 {d}")
         bars = {s: df for s, df in bars.items() if s not in stale}
 
-    signals = scan(bars, build_strategies(settings.strategies))
-    print(f"\n===== {expected} 信号 =====")
+    signals = scan(bars, strategies)
+    print(f"\n===== {expected} 信号 =====（扫描 {len(bars)} 只 × {len(strategies)} 个策略）")
     if not signals:
         print("今日无新信号")
     else:
@@ -3477,6 +3527,36 @@ if __name__ == "__main__":
     main()
 ```
 
+> 关于"非交易日"：spec §11 写的是「非交易日或数据未更新则明确提示退出」，这里**只提示不退出**。
+> 周末/长假补跑上一交易日的信号是真实需求，硬退出会挡掉它；重算幂等，终端与 CSV 都带真实日期。
+> 这是有意放宽，已加显式提示消除"把旧信号当新信号"的风险。
+
+- [ ] **Step 5b: 空策略表守卫的回归测试**
+
+```python
+# tests/test_run_daily_signal.py
+import importlib.util
+from pathlib import Path
+
+import pytest
+
+_SPEC = importlib.util.spec_from_file_location(
+    "run_daily_signal", Path(__file__).resolve().parent.parent / "scripts" / "run_daily_signal.py")
+run_daily_signal = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(run_daily_signal)
+
+
+def test_empty_strategy_config_aborts():
+    with pytest.raises(SystemExit) as e:
+        run_daily_signal.require_strategies({})
+    assert "strategies" in str(e.value)
+
+
+def test_valid_strategy_config_builds_strategies():
+    got = run_daily_signal.require_strategies({"ma_cross": {"fast": 20, "slow": 60}})
+    assert [s.name for s in got] == ["ma_cross"]
+```
+
 - [ ] **Step 6: 端到端验收（联网）**
 
 Run: `.venv/bin/python scripts/run_daily_signal.py`
@@ -3485,7 +3565,8 @@ Expected: 数据新鲜时输出信号表（多数日子"今日无新信号"属�
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/quant/signal scripts/run_daily_signal.py tests/test_signal_scan.py
+git add src/quant/signal scripts/run_daily_signal.py \
+        tests/test_signal_scan.py tests/test_run_daily_signal.py
 git commit -m "feat: 每日信号扫描与入口脚本"
 ```
 
