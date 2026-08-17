@@ -1,0 +1,202 @@
+# quant_demo — A 股日线技术信号系统 v0.1
+
+一个**纯学习用**的 A 股日线研究流水线：拉数据 → 算指标 → 策略出目标仓位 → 历史回测（含 A 股交易规则与成本）→ 绩效报告 → 收盘后的每日信号提示。目标是把这条链路跑通且**跑对**，不是产出能赚钱的策略；内置的双均线、唐奇安通道突破只是用来验证流水线的样品。
+
+> **免责声明**：本项目仅用于个人学习与技术验证，所有输出（回测结果、每日信号、图表）**不构成任何投资建议**。回测收益是历史数据上的模拟结果，包含多处已知近似（见文末「已知近似与局限」），与真实交易结果必然存在差距。据此实盘操作的一切后果自负。
+
+---
+
+## 1. 安装
+
+需要 Python ≥ 3.12（当前开发环境 3.14.7 + pandas 3.0.5）。
+
+```bash
+cd /Users/watashi/workspace/pycharm-project/quant_demo
+python3 -m venv .venv
+.venv/bin/pip install -e ".[dev]"
+```
+
+依赖：pandas / pyarrow / baostock / PyYAML / plotly / streamlit（dev 额外装 pytest）。数据源 baostock **免费、无需 token、无需注册**。
+
+跑测试确认环境正常：
+
+```bash
+.venv/bin/python -m pytest
+# 期望：126 passed, 2 deselected  （deselected 的 2 项是需要联网的 baostock 集成测试）
+.venv/bin/python -m pytest -m network   # 想跑联网集成测试时用这个
+```
+
+**所有命令都要在项目根目录执行**——脚本里的 `data/cache`、`output/`、`config/settings.yaml` 都是相对路径。
+
+---
+
+## 2. 三个入口，按这个顺序用
+
+### ① 回测：`scripts/run_backtest.py`
+
+```bash
+.venv/bin/python scripts/run_backtest.py                      # 跑 settings.yaml 里配置的全部策略
+.venv/bin/python scripts/run_backtest.py --strategy donchian  # 只跑一个
+.venv/bin/python scripts/run_backtest.py --refresh            # 丢弃缓存，全量重拉行情
+.venv/bin/python scripts/run_backtest.py --config 别的.yaml
+```
+
+首次运行会联网拉 10 只标的约 10 年日线（每标的一个 parquet 落到 `data/cache/`），之后只增量补最近的部分，很快。输出目录 `output/<策略名>_<YYYYmmdd_HHMMSS>/`：
+
+| 文件 | 内容 |
+|------|------|
+| `metrics.json` | 总收益/年化/最大回撤/夏普/交易次数/胜率/盈亏比/平均持仓天数 |
+| `equity.csv` | 日频净值曲线 |
+| `trades.csv` | 每笔成交（含成交价、股数、佣金、印花税、平仓盈亏、持仓自然日） |
+| `skipped.csv` | 被约束挡掉的订单（涨停顺延/跌停顺延/T+1/资金不足一手），**排查"信号有但没成交"先看这个** |
+| `report.html` | 净值曲线（策略 vs 沪深300 vs 等权买入持有）+ 回撤曲线 |
+| `kline_<代码>.html` | 单标的 K 线 + ▲买入 ▼卖出 标注，调策略主要看它 |
+
+### ② 每日信号：`scripts/run_daily_signal.py`（收盘后跑）
+
+```bash
+.venv/bin/python scripts/run_daily_signal.py
+```
+
+增量更新行情 → 各策略对各标的算最新一日目标仓位 → 与前一交易日比对，输出**新增**的 BUY/SELL 清单（终端表格 + `output/signals/<交易日>.csv`）。
+
+- **必须收盘后跑**：baostock 的当日日线约 **17:30 之后**才更新，早跑会因"全部标的数据未更新"退出（退出码 1）。实践中 18:30 之后再跑最稳。
+- 非交易日跑会明确提示"今天不是交易日，以下是最近交易日 X 的信号"，不会假装是今天的新信号。
+- 只有部分标的数据落后（多半是停牌）时，会打印出来并跳过它们，其余照常扫描。
+- 「今日无新信号」是绝大多数日子的正常结果。
+
+### ③ 面板：`streamlit run app/dashboard.py`
+
+```bash
+.venv/bin/streamlit run app/dashboard.py
+```
+
+浏览器打开三个页面：**回测报告**（选历史某次回测看指标表/净值图/成交明细）、**个股 K 线**（选标的看买卖点标注）、**今日信号**（读 `output/signals/` 的清单与历史）。
+
+面板是 **v0.1 纯只读**：它只读 `output/` 与 `data/cache/`，不触发任何计算。没结果可看就是还没跑过 ①/②，页面会提示对应命令。
+
+---
+
+## 3. 配置：`config/settings.yaml`
+
+```yaml
+universe: ["600519", "600036", "601318", "600900", "000333",
+           "600030", "600276", "601088", "600887", "601899"]
+benchmark: "000300"
+backtest:
+  start: "2016-01-01"
+  capital: 5000000
+costs:
+  commission_rate: 0.00025
+  commission_min: 5.0
+  stamp_tax:
+    - {until: "2023-08-27", rate: 0.001}
+    - {from: "2023-08-28", rate: 0.0005}
+  slippage: 0.001
+strategies:
+  ma_cross: {fast: 20, slow: 60}
+  donchian: {entry_n: 20, exit_n: 10, amount_n: 20, amount_ratio: 1.5}
+```
+
+| 段 | 含义与注意 |
+|----|-----------|
+| `universe` | 股票池，6 位数字代码（交易所前缀由 provider 自动补）。**只放沪深主板**：引擎按 10% 涨跌停建模，创业板/科创板 20% 会算错。默认 10 只跨行业高流动性白马 |
+| `benchmark` | 基准指数代码，默认沪深 300 |
+| `backtest.start` | 回测与取数起点。改早了要重新联网补历史（缓存会自动回补头部缺口） |
+| `backtest.capital` | 虚拟本金。每标的固定额度 = `capital / len(universe)`，**不随权益浮动**。500 万不是随便定的：茅台一手十余万，本金太小会静默买不进 |
+| `costs.commission_rate` / `commission_min` | 佣金万 2.5、单笔最低 5 元，买卖双边收 |
+| `costs.stamp_tax` | 仅卖出收，按**成交日**分段：2023-08-28 之前 0.1%，之后 0.05%。写成 `{until: ...}` / `{from: ...}` 的闭区间列表，日期含当日；找不到覆盖当日的区间会直接报错（不静默用旧税率） |
+| `costs.slippage` | 滑点 0.1%，买入价 ×1.001、卖出价 ×0.999，顺带涵盖过户费等杂费 |
+| `strategies` | 键名必须是注册表里的策略名（`ma_cross` / `donchian`，见 `src/quant/strategy/__init__.py`），值是构造参数。**这一段删空或键名拼错**，每日信号脚本会直接退出报错而不是天天空跑 |
+
+策略规则：
+
+- **ma_cross**：MA(fast) 在 MA(slow) 之上 → 目标仓位 1，否则 0（状态式，等价于上穿买/下穿卖）。
+- **donchian**：收盘价 > 前 `entry_n` 日（**不含当日**）最高收盘 **且** 当日成交额 > `amount_ratio` × 前 `amount_n` 日平均成交额 → 入场；收盘价 < 前 `exit_n` 日（不含当日）最低收盘 → 出场；其余持有不变。窗口若含当日，"收盘 > N 日最高"永不成立，会得到全 0 的死信号——测试里有专门的回归用例守着。
+
+---
+
+## 4. 目录结构与关键约定
+
+```
+quant_demo/
+├── config/settings.yaml          # 唯一配置文件
+├── src/quant/
+│   ├── config.py                 # YAML → 不可变 Settings/Costs（含分段印花税查表）
+│   ├── data/
+│   │   ├── provider.py           #   DataProvider 抽象接口（换数据源只动这一层）
+│   │   ├── baostock_provider.py  #   baostock 实现：日线+复权因子+停牌+ST+指数+交易日历
+│   │   ├── cache.py              #   parquet 缓存：原子写、增量合并去重、meta 记已覆盖区间
+│   │   ├── pipeline.py           #   prepare_bars：去重/滤停牌/派生 adj_*/质量校验告警
+│   │   └── service.py            #   DataService：缓存优先 + 增量拉取 + 区间裁剪
+│   ├── indicators/__init__.py    # ma / rolling_high / rolling_low / atr（纯函数，含当日窗口）
+│   ├── strategy/                 # base.py（抽象）+ ma_cross.py + donchian.py + 注册表
+│   ├── backtest/
+│   │   ├── engine.py             #   主循环、撮合、A 股约束
+│   │   ├── costs.py              #   佣金 / 印花税
+│   │   └── portfolio.py          #   Trade / Slot（每标的独立账本）/ BacktestResult
+│   ├── report/                   # metrics.py（绩效）+ charts.py（plotly 净值/K线）
+│   └── signal/scan.py            # 最新一根 K 线相对前一根的仓位变化 = 新信号
+├── scripts/
+│   ├── run_backtest.py           # 入口①
+│   ├── run_daily_signal.py       # 入口②
+│   └── probe_baostock.py         # 一次性探针，验证 baostock 字段行为，不属于正式代码
+├── app/dashboard.py              # 入口③ Streamlit 面板（只读）
+├── data/cache/                   # 行情缓存（.gitignore）
+├── output/                       # 回测报告与信号清单（.gitignore）
+├── tests/                        # 126 项离线 + 2 项联网（默认跳过）
+└── docs/superpowers/
+    ├── specs/2026-08-16-astock-daily-signal-v0.1-design.md   # 设计文档（决策与理由）
+    └── plans/2026-08-16-astock-daily-signal-v0.1.md          # 实施计划（Task 0-16）
+```
+
+**分层原则**：策略层只认行情 DataFrame，不知道数据从哪来；引擎只认目标仓位序列，不知道策略逻辑；UI 只读展示，不含业务逻辑。
+
+**四条绝不能改的语义**（改了回测结论全部作废，来龙去脉见设计文档 §4）：
+
+1. **信号用后复权价 `adj_*`，撮合/涨跌停判定/成本计算用原始价**。前复权会随每次除权改写历史（引入未来信息）；而整手、最低佣金、涨跌停只有在真实价位上才有意义。
+2. **T 日收盘算信号 → T+1 日开盘成交**（引擎内是 `positions.shift(1)`）。杜绝"当日收盘信号当日成交"的未来函数。
+3. **每标的固定额度 = 初始本金 / N，不随权益浮动**，各标的账本互不挪用；赚到的钱留作闲置现金，不放大下一轮仓位。
+4. **印花税仅卖出且按成交日分段**（2023-08-28 前 0.1%，之后 0.05%）。用现行税率回溯 2016-2023 会把那段历史的卖出成本低估一半。
+
+引擎每日循环：应用除权因子（调持仓股数 + 把昨收折算到今日价格体系）→ 比对目标仓位生成订单 → 约束检查（停牌跳过 / 买单遇涨停顺延 / 卖单遇跌停顺延 / T+1 当日买入不可卖 / 不足一手放弃）→ 原始开盘价 ± 滑点撮合、计佣金与印花税 → 原始收盘价估值记净值（停牌标的沿用最近可得收盘价）。被挡掉的订单全部写进 `skipped.csv`。
+
+---
+
+## 5. 已知近似与局限（重要，看结果前先看这里）
+
+**交易规则层面**
+
+- **涨跌停判定是近似**：用「原始开盘价 ≥ 昨收 × 1.095（或 ≤ 0.905）」或「当日 high == low 的一字板」判定。真实盘口的排队、封板中途打开、部分成交都无法复现。
+- **ST 期间的 5% 涨跌幅未建模**：数据层检测到 ST 只写告警，引擎仍按 10% 处理。默认股票池是非 ST 白马，影响有限；换池子时要留意。
+- **只支持主板 10% 涨跌幅**，创业板/科创板 20% 的分支没写。
+- **除权除息按"分红再投资"假设**：除权日持仓股数 × (今日因子/昨日因子)，现金不变。结果是**持仓股数会变成非整数**，与真实账户"现金分红入账、股数不变"有出入。
+- **成交假设过于友好**：以次日开盘价 ± 0.1% 滑点**全额**成交，不考虑冲击成本、流动性不足、部分成交。
+- **停牌日整行被过滤**，不进指标计算也不交易，等价于信号顺延到复牌后。
+
+**绩效与基准层面**
+
+- **夏普比率用 rf = 0**（简化口径）。中国无风险利率约 1.5–2%，真实夏普应比这里低一些。年化按 252 个交易日折算。
+- **沪深 300 是价格指数，不含成分股分红**，相对策略净值有每年约 2–3% 的天然劣势——**不要拿它当主要参照**。报告里的「等权买入持有」基准用后复权价（分红再投资口径），与策略同权，才是主要对照组。
+- **现金不计利息**，闲置资金收益为 0，长期会低估机会成本对比。
+- **胜率/盈亏比/平均持仓天数只统计已平仓交易**，回测末尾仍持仓的那一笔不计入；持仓天数是自然日不是交易日。
+
+**样本与方法层面**
+
+- **股票池有幸存者偏差**：这 10 只是**今天**回头挑出来的高流动性白马，2016 年时并不知道它们会走成这样。回测收益天然偏乐观，退市股、掉队股一只都没有。
+- **策略参数没有调优也没做样本外检验**（无参数扫描、无前进分析）。现有 `metrics.json` 只是"这条流水线能跑出数"的证据，不是策略有效性的证据。
+- **数据未与交易所对账**：baostock 是免费源，复权因子、停牌标记、成交额都按它给的用。
+
+**工程层面**
+
+- akshare 备选 provider 在设计文档里列了，**v0.1 没有实现**——baostock 挂了就得现写。
+- 无实盘/模拟盘对接、无盘中与分钟级、无定时任务与推送、无组合级风控与止损（都在 v0.2+ 的计划里）。
+
+---
+
+## 6. 开发备忘（三个月后的自己大概率会再踩）
+
+- **baostock 的 `rs.get_data()` 用不得**：0.9.3 版翻页分支调用了 pandas 早已删除的 `DataFrame.append`，首页满 2000 行就抛 `AttributeError`，10 年日线（约 2579 行）必然触发。`BaostockProvider` 里已经改成 `next()` / `get_row_data()` 逐行迭代，别改回去；`tests/test_baostock_integration.py` 有联网回归用例守着（`pytest -m network`）。
+- **数据缓存的增量判据用的是"已请求过的起始日"**（`data/cache/<代码>.meta.json` 里的 `covered_start`），不是"缓存里最早那根 K 线的日期"——后者在 start 落在非交易日（比如默认的 2016-01-01 元旦）时恒为真，会让增量分支变成死代码、每次全量重拉。
+- 增量取数会**回拉 5 天重叠**：盘中跑过一次的话，当天那根未收盘的 K 线会进缓存，靠重叠重拉 + `keep="last"` 覆盖修正。缓存疑似脏了就 `--refresh`。
+- 提交前跑全量测试：`.venv/bin/python -m pytest`。做变异测试时务必加 `PYTHONDONTWRITEBYTECODE=1` 并 `-B`，且先 `rm -rf` 相关 `__pycache__`——等长度改写源码会命中陈旧 `.pyc`，结果完全不可信。
