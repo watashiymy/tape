@@ -2635,6 +2635,15 @@ git commit -m "feat: 引擎 A 股约束（涨跌停顺延/T+1/停牌估值/除�
 
 - [ ] **Step 1: 写失败测试（手算对照）**
 
+**评审加固（Task 11 复审）**：原三条测试对 8 个字段里的 `cagr` 零断言、对 `sharpe` 只断言了
+`std == 0` 的短路分支，32 个变异体中 15 个存活。三处必须钉死：
+① `[100, 110, 99]` 的滚动峰值恰好等于全期最高点，`cummax()` 写成 `max()`（未来函数）数值不变，
+必须补一条峰值出现在低谷**之后**的序列；② 夏普要有一条非零数值断言（口径含 `ddof=1` 与 `sqrt(252)`）
+外加符号方向断言，否则符号反转、去年化、`std(ddof=0)`、`pct_change`→`diff` 全部静默通过；
+③ `cagr` 需要一条能区分 `len(equity)` 与 `len(equity)-1` 口径的断言（126 根 bar 下分别是
+0.4641 与 0.46857）。另补零 pnl 归为亏损、无亏损单时 `profit_factor is None` 两条边界，
+供 Task 12/13/15 消费该字典时依赖。
+
 ```python
 # tests/test_metrics.py
 import pandas as pd
@@ -2655,6 +2664,31 @@ def test_total_return_and_drawdown():
     assert m["max_drawdown"] == pytest.approx(-0.10)   # (99-110)/110
 
 
+def test_max_drawdown_uses_running_peak_not_global_max():
+    # 峰值出现在低谷「之后」：若用全期最高点当基准（未来函数）会算出 -0.55
+    m = compute_metrics(_equity([100, 90, 200]), trades=[])
+    assert m["max_drawdown"] == pytest.approx(-0.10)   # (90-100)/100
+
+
+def test_sharpe_value():
+    # 日收益 [0.10, 0.20, 0.60]：mean=0.3，std(ddof=1)=sqrt(0.14/2)
+    # sharpe = 0.3 / sqrt(0.07) * sqrt(252) = 0.3 * sqrt(3600) = 18.0
+    m = compute_metrics(_equity([100, 110, 132, 211.2]), trades=[])
+    assert m["sharpe"] == pytest.approx(18.0)
+
+
+def test_sharpe_sign_follows_returns():
+    up = compute_metrics(_equity([100, 110, 132, 211.2]), trades=[])["sharpe"]
+    down = compute_metrics(_equity([211.2, 132, 110, 100]), trades=[])["sharpe"]
+    assert up > 0 and down < 0
+
+
+def test_cagr_annualizes_by_bar_count():
+    # 126 根 bar = 0.5 年（252 交易日/年），100 -> 121 → cagr = 1.21**2 - 1
+    m = compute_metrics(_equity([100.0] * 125 + [121.0]), trades=[])
+    assert m["cagr"] == pytest.approx(0.4641)
+
+
 def test_trade_stats():
     t = pd.Timestamp("2024-01-05")
     trades = [
@@ -2670,11 +2704,35 @@ def test_trade_stats():
     assert m["avg_holding_days"] == pytest.approx(20.0)
 
 
+def test_breakeven_trade_counts_as_loss():
+    t = pd.Timestamp("2024-01-05")
+    trades = [
+        Trade("A", "sell", t, 10, 100, 5, 5, pnl=100.0, holding_days=10),
+        Trade("A", "sell", t, 10, 100, 5, 5, pnl=0.0, holding_days=10),
+    ]
+    m = compute_metrics(_equity([100, 101]), trades)
+    assert m["n_trades"] == 2
+    assert m["win_rate"] == pytest.approx(0.5)
+
+
+def test_profit_factor_none_when_no_losses():
+    t = pd.Timestamp("2024-01-05")
+    trades = [Trade("A", "sell", t, 10, 100, 5, 5, pnl=100.0, holding_days=10)]
+    m = compute_metrics(_equity([100, 101]), trades)
+    assert m["profit_factor"] is None
+    assert m["win_rate"] == pytest.approx(1.0)
+
+
 def test_flat_equity_no_crash():
     m = compute_metrics(_equity([100, 100, 100]), trades=[])
     assert m["sharpe"] == 0.0
     assert m["max_drawdown"] == 0.0
 ```
+
+**口径备注**：年化用 `len(equity)`（bar 数）而非 `len(equity) - 1`（区间数），属口径选择不属算错，
+由 `test_cagr_annualizes_by_bar_count` 固定；`profit_factor` 在「无亏损单」「无盈利单」「无平仓单」
+三种情况下一律返回 `None`（避免除零/inf），Task 13/15 格式化前必须判空，
+不能直接 `f"{m['profit_factor']:.2f}"`。
 
 - [ ] **Step 2: 运行确认失败**
 
