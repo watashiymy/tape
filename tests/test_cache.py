@@ -27,6 +27,33 @@ def test_load_missing_returns_none(tmp_path):
     assert BarCache(tmp_path).load("600519") is None
 
 
+def test_meta_roundtrip_and_missing_returns_empty_dict(tmp_path):
+    """meta 缺失必须返回 {} 而不是抛异常：本地已有的老缓存全都没有 meta.json，
+    抛异常会让整个回测入口在第一只标的上就死掉。"""
+    cache = BarCache(tmp_path)
+    assert cache.load_meta("600519") == {}
+    cache.save_meta("600519", {"covered_start": "2016-01-01"})
+    assert cache.load_meta("600519") == {"covered_start": "2016-01-01"}
+    assert cache.load_meta("600036") == {}          # 不能串标的
+
+
+def test_save_meta_is_atomic_and_leaves_no_temp_file(tmp_path):
+    cache = BarCache(tmp_path)
+    cache.save_meta("600519", {"covered_start": "2016-01-01"})
+    assert list(tmp_path.glob("*.tmp")) == []
+    assert (tmp_path / "600519.meta.json").exists()
+
+
+def test_meta_does_not_collide_with_bars_file(tmp_path):
+    """meta 与行情同目录同前缀。写 meta 若覆盖了 parquet，缓存直接全毁。"""
+    cache = BarCache(tmp_path)
+    df = make_bars([_row("2024-01-02", 10.0)])
+    cache.save("600519", df)
+    cache.save_meta("600519", {"covered_start": "2024-01-01"})
+    assert cache.load("600519") is not None
+    assert cache.load("600519")["close"].tolist() == [10.0]
+
+
 def test_merge_dedup_keeps_last():
     old = make_bars([_row("2024-01-02", 10.0), _row("2024-01-03", 11.0)])
     new = make_bars([_row("2024-01-03", 11.5), _row("2024-01-04", 12.0)])

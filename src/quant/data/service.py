@@ -21,11 +21,17 @@ class DataService:
                  refresh: bool = False) -> tuple[pd.DataFrame, list[str]]:
         end = end or date.today()
         cached = None if refresh else self.cache.load(symbol)
+        covered_raw = None if refresh else self.cache.load_meta(symbol).get("covered_start")
+        covered_start = date.fromisoformat(covered_raw) if covered_raw else None
         if cached is None or cached.empty:
             fetch_start = start
-        elif cached.index.min().date() > start:
-            # 缓存头部有缺口（本次 start 早于缓存最早一行）。仍按"缓存最新日回拉重叠"取数的话，
-            # 缺的那段历史永远补不回来，get_bars 会静默返回比请求区间更短的数据。
+        elif covered_start is None or covered_start > start:
+            # 缓存头部有缺口（本次 start 早于**已请求过的**最早日期）。仍按"缓存最新日回拉重叠"
+            # 取数的话，缺的那段历史永远补不回来，get_bars 会静默返回比请求区间更短的数据。
+            #
+            # 判据必须用"已请求过的 start"，不能用"缓存里最早那根 bar 的日期"：
+            # start 落在非交易日时（settings.yaml 的 2016-01-01 是元旦），首根 bar 恒晚于 start，
+            # 该条件永远为真 → 增量分支变成死代码，每次运行都全量重拉 10 年，缓存形同虚设且无告警。
             fetch_start = start
         else:
             # 回拉 OVERLAP_DAYS 天重叠，而不是从"最新日+1天"开始。
@@ -37,6 +43,8 @@ class DataService:
             new = self.provider.get_daily_bars(symbol, fetch_start, end)
             merged = self.cache.merge(cached, new)  # merge 自己会处理 new 为空
             self.cache.save(symbol, merged)
+            self.cache.save_meta(symbol, {"covered_start":
+                                          min(fetch_start, covered_start or fetch_start).isoformat()})
         else:
             merged = cached
         if merged is None or merged.empty:

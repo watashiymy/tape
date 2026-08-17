@@ -26,7 +26,7 @@ config/settings.yaml            # 全部可调参数（Task 1）
 src/quant/__init__.py
 src/quant/config.py             # Settings/Costs 数据类 + YAML 加载（Task 1）
 src/quant/data/__init__.py
-src/quant/data/cache.py         # parquet 缓存：load/save/merge（Task 2）
+src/quant/data/cache.py         # parquet 缓存：load/save/merge + load_meta/save_meta（Task 2）
 src/quant/data/pipeline.py      # prepare_bars 纯函数：停牌过滤/adj_*派生/校验（Task 3）
 src/quant/data/provider.py      # DataProvider 抽象接口（Task 4）
 src/quant/data/baostock_provider.py  # baostock 实现（Task 4）
@@ -485,6 +485,33 @@ def test_load_missing_returns_none(tmp_path):
     assert BarCache(tmp_path).load("600519") is None
 
 
+def test_meta_roundtrip_and_missing_returns_empty_dict(tmp_path):
+    """meta 缺失必须返回 {} 而不是抛异常：本地已有的老缓存全都没有 meta.json，
+    抛异常会让整个回测入口在第一只标的上就死掉。"""
+    cache = BarCache(tmp_path)
+    assert cache.load_meta("600519") == {}
+    cache.save_meta("600519", {"covered_start": "2016-01-01"})
+    assert cache.load_meta("600519") == {"covered_start": "2016-01-01"}
+    assert cache.load_meta("600036") == {}          # 不能串标的
+
+
+def test_save_meta_is_atomic_and_leaves_no_temp_file(tmp_path):
+    cache = BarCache(tmp_path)
+    cache.save_meta("600519", {"covered_start": "2016-01-01"})
+    assert list(tmp_path.glob("*.tmp")) == []
+    assert (tmp_path / "600519.meta.json").exists()
+
+
+def test_meta_does_not_collide_with_bars_file(tmp_path):
+    """meta 与行情同目录同前缀。写 meta 若覆盖了 parquet，缓存直接全毁。"""
+    cache = BarCache(tmp_path)
+    df = make_bars([_row("2024-01-02", 10.0)])
+    cache.save("600519", df)
+    cache.save_meta("600519", {"covered_start": "2024-01-01"})
+    assert cache.load("600519") is not None
+    assert cache.load("600519")["close"].tolist() == [10.0]
+
+
 def test_merge_dedup_keeps_last():
     old = make_bars([_row("2024-01-02", 10.0), _row("2024-01-03", 11.0)])
     new = make_bars([_row("2024-01-03", 11.5), _row("2024-01-04", 12.0)])
@@ -566,9 +593,10 @@ Expected: FAIL（ModuleNotFoundError: quant.data）
 - [ ] **Step 4: 实现 src/quant/data/cache.py（并创建空 `src/quant/data/__init__.py`）**
 
 ```python
-"""行情本地缓存：每标的一个 parquet 文件（spec 决策9）。"""
+"""行情本地缓存：每标的一个 parquet 文件（spec 决策9）+ 一个 meta.json 记录已覆盖区间。"""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -581,6 +609,19 @@ class BarCache:
 
     def _path(self, symbol: str) -> Path:
         return self.cache_dir / f"{symbol}.parquet"
+
+    def _meta_path(self, symbol: str) -> Path:
+        return self.cache_dir / f"{symbol}.meta.json"
+
+    def load_meta(self, symbol: str) -> dict:
+        """已取数区间等元信息。缺文件返回 {}（老缓存自动降级为全量重拉一次后自愈）。"""
+        p = self._meta_path(symbol)
+        return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+
+    def save_meta(self, symbol: str, meta: dict) -> None:
+        tmp = self._meta_path(symbol).with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(meta), encoding="utf-8")
+        tmp.replace(self._meta_path(symbol))
 
     def load(self, symbol: str) -> pd.DataFrame | None:
         p = self._path(symbol)
@@ -938,6 +979,61 @@ def test_second_fetch_is_incremental_with_overlap(tmp_path):
     assert provider.calls[1][1] > date(2024, 1, 1)
 
 
+def test_incremental_still_works_when_start_is_a_holiday(tmp_path):
+    """start 落在非交易日是生产常态（settings.yaml 的 2016-01-01 是元旦）。
+    若用"缓存最早一根 bar 的日期 > start"判头部缺口，首根 bar 恒晚于 start，
+    该条件永远为真 → 增量分支变死代码，每次运行全量重拉 10 年且无任何告警。"""
+    provider, cache = FakeProvider(), BarCache(tmp_path)
+    svc = DataService(provider, cache)
+    holiday_start = date(2023, 12, 31)          # 周日；FakeProvider 首个交易日是 2024-01-01
+    svc.get_bars("600519", holiday_start, date(2024, 1, 31))
+    df, _ = svc.get_bars("600519", holiday_start, date(2024, 1, 31))
+    cached_max = ALL_DAYS[-1]                   # 2024-01-31
+    assert provider.calls[1][1] == cached_max - timedelta(days=OVERLAP_DAYS)
+    assert len(df) == len(ALL_DAYS)             # 增量不能少给数据
+
+
+def test_legacy_cache_without_meta_self_heals_after_one_full_fetch(tmp_path):
+    """本地已有的老缓存没有 meta.json。允许它全量重拉一次补齐元信息，
+    但必须**只此一次**——否则修复等于没修，每次运行照旧全量重拉。"""
+    provider, cache = FakeProvider(), BarCache(tmp_path)
+    svc = DataService(provider, cache)
+    holiday_start = date(2023, 12, 31)           # 用非交易日，才能证伪"按首根 bar 判缺口"
+    svc.get_bars("600519", holiday_start, date(2024, 1, 31))
+    cache._meta_path("600519").unlink()          # 模拟修复前写下的老缓存
+    svc.get_bars("600519", holiday_start, date(2024, 1, 31))
+    assert provider.calls[1][1] == holiday_start                 # 第 2 次：全量，自愈
+    svc.get_bars("600519", holiday_start, date(2024, 1, 31))
+    assert provider.calls[2][1] == ALL_DAYS[-1] - timedelta(days=OVERLAP_DAYS)  # 第 3 次：增量
+
+
+def test_head_backfill_then_next_run_is_incremental(tmp_path):
+    """回补完头部缺口后，covered_start 必须记成更早的那个 start，
+    否则下一次运行又被判成"头部有缺口"，永远全量重拉。"""
+    provider, cache = FakeProvider(), BarCache(tmp_path)
+    svc = DataService(provider, cache)
+    holiday_start = date(2023, 12, 31)           # 用非交易日，才能证伪"按首根 bar 判缺口"
+    svc.get_bars("600519", date(2024, 1, 22), date(2024, 1, 31))
+    svc.get_bars("600519", holiday_start, date(2024, 1, 31))      # 回补头部
+    svc.get_bars("600519", holiday_start, date(2024, 1, 31))
+    assert provider.calls[1][1] == holiday_start
+    assert provider.calls[2][1] == ALL_DAYS[-1] - timedelta(days=OVERLAP_DAYS)
+    assert cache.load_meta("600519")["covered_start"] == "2023-12-31"
+
+
+def test_refresh_resets_covered_start_to_the_new_request(tmp_path):
+    """refresh 会丢掉旧缓存整表。covered_start 若仍停在更早的日期，
+    缓存里其实没有的那段历史会被当成"已覆盖"，此后再也不会补。"""
+    provider, cache = FakeProvider(), BarCache(tmp_path)
+    svc = DataService(provider, cache)
+    svc.get_bars("600519", date(2024, 1, 1), date(2024, 1, 31))
+    svc.get_bars("600519", date(2024, 1, 22), date(2024, 1, 31), refresh=True)
+    assert cache.load_meta("600519")["covered_start"] == "2024-01-22"
+    df, _ = svc.get_bars("600519", date(2024, 1, 1), date(2024, 1, 31))
+    assert provider.calls[2][1] == date(2024, 1, 1)   # 头部确实缺，必须回补
+    assert len(df) == len(ALL_DAYS)
+
+
 def test_overlap_refetch_corrects_stale_intraday_bar(tmp_path):
     """盘中运行会把当天未收盘的 bar 写进缓存。回拉重叠 + merge 的 keep='last'
     必须能用收盘后的正确数据覆盖它——否则这根脏 bar 永久污染此后所有回测。"""
@@ -1018,11 +1114,17 @@ class DataService:
                  refresh: bool = False) -> tuple[pd.DataFrame, list[str]]:
         end = end or date.today()
         cached = None if refresh else self.cache.load(symbol)
+        covered_raw = None if refresh else self.cache.load_meta(symbol).get("covered_start")
+        covered_start = date.fromisoformat(covered_raw) if covered_raw else None
         if cached is None or cached.empty:
             fetch_start = start
-        elif cached.index.min().date() > start:
-            # 缓存头部有缺口（本次 start 早于缓存最早一行）。仍按"缓存最新日回拉重叠"取数的话，
-            # 缺的那段历史永远补不回来，get_bars 会静默返回比请求区间更短的数据。
+        elif covered_start is None or covered_start > start:
+            # 缓存头部有缺口（本次 start 早于**已请求过的**最早日期）。仍按"缓存最新日回拉重叠"
+            # 取数的话，缺的那段历史永远补不回来，get_bars 会静默返回比请求区间更短的数据。
+            #
+            # 判据必须用"已请求过的 start"，不能用"缓存里最早那根 bar 的日期"：
+            # start 落在非交易日时（settings.yaml 的 2016-01-01 是元旦），首根 bar 恒晚于 start，
+            # 该条件永远为真 → 增量分支变成死代码，每次运行都全量重拉 10 年，缓存形同虚设且无告警。
             fetch_start = start
         else:
             # 回拉 OVERLAP_DAYS 天重叠，而不是从"最新日+1天"开始。
@@ -1034,6 +1136,8 @@ class DataService:
             new = self.provider.get_daily_bars(symbol, fetch_start, end)
             merged = self.cache.merge(cached, new)  # merge 自己会处理 new 为空
             self.cache.save(symbol, merged)
+            self.cache.save_meta(symbol, {"covered_start":
+                                          min(fetch_start, covered_start or fetch_start).isoformat()})
         else:
             merged = cached
         if merged is None or merged.empty:
@@ -2997,7 +3101,85 @@ git commit -m "feat: 净值/回撤与K线买卖点图表"
 
 **Files:**
 - Create: `scripts/run_backtest.py`
-- Test: 手动端到端验收（真实数据，联网）
+- Test: `tests/test_run_backtest.py`（离线，覆盖落盘与基准口径）+ 手动端到端验收（真实数据，联网）
+
+- [ ] **Step 0: 先写 tests/test_run_backtest.py 并运行确认失败**
+
+```python
+# tests/test_run_backtest.py
+import importlib.util
+from pathlib import Path
+
+import pandas as pd
+import pytest
+
+from quant.backtest.portfolio import Trade
+
+_SPEC = importlib.util.spec_from_file_location(
+    "run_backtest", Path(__file__).resolve().parent.parent / "scripts" / "run_backtest.py")
+run_backtest = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(run_backtest)
+
+
+def _trade(symbol="600519", action="buy"):
+    return Trade(symbol=symbol, action=action, date=pd.Timestamp("2024-01-05"),
+                 price=10.0, shares=100, commission=5.0)
+
+
+def test_trades_csv_keeps_header_when_no_trades(tmp_path):
+    """零成交是真实结果（暖机期吃满全部 K 线时就会发生），不是异常。
+    不带表头写出的 trades.csv 只有一个换行符，下游 pd.read_csv 直接 EmptyDataError——
+    面板/报告一打开就崩，而回测本身其实跑成功了。"""
+    path = tmp_path / "trades.csv"
+    run_backtest.write_trades([], path)
+    df = pd.read_csv(path)          # 修复前：EmptyDataError: No columns to parse from file
+    assert df.empty
+    assert list(df.columns) == run_backtest.TRADE_COLUMNS
+
+
+def test_trades_csv_columns_match_trade_fields(tmp_path):
+    """空表表头必须与有成交时的列**逐字一致**，否则下游按列名取值会在空表上 KeyError。"""
+    path = tmp_path / "trades.csv"
+    run_backtest.write_trades([_trade()], path)
+    filled = pd.read_csv(path, dtype={"symbol": str})   # 不指定则 000333 会被读成 333
+    assert list(filled.columns) == run_backtest.TRADE_COLUMNS
+    assert filled["symbol"].tolist() == ["600519"]
+    assert filled["commission"].tolist() == [5.0]
+
+    empty_path = tmp_path / "empty.csv"
+    run_backtest.write_trades([], empty_path)
+    assert list(pd.read_csv(empty_path).columns) == list(filled.columns)
+
+
+def test_no_trade_field_is_silently_dropped(tmp_path):
+    """显式传 columns 的代价是漏列即静默丢数据（to_csv 根本不写那一列）。
+    卖出行的 pnl / holding_days 是绩效复核的唯一依据，丢了不会报错只会算错。"""
+    sold = Trade(symbol="600519", action="sell", date=pd.Timestamp("2024-02-05"),
+                 price=12.0, shares=100, commission=5.0, stamp=0.6,
+                 pnl=190.0, holding_days=31)
+    path = tmp_path / "trades.csv"
+    run_backtest.write_trades([sold], path)
+    got = pd.read_csv(path, dtype=str).iloc[0].to_dict()   # dtype=str：逐字比对写出的内容
+    expected = {k: str(v) for k, v in vars(sold).items()} | {"date": "2024-02-05"}
+    assert got == expected
+
+
+def test_equal_weight_hold_normalizes_each_symbol_to_one():
+    """基准是"等权买入持有"：每只先按各自首日归一再取均值。
+    直接对价格取均值会让高价股主导基准，贵州茅台一只就能决定曲线形状。"""
+    idx = pd.bdate_range("2024-01-01", periods=3)
+    bars = {
+        "A": pd.DataFrame({"adj_close": [100.0, 110.0, 120.0]}, index=idx),
+        "B": pd.DataFrame({"adj_close": [10.0, 10.0, 10.0]}, index=idx),
+    }
+    got = run_backtest.equal_weight_hold(bars)
+    assert got.iloc[0] == pytest.approx(1.0)
+    assert got.iloc[1] == pytest.approx((1.1 + 1.0) / 2)
+    assert got.iloc[2] == pytest.approx((1.2 + 1.0) / 2)
+```
+
+Run: `.venv/bin/python -m pytest tests/test_run_backtest.py -v`
+Expected: FAIL（模块尚不存在 / 零成交时 trades.csv 无表头 → EmptyDataError）
 
 - [ ] **Step 1: 实现 scripts/run_backtest.py**
 
@@ -3010,6 +3192,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import fields
 from datetime import datetime
 from pathlib import Path
 
@@ -3018,6 +3201,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from quant.backtest.engine import Backtester
+from quant.backtest.portfolio import Trade
 from quant.config import load_settings
 from quant.data.baostock_provider import BaostockProvider
 from quant.data.cache import BarCache
@@ -3027,6 +3211,16 @@ from quant.report.metrics import compute_metrics
 from quant.strategy import build_strategies
 
 OUTPUT = Path("output")
+
+# 显式列名从 Trade 字段派生：加字段不会漏列，零成交时表头也不会消失。
+TRADE_COLUMNS = [f.name for f in fields(Trade)]
+
+
+def write_trades(trades: list[Trade], path: Path) -> None:
+    """成交流水落盘。必须显式给 columns：零成交（暖机期吃满全部 K 线时就会发生）时
+    pd.DataFrame([]) 一列都没有，写出的文件只有一个换行符，
+    下游 pd.read_csv 直接 EmptyDataError——回测明明跑成功了，面板一开就崩。"""
+    pd.DataFrame([vars(t) for t in trades], columns=TRADE_COLUMNS).to_csv(path, index=False)
 
 
 def equal_weight_hold(bars: dict[str, pd.DataFrame]) -> pd.Series:
@@ -3075,7 +3269,7 @@ def main() -> None:
         (run_dir / "metrics.json").write_text(
             json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
         result.equity.rename("equity").to_csv(run_dir / "equity.csv")
-        pd.DataFrame([vars(t) for t in result.trades]).to_csv(run_dir / "trades.csv", index=False)
+        write_trades(result.trades, run_dir / "trades.csv")
         pd.DataFrame(result.skipped, columns=["date", "symbol", "reason"]).to_csv(
             run_dir / "skipped.csv", index=False)
         equity_chart(result.equity, benchmarks).write_html(run_dir / "report.html")
@@ -3103,8 +3297,13 @@ Expected:
 
 - [ ] **Step 3: 再跑一次验证增量缓存**
 
-Run: `.venv/bin/python scripts/run_backtest.py --strategy ma_cross`
-Expected: 数据加载明显加快（走缓存），结果目录正常生成
+Run: `time .venv/bin/python scripts/run_backtest.py --strategy ma_cross`
+Expected（"明显加快"必须量化，否则增量分支静默失效也看不出来）:
+- 总耗时比 Step 2 至少快一个数量级（实测 45s → 6s）
+- `data/cache/<代码>.meta.json` 存在且 `covered_start` 等于 settings 的 start
+- 若第二次仍与第一次同量级慢，说明走了全量重拉分支，**不要**归因于网络抖动，去查
+  `DataService.get_bars` 的头部缺口判据（历史 bug：用首根 bar 日期比 start，
+  start 是元旦时该条件恒真）
 
 - [ ] **Step 4: 人工合理性检查（不是测试，是学习环节——打开看！）**
 
@@ -3115,7 +3314,7 @@ Expected: 数据加载明显加快（走缓存），结果目录正常生成
 - [ ] **Step 5: Commit**
 
 ```bash
-git add scripts/run_backtest.py
+git add scripts/run_backtest.py tests/test_run_backtest.py
 git commit -m "feat: 回测入口（含基准对比与报告输出）"
 ```
 

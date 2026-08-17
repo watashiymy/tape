@@ -1,6 +1,7 @@
-"""行情本地缓存：每标的一个 parquet 文件（spec 决策9）。"""
+"""行情本地缓存：每标的一个 parquet 文件（spec 决策9）+ 一个 meta.json 记录已覆盖区间。"""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -13,6 +14,19 @@ class BarCache:
 
     def _path(self, symbol: str) -> Path:
         return self.cache_dir / f"{symbol}.parquet"
+
+    def _meta_path(self, symbol: str) -> Path:
+        return self.cache_dir / f"{symbol}.meta.json"
+
+    def load_meta(self, symbol: str) -> dict:
+        """已取数区间等元信息。缺文件返回 {}（老缓存自动降级为全量重拉一次后自愈）。"""
+        p = self._meta_path(symbol)
+        return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+
+    def save_meta(self, symbol: str, meta: dict) -> None:
+        tmp = self._meta_path(symbol).with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(meta), encoding="utf-8")
+        tmp.replace(self._meta_path(symbol))
 
     def load(self, symbol: str) -> pd.DataFrame | None:
         p = self._path(symbol)

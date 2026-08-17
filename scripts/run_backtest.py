@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import fields
 from datetime import datetime
 from pathlib import Path
 
@@ -14,6 +15,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from quant.backtest.engine import Backtester
+from quant.backtest.portfolio import Trade
 from quant.config import load_settings
 from quant.data.baostock_provider import BaostockProvider
 from quant.data.cache import BarCache
@@ -23,6 +25,16 @@ from quant.report.metrics import compute_metrics
 from quant.strategy import build_strategies
 
 OUTPUT = Path("output")
+
+# 显式列名从 Trade 字段派生：加字段不会漏列，零成交时表头也不会消失。
+TRADE_COLUMNS = [f.name for f in fields(Trade)]
+
+
+def write_trades(trades: list[Trade], path: Path) -> None:
+    """成交流水落盘。必须显式给 columns：零成交（暖机期吃满全部 K 线时就会发生）时
+    pd.DataFrame([]) 一列都没有，写出的文件只有一个换行符，
+    下游 pd.read_csv 直接 EmptyDataError——回测明明跑成功了，面板一开就崩。"""
+    pd.DataFrame([vars(t) for t in trades], columns=TRADE_COLUMNS).to_csv(path, index=False)
 
 
 def equal_weight_hold(bars: dict[str, pd.DataFrame]) -> pd.Series:
@@ -71,7 +83,7 @@ def main() -> None:
         (run_dir / "metrics.json").write_text(
             json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
         result.equity.rename("equity").to_csv(run_dir / "equity.csv")
-        pd.DataFrame([vars(t) for t in result.trades]).to_csv(run_dir / "trades.csv", index=False)
+        write_trades(result.trades, run_dir / "trades.csv")
         pd.DataFrame(result.skipped, columns=["date", "symbol", "reason"]).to_csv(
             run_dir / "skipped.csv", index=False)
         equity_chart(result.equity, benchmarks).write_html(run_dir / "report.html")
