@@ -48,16 +48,23 @@ class Backtester:
                             for sl in slots.values())
         return BacktestResult(pd.Series(equity).sort_index(), trades, skipped)
 
-    # --- Task 10 中补全涨跌停判定与除权调整；本任务给出占位实现 ---
-
     def _apply_factor(self, slot: Slot, row: pd.Series) -> None:
-        pass  # Task 10 实现
+        """除权除息日按后复权因子比率调整持仓股数（等效分红再投资，spec §8 步骤4）。"""
+        f = float(row["adj_factor"])
+        if slot.shares > 0 and slot.last_factor is not None and f != slot.last_factor:
+            slot.shares *= f / slot.last_factor
 
     def _limit_up(self, row: pd.Series, prev_close: float | None) -> bool:
-        return False  # Task 10 实现
+        if prev_close is None:
+            return False
+        one_word = row["high"] == row["low"] and row["close"] > prev_close
+        return float(row["open"]) >= prev_close * LIMIT_UP_RATIO or bool(one_word)
 
     def _limit_down(self, row: pd.Series, prev_close: float | None) -> bool:
-        return False  # Task 10 实现
+        if prev_close is None:
+            return False
+        one_word = row["high"] == row["low"] and row["close"] < prev_close
+        return float(row["open"]) <= prev_close * LIMIT_DOWN_RATIO or bool(one_word)
 
     def _try_buy(self, slot: Slot, row: pd.Series, t: pd.Timestamp,
                  trades: list[Trade], skipped: list[tuple]) -> None:
