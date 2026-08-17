@@ -1,0 +1,101 @@
+"""Streamlit 本地面板：streamlit run app/dashboard.py
+三页面：回测报告 / 个股K线 / 今日信号。只读 output/ 与 data/cache/，不触发任何计算。"""
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+import pandas as pd
+import streamlit as st
+import streamlit.components.v1 as components  # 显式导入：部分版本下 st.components 不自动可用
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "src"))
+
+from quant.backtest.portfolio import Trade  # noqa: E402
+from quant.data.cache import BarCache       # noqa: E402
+from quant.data.pipeline import prepare_bars  # noqa: E402
+from quant.report.charts import kline_chart   # noqa: E402
+
+OUTPUT = ROOT / "output"
+
+METRIC_LABELS = {
+    "total_return": "总收益率", "cagr": "年化收益率", "max_drawdown": "最大回撤",
+    "sharpe": "夏普比率(rf=0)", "n_trades": "交易次数", "win_rate": "胜率",
+    "profit_factor": "盈亏比", "avg_holding_days": "平均持仓天数",
+}
+
+
+def list_runs() -> list[Path]:
+    if not OUTPUT.exists():
+        return []
+    return sorted((p for p in OUTPUT.iterdir()
+                   if p.is_dir() and (p / "metrics.json").exists()), reverse=True)
+
+
+def page_backtest() -> None:
+    runs = list_runs()
+    if not runs:
+        st.info("暂无回测结果。先运行: python scripts/run_backtest.py")
+        return
+    run = st.selectbox("选择回测", runs, format_func=lambda p: p.name)
+    metrics = json.loads((run / "metrics.json").read_text(encoding="utf-8"))
+    cols = st.columns(4)
+    for i, (k, label) in enumerate(METRIC_LABELS.items()):
+        v = metrics.get(k)
+        text = "—" if v is None else (f"{v:.2%}" if k in
+                ("total_return", "cagr", "max_drawdown", "win_rate") else f"{v:.2f}")
+        cols[i % 4].metric(label, text)
+    components.html((run / "report.html").read_text(encoding="utf-8"),
+                    height=650, scrolling=True)
+    st.subheader("交易明细")
+    st.dataframe(pd.read_csv(run / "trades.csv"), use_container_width=True)
+    skipped = run / "skipped.csv"
+    if skipped.exists():
+        st.subheader("被跳过的订单（涨跌停/资金不足等）")
+        st.dataframe(pd.read_csv(skipped), use_container_width=True)
+
+
+def page_kline() -> None:
+    runs = list_runs()
+    if not runs:
+        st.info("暂无回测结果。先运行: python scripts/run_backtest.py")
+        return
+    run = st.selectbox("选择回测", runs, format_func=lambda p: p.name)
+    trades_df = pd.read_csv(run / "trades.csv")
+    symbols = sorted({p.stem.replace("kline_", "") for p in run.glob("kline_*.html")})
+    sym = st.selectbox("选择标的", symbols)
+    raw = BarCache(ROOT / "data" / "cache").load(sym)
+    if raw is None:
+        st.error(f"缓存中无 {sym} 行情")
+        return
+    df, _ = prepare_bars(raw)
+    sym_trades = [
+        Trade(r.symbol, r.action, pd.Timestamp(r.date), r.price, r.shares, r.commission)
+        for r in trades_df[trades_df["symbol"].astype(str).str.zfill(6) == sym].itertuples()
+    ]
+    st.plotly_chart(kline_chart(df, sym_trades, sym), use_container_width=True)
+
+
+def page_signals() -> None:
+    sig_dir = OUTPUT / "signals"
+    files = sorted(sig_dir.glob("*.csv"), reverse=True) if sig_dir.exists() else []
+    if not files:
+        st.info("暂无信号记录。收盘后运行: python scripts/run_daily_signal.py")
+        return
+    latest = files[0]
+    st.subheader(f"最新信号（{latest.stem}）")
+    df = pd.read_csv(latest)
+    st.dataframe(df, use_container_width=True) if len(df) else st.write("当日无新信号")
+    if len(files) > 1:
+        st.subheader("历史信号")
+        hist = pd.concat([pd.read_csv(f) for f in files[1:]], ignore_index=True)
+        st.dataframe(hist, use_container_width=True) if len(hist) else st.write("无")
+
+
+st.set_page_config(page_title="quant_demo v0.1", layout="wide")
+st.sidebar.title("quant_demo")
+page = st.sidebar.radio("页面", ["回测报告", "个股K线", "今日信号"])
+st.sidebar.caption("本面板纯只读；回测与信号请用命令行运行。策略仅用于学习，不构成投资建议。")
+{"回测报告": page_backtest, "个股K线": page_kline, "今日信号": page_signals}[page]()
