@@ -3586,6 +3586,7 @@ git commit -m "feat: 每日信号扫描与入口脚本"
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -3610,11 +3611,23 @@ METRIC_LABELS = {
 }
 
 
+RUN_STAMP = re.compile(r"_(\d{8}_\d{6})$")   # run_backtest.py 的 {策略}_{YYYYMMDD}_{HHMMSS}
+
+
+def _run_key(p: Path) -> tuple[str, str]:
+    """按目录名尾部的时间戳排序。直接 sorted(paths, reverse=True) 比的是整条路径字符串，
+    策略名会压过时间戳（"ma_cross_" > "donchian_"），默认选中的就不是最新那次回测。
+    没有时间戳的目录归到最后（reverse=True 下空串最小）。"""
+    m = RUN_STAMP.search(p.name)
+    return (m.group(1) if m else "", p.name)
+
+
 def list_runs() -> list[Path]:
     if not OUTPUT.exists():
         return []
     return sorted((p for p in OUTPUT.iterdir()
-                   if p.is_dir() and (p / "metrics.json").exists()), reverse=True)
+                   if p.is_dir() and (p / "metrics.json").exists()),
+                  key=_run_key, reverse=True)
 
 
 def page_backtest() -> None:
@@ -3633,11 +3646,14 @@ def page_backtest() -> None:
     components.html((run / "report.html").read_text(encoding="utf-8"),
                     height=650, scrolling=True)
     st.subheader("交易明细")
-    st.dataframe(pd.read_csv(run / "trades.csv"), use_container_width=True)
+    # dtype 必须显式给：symbol 写出去是字符串 "000333"，pd.read_csv 会推断成 int64
+    # 吃掉前导零，表里就显示成不存在的股票代码 333（所有深市 000xxx 都中招）
+    st.dataframe(pd.read_csv(run / "trades.csv", dtype={"symbol": str}),
+                 use_container_width=True)
     skipped = run / "skipped.csv"
     if skipped.exists():
         st.subheader("被跳过的订单（涨跌停/资金不足等）")
-        st.dataframe(pd.read_csv(skipped), use_container_width=True)
+        st.dataframe(pd.read_csv(skipped, dtype={"symbol": str}), use_container_width=True)
 
 
 def page_kline() -> None:
@@ -3646,7 +3662,7 @@ def page_kline() -> None:
         st.info("暂无回测结果。先运行: python scripts/run_backtest.py")
         return
     run = st.selectbox("选择回测", runs, format_func=lambda p: p.name)
-    trades_df = pd.read_csv(run / "trades.csv")
+    trades_df = pd.read_csv(run / "trades.csv", dtype={"symbol": str})
     symbols = sorted({p.stem.replace("kline_", "") for p in run.glob("kline_*.html")})
     sym = st.selectbox("选择标的", symbols)
     raw = BarCache(ROOT / "data" / "cache").load(sym)
@@ -3669,12 +3685,23 @@ def page_signals() -> None:
         return
     latest = files[0]
     st.subheader(f"最新信号（{latest.stem}）")
-    df = pd.read_csv(latest)
-    st.dataframe(df, use_container_width=True) if len(df) else st.write("当日无新信号")
+    df = pd.read_csv(latest, dtype={"symbol": str})
+    # 必须写成 if/else 语句：streamlit 的 magic 会把函数体内**裸的三元表达式**
+    # （ast.IfExp，不属于它豁免的 ast.Call）整个包进 st.write()，
+    # 于是 st.dataframe() 的返回值 DeltaGenerator 被 st.write 当对象内省，
+    # 把整份 Streamlit API 手册糊在信号表下面；无信号那天则渲染出一个 `None`。
+    if len(df):
+        st.dataframe(df, use_container_width=True)
+    else:
+        st.write("当日无新信号")
     if len(files) > 1:
         st.subheader("历史信号")
-        hist = pd.concat([pd.read_csv(f) for f in files[1:]], ignore_index=True)
-        st.dataframe(hist, use_container_width=True) if len(hist) else st.write("无")
+        hist = pd.concat([pd.read_csv(f, dtype={"symbol": str}) for f in files[1:]],
+                         ignore_index=True)
+        if len(hist):
+            st.dataframe(hist, use_container_width=True)
+        else:
+            st.write("无")
 
 
 st.set_page_config(page_title="quant_demo v0.1", layout="wide")
@@ -3684,24 +3711,127 @@ st.sidebar.caption("本面板纯只读；回测与信号请用命令行运行。
 {"回测报告": page_backtest, "个股K线": page_kline, "今日信号": page_signals}[page]()
 ```
 
-- [ ] **Step 2: 写导入冒烟测试**
+- [ ] **Step 2: 写冒烟测试 + 三条回归测试**
+
+三条回归测试各自钉死一个真实踩过的坑：streamlit magic 把裸三元包进 `st.write`、`pd.read_csv` 吃掉 `000333` 的前导零、`list_runs()` 按路径字符串排序导致默认选中的不是最新回测。`_load_dashboard` 把 dashboard.py 复制到 tmp_path 再加载，使 `ROOT`/`OUTPUT` 落在临时目录，与仓库真实 `output/` 隔离。
 
 ```python
 # tests/test_dashboard_import.py
 import ast
+import importlib.util
+import shutil
 from pathlib import Path
+
+import pandas as pd
+import streamlit as st
+
+DASHBOARD = Path("app/dashboard.py")
 
 
 def test_dashboard_syntax_ok():
     """streamlit 脚本无法直接 import 测试（顶层执行 UI 代码），至少保证语法正确。"""
-    src = Path("app/dashboard.py").read_text(encoding="utf-8")
+    src = DASHBOARD.read_text(encoding="utf-8")
     ast.parse(src)
+
+
+def test_no_statement_is_wrapped_by_streamlit_magic():
+    """streamlit 的 magic 会把函数体里**裸的表达式语句**包进
+    __streamlitmagic__.transparent_write()（= st.write）。它只豁免 ast.Call /
+    docstring / yield / await，裸三元 ast.IfExp 不在名单里：
+    `st.dataframe(...) if len(df) else st.write("...")` 会被整条包起来，
+    于是 st.dataframe() 返回的 DeltaGenerator 被 st.write 走对象内省分支，
+    把约 90 行 Streamlit API 方法表糊在信号表下面；走 else 分支那天则渲染出一个 `None`。
+    只在 `streamlit run` 下发作，普通 import 察觉不到，所以这里直接跑它的 AST 改写。
+    """
+    from streamlit.runtime.scriptrunner import magic
+
+    tree = magic.add_magic(DASHBOARD.read_text(encoding="utf-8"), str(DASHBOARD))
+    wrapped = [
+        f"L{n.lineno}: {ast.unparse(n)}"
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "transparent_write"
+    ]
+    assert wrapped == [], (
+        "以下语句会被 streamlit magic 悄悄包进 st.write（请改写成 if/else 语句）:\n"
+        + "\n".join(wrapped)
+    )
+
+
+def _load_dashboard(tmp_path, monkeypatch, page):
+    """把 dashboard.py 复制到临时根目录再加载，使 ROOT/OUTPUT 落在 tmp_path，
+    与仓库真实 output/ 完全隔离（quant 是 editable 安装，import 不受 sys.path 影响）。
+    返回 (模块, 该页渲染时喂给 st.dataframe 的 DataFrame 列表)。"""
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    shutil.copy(DASHBOARD, app_dir / "dashboard.py")
+    frames: list[pd.DataFrame] = []
+    # 顶层代码在 exec_module 时就会渲染选中页，所以桩必须先装好
+    monkeypatch.setattr(st.sidebar, "radio", lambda *a, **k: page)
+    monkeypatch.setattr(st, "dataframe", lambda df, *a, **k: frames.append(df))
+    spec = importlib.util.spec_from_file_location(
+        f"dashboard_under_test_{page}", app_dir / "dashboard.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod, frames
+
+
+def test_backtest_page_keeps_leading_zero_symbols(tmp_path, monkeypatch):
+    """trades.csv / skipped.csv 里 symbol 是字符串 000333，pd.read_csv 不带 dtype
+    会把整列推断成 int64 吃掉前导零，表里显示成不存在的股票代码 333。"""
+    run = tmp_path / "output" / "ma_cross_20260817_121152"
+    run.mkdir(parents=True)
+    (run / "metrics.json").write_text('{"total_return": 0.1}', encoding="utf-8")
+    (run / "report.html").write_text("<html></html>", encoding="utf-8")
+    (run / "trades.csv").write_text(
+        "symbol,action,date,price,shares,commission\n"
+        "000333,buy,2016-04-05,10.0,100,5.0\n", encoding="utf-8")
+    (run / "skipped.csv").write_text(
+        "symbol,date,reason\n000001,2016-04-05,涨停\n", encoding="utf-8")
+
+    _, frames = _load_dashboard(tmp_path, monkeypatch, "回测报告")
+
+    assert [f["symbol"].tolist() for f in frames] == [["000333"], ["000001"]]
+
+
+def test_signal_page_keeps_leading_zero_symbols(tmp_path, monkeypatch):
+    """今日信号页（最新 + 历史）同样不能吃掉前导零。"""
+    sig = tmp_path / "output" / "signals"
+    sig.mkdir(parents=True)
+    header = "symbol,date,strategy,signal,close\n"
+    (sig / "2026-08-14.csv").write_text(
+        header + "000333,2026-08-14,ma_cross,buy,10.0\n", encoding="utf-8")
+    (sig / "2026-08-13.csv").write_text(
+        header + "000001,2026-08-13,ma_cross,sell,9.0\n", encoding="utf-8")
+
+    _, frames = _load_dashboard(tmp_path, monkeypatch, "今日信号")
+
+    assert [f["symbol"].tolist() for f in frames] == [["000333"], ["000001"]]
+
+
+def test_list_runs_puts_newest_first_regardless_of_strategy_name(tmp_path, monkeypatch):
+    """目录名是 {策略}_{YYYYMMDD}_{HHMMSS}；按整条路径字符串排序会让策略名压过时间戳
+    （"ma_cross_" > "donchian_"），面板默认选中的就不是最新那次回测。"""
+    out = tmp_path / "output"
+    for name in ("ma_cross_20260817_121152", "donchian_20260817_123313",
+                 "ma_cross_20200101_000000"):
+        (out / name).mkdir(parents=True)
+        (out / name / "metrics.json").write_text("{}", encoding="utf-8")
+
+    mod, _ = _load_dashboard(tmp_path, monkeypatch, "今日信号")  # 信号页不读 run 目录
+
+    assert [p.name for p in mod.list_runs()] == [
+        "donchian_20260817_123313",      # 最新
+        "ma_cross_20260817_121152",
+        "ma_cross_20200101_000000",      # 最旧
+    ]
 ```
 
 - [ ] **Step 3: 运行测试**
 
 Run: `.venv/bin/python -m pytest tests/test_dashboard_import.py -v`
-Expected: 1 passed
+Expected: 5 passed
 
 - [ ] **Step 4: 手动验收**
 

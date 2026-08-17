@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -27,11 +28,23 @@ METRIC_LABELS = {
 }
 
 
+RUN_STAMP = re.compile(r"_(\d{8}_\d{6})$")   # run_backtest.py 的 {策略}_{YYYYMMDD}_{HHMMSS}
+
+
+def _run_key(p: Path) -> tuple[str, str]:
+    """按目录名尾部的时间戳排序。直接 sorted(paths, reverse=True) 比的是整条路径字符串，
+    策略名会压过时间戳（"ma_cross_" > "donchian_"），默认选中的就不是最新那次回测。
+    没有时间戳的目录归到最后（reverse=True 下空串最小）。"""
+    m = RUN_STAMP.search(p.name)
+    return (m.group(1) if m else "", p.name)
+
+
 def list_runs() -> list[Path]:
     if not OUTPUT.exists():
         return []
     return sorted((p for p in OUTPUT.iterdir()
-                   if p.is_dir() and (p / "metrics.json").exists()), reverse=True)
+                   if p.is_dir() and (p / "metrics.json").exists()),
+                  key=_run_key, reverse=True)
 
 
 def page_backtest() -> None:
@@ -50,11 +63,14 @@ def page_backtest() -> None:
     components.html((run / "report.html").read_text(encoding="utf-8"),
                     height=650, scrolling=True)
     st.subheader("交易明细")
-    st.dataframe(pd.read_csv(run / "trades.csv"), use_container_width=True)
+    # dtype 必须显式给：symbol 写出去是字符串 "000333"，pd.read_csv 会推断成 int64
+    # 吃掉前导零，表里就显示成不存在的股票代码 333（所有深市 000xxx 都中招）
+    st.dataframe(pd.read_csv(run / "trades.csv", dtype={"symbol": str}),
+                 use_container_width=True)
     skipped = run / "skipped.csv"
     if skipped.exists():
         st.subheader("被跳过的订单（涨跌停/资金不足等）")
-        st.dataframe(pd.read_csv(skipped), use_container_width=True)
+        st.dataframe(pd.read_csv(skipped, dtype={"symbol": str}), use_container_width=True)
 
 
 def page_kline() -> None:
@@ -63,7 +79,7 @@ def page_kline() -> None:
         st.info("暂无回测结果。先运行: python scripts/run_backtest.py")
         return
     run = st.selectbox("选择回测", runs, format_func=lambda p: p.name)
-    trades_df = pd.read_csv(run / "trades.csv")
+    trades_df = pd.read_csv(run / "trades.csv", dtype={"symbol": str})
     symbols = sorted({p.stem.replace("kline_", "") for p in run.glob("kline_*.html")})
     sym = st.selectbox("选择标的", symbols)
     raw = BarCache(ROOT / "data" / "cache").load(sym)
@@ -86,12 +102,23 @@ def page_signals() -> None:
         return
     latest = files[0]
     st.subheader(f"最新信号（{latest.stem}）")
-    df = pd.read_csv(latest)
-    st.dataframe(df, use_container_width=True) if len(df) else st.write("当日无新信号")
+    df = pd.read_csv(latest, dtype={"symbol": str})
+    # 必须写成 if/else 语句：streamlit 的 magic 会把函数体内**裸的三元表达式**
+    # （ast.IfExp，不属于它豁免的 ast.Call）整个包进 st.write()，
+    # 于是 st.dataframe() 的返回值 DeltaGenerator 被 st.write 当对象内省，
+    # 把整份 Streamlit API 手册糊在信号表下面；无信号那天则渲染出一个 `None`。
+    if len(df):
+        st.dataframe(df, use_container_width=True)
+    else:
+        st.write("当日无新信号")
     if len(files) > 1:
         st.subheader("历史信号")
-        hist = pd.concat([pd.read_csv(f) for f in files[1:]], ignore_index=True)
-        st.dataframe(hist, use_container_width=True) if len(hist) else st.write("无")
+        hist = pd.concat([pd.read_csv(f, dtype={"symbol": str}) for f in files[1:]],
+                         ignore_index=True)
+        if len(hist):
+            st.dataframe(hist, use_container_width=True)
+        else:
+            st.write("无")
 
 
 st.set_page_config(page_title="quant_demo v0.1", layout="wide")
