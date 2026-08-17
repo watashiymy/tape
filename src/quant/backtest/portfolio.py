@@ -23,6 +23,7 @@ class Trade:
 class Slot:
     symbol: str
     cash: float
+    budget: float = 0.0        # 固定额度=初始本金/N，不随权益浮动（spec §8）
     shares: float = 0.0
     entry_date: pd.Timestamp | None = None
     cost_basis: float = 0.0     # 本轮持仓累计买入支出（含费用）

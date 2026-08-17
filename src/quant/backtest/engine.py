@@ -24,7 +24,7 @@ class Backtester:
     def run(self) -> BacktestResult:
         symbols = list(self.bars)
         budget = self.settings.capital / len(symbols)
-        slots = {s: Slot(symbol=s, cash=budget) for s in symbols}
+        slots = {s: Slot(symbol=s, cash=budget, budget=budget) for s in symbols}
         calendar = sorted(set().union(*[set(df.index) for df in self.bars.values()]))
         equity: dict[pd.Timestamp, float] = {}
         trades: list[Trade] = []
@@ -66,8 +66,11 @@ class Backtester:
             return
         cfg = self.settings.costs
         px = float(row["open"]) * (1 + cfg.slippage)
-        qty = int(slot.cash // (px * 100)) * 100
-        while qty >= 100 and qty * px + commission(qty * px, cfg) > slot.cash:
+        # 建仓规模以「固定额度」与「可用现金」二者取小为准：赚到的钱留作闲置现金，
+        # 不放大下一轮仓位（spec §8：每只资金上限=初始本金/N，不随权益浮动）
+        spendable = min(slot.cash, slot.budget)
+        qty = int(spendable // (px * 100)) * 100
+        while qty >= 100 and qty * px + commission(qty * px, cfg) > spendable:
             qty -= 100
         if qty < 100:
             skipped.append((t, slot.symbol, "资金不足一手，放弃"))
