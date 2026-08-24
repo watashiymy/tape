@@ -122,34 +122,61 @@ def page_kline() -> None:
     st.plotly_chart(kline_chart(df, sym_trades, sym), use_container_width=True)
 
 
-def page_signals() -> None:
-    sig_dir = OUTPUT / "signals"
-    files = sorted(sig_dir.glob("*.csv"), reverse=True) if sig_dir.exists() else []
+def scan_section() -> None:
+    """全市场扫描区块（v0.1.1）：读 output/scan/ 最新 CSV，只读展示，无按钮。"""
+    scan_dir = OUTPUT / "scan"
+    # 文件名是 YYYY-MM-DD.csv，ISO 日期字典序即时间序，reverse 后 [0] 就是最新
+    files = sorted(scan_dir.glob("*.csv"), reverse=True) if scan_dir.exists() else []
     if not files:
-        st.info("暂无信号记录。收盘后运行: python scripts/run_daily_signal.py")
+        st.info("暂无全市场扫描结果。收盘后运行: python scripts/run_market_scan.py")
         return
     latest = files[0]
-    st.subheader(f"最新信号（{latest.stem}）")
-    df = pd.read_csv(latest, dtype={"symbol": str})
-    # 必须写成 if/else 语句：streamlit 的 magic 会把函数体内**裸的三元表达式**
-    # （ast.IfExp，不属于它豁免的 ast.Call）整个包进 st.write()，
-    # 于是 st.dataframe() 的返回值 DeltaGenerator 被 st.write 当对象内省，
-    # 把整份 Streamlit API 手册糊在信号表下面；无信号那天则渲染出一个 `None`。
+    # 标题必须带扫描日期（文件名 stem）：停牌日/忘跑的日子，别让人把旧扫描当今天的
+    st.subheader(f"全市场扫描（{latest.stem}）")
+    # 扫描被 Ctrl-C 打断可能留下零字节/半截 CSV：EmptyDataError / ParserError
+    # 都是 ValueError 子类，与回测页同一套容错口径，崩页不如明说
+    try:
+        df = pd.read_csv(latest, dtype={"symbol": str})
+    except (ValueError, OSError) as e:
+        st.error(f"扫描文件 {latest.name} 读取失败（{type(e).__name__}），"
+                 f"多半是扫描中途被打断；请删除该文件后重新运行扫描。")
+        return
     if len(df):
         st.dataframe(df, use_container_width=True)
     else:
         st.write("当日无新信号")
-    if len(files) > 1:
-        st.subheader("历史信号")
-        hist = pd.concat([pd.read_csv(f, dtype={"symbol": str}) for f in files[1:]],
-                         ignore_index=True)
-        if len(hist):
-            st.dataframe(hist, use_container_width=True)
+
+
+def page_signals() -> None:
+    sig_dir = OUTPUT / "signals"
+    files = sorted(sig_dir.glob("*.csv"), reverse=True) if sig_dir.exists() else []
+    # 无信号记录不能 return 早退：全市场扫描区块在页尾，早退会把它一并吞掉
+    if not files:
+        st.info("暂无信号记录。收盘后运行: python scripts/run_daily_signal.py")
+    else:
+        latest = files[0]
+        st.subheader(f"最新信号（{latest.stem}）")
+        df = pd.read_csv(latest, dtype={"symbol": str})
+        # 必须写成 if/else 语句：streamlit 的 magic 会把函数体内**裸的三元表达式**
+        # （ast.IfExp，不属于它豁免的 ast.Call）整个包进 st.write()，
+        # 于是 st.dataframe() 的返回值 DeltaGenerator 被 st.write 当对象内省，
+        # 把整份 Streamlit API 手册糊在信号表下面；无信号那天则渲染出一个 `None`。
+        if len(df):
+            st.dataframe(df, use_container_width=True)
         else:
-            st.write("无")
+            st.write("当日无新信号")
+        if len(files) > 1:
+            st.subheader("历史信号")
+            hist = pd.concat([pd.read_csv(f, dtype={"symbol": str}) for f in files[1:]],
+                             ignore_index=True)
+            if len(hist):
+                st.dataframe(hist, use_container_width=True)
+            else:
+                st.write("无")
+    scan_section()
 
 
-st.set_page_config(page_title="quant_demo v0.1", layout="wide")
+st.set_page_config(page_title="quant_demo v0.1.1", layout="wide")
 st.sidebar.title("quant_demo")
 page = st.sidebar.radio("页面", ["回测报告", "个股K线", "今日信号"])
 st.sidebar.caption("本面板纯只读；回测与信号请用命令行运行。策略仅用于学习，不构成投资建议。")

@@ -3,8 +3,9 @@
 用法：
     .venv/bin/python scripts/run_market_scan.py [--config config/settings.yaml]
                                                 [--limit N] [--date YYYY-MM-DD]
-baostock 约 17:30 后才有当日数据；全量约 3200 只，逐票串行 20-60 分钟（parquet 缓存命中的
-票秒过，中断重跑天然可续）。
+baostock 约 17:30 后才有当日数据；全量约 3200 只，逐票串行约 3.3-3.9 秒/只（2026-08-24
+实测 50 只：冷缓存 163s、热缓存 194s——缓存省的是不重拉历史，每票仍要一次增量联网请求），
+单次全量预估约 3 小时；中断重跑不会重拉已缓存的历史。
 """
 from __future__ import annotations
 
