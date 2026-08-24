@@ -47,3 +47,38 @@ def test_fetch_with_retry_gives_up_after_second_failure():
     with pytest.raises(ConnectionError):
         run_market_scan.fetch_with_retry(svc, "600000", None, None)
     assert svc.calls == 2
+
+
+# ---------------------------------------------------------------------------
+# 预估耗时口径（评审阻塞 1 的回归守卫）
+#
+# 曾犯过的方法论错误：把 get_all_symbols（每次扫描固定一次、约 11500 行分页拉取、
+# 实测 2-4 分钟）的固定开销摊进每票速率，得出"3.3-3.9 秒/只、全量约 3 小时"。
+# 2026-08-24 实测拆解：固定开销 133s；热缓存 30 只中位 0.51s/只、均值 0.88s/只；
+# 冷缓存抽样 0.9-2.5s/只。合理口径 = 固定 2-4 分钟 + 每票 0.5-2 秒 ≈ 全量 0.5-2 小时。
+# ---------------------------------------------------------------------------
+
+_README = (Path(__file__).resolve().parent.parent / "README.md").read_text(encoding="utf-8")
+
+
+_DOCS = [(run_market_scan.__doc__, "docstring"), (_README, "README")]
+
+
+@pytest.mark.parametrize("doc,label", _DOCS, ids=[l for _, l in _DOCS])
+def test_timing_estimate_not_amortized(doc, label):
+    """耗时文案不得复现"固定开销摊进每票速率"的错误结论。"""
+    # "3.3-3.9 秒/只"两种连字符写法都要挡；不裸查 "3.3"（会误伤将来的 §3.3 引用）
+    for wrong in ("约 3 小时", "3.3-3.9", "3.3–3.9"):
+        assert wrong not in doc, f"{label} 仍含错误耗时结论 {wrong!r}"
+
+
+@pytest.mark.parametrize("doc,label", _DOCS, ids=[l for _, l in _DOCS])
+def test_timing_estimate_separates_fixed_overhead(doc, label):
+    """耗时文案必须把固定开销与每票速率分开表述（防止错误口径回潮）。"""
+    assert "固定开销" in doc, f"{label} 未区分固定开销与每票速率"
+
+
+def test_readme_cache_window_claim_matches_scan_config():
+    """扫描票缓存的是 400 自然日窗口（scan.history_days），不是 10 年——
+    "省的是不重拉 10 年历史"只对回测 universe 票成立，README 曾写错。"""
+    assert "省的是不重拉 10 年历史" not in _README
