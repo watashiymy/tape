@@ -1,5 +1,7 @@
 # tests/test_run_backtest.py
 import importlib.util
+import subprocess
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -7,8 +9,8 @@ import pytest
 
 from quant.backtest.portfolio import Trade
 
-_SPEC = importlib.util.spec_from_file_location(
-    "run_backtest", Path(__file__).resolve().parent.parent / "scripts" / "run_backtest.py")
+_SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "run_backtest.py"
+_SPEC = importlib.util.spec_from_file_location("run_backtest", _SCRIPT)
 run_backtest = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(run_backtest)
 
@@ -54,6 +56,52 @@ def test_no_trade_field_is_silently_dropped(tmp_path):
     got = pd.read_csv(path, dtype=str).iloc[0].to_dict()   # dtype=str：逐字比对写出的内容
     expected = {k: str(v) for k, v in vars(sold).items()} | {"date": "2024-02-05"}
     assert got == expected
+
+
+_CFG_BODY = """
+universe: ["600519"]
+benchmark: "000300"
+backtest: {start: "2026-01-05", capital: 5000000}
+costs:
+  commission_rate: 0.00025
+  commission_min: 5.0
+  stamp_tax:
+    - {until: "2023-08-27", rate: 0.001}
+    - {from: "2023-08-28", rate: 0.0005}
+  slippage: 0.001
+strategies: %s
+"""
+
+
+def _run_script(tmp_path, strategies_yaml, extra_args=()):
+    cfg = tmp_path / "s.yaml"
+    cfg.write_text(_CFG_BODY % strategies_yaml, encoding="utf-8")
+    # cwd=tmp_path：缓存目录 data/cache 是相对路径，联网前退出则 tmp_path 下不会有任何产物
+    return subprocess.run(
+        [sys.executable, str(_SCRIPT), "--config", str(cfg), *extra_args],
+        capture_output=True, text=True, timeout=60, cwd=tmp_path)
+
+
+def test_empty_strategies_aborts_before_network(tmp_path):
+    """回归：策略构造原在联网取数**之后**——strategies: {} 时脚本登录 baostock、
+    全量取完十只标的行情，然后静默空跑 exit 0（实测输出 login success! + 154 根K线）。
+    "今日无输出"与"配置空了"不可区分。守卫必须在 BaostockProvider 之前：
+    快速退出（timeout=60 兜底）、exit code != 0、报错提到策略、且全程不联网。"""
+    proc = _run_script(tmp_path, "{}")
+    out = proc.stdout + proc.stderr
+    assert proc.returncode != 0, f"空策略表必须以非零码退出，实际 {proc.returncode}\n{out}"
+    assert "策略" in out
+    assert "login" not in out, "输出出现 baostock 登录横幅，说明守卫在联网之后"
+
+
+def test_unknown_strategy_filter_aborts_before_network(tmp_path):
+    """--strategy 过滤后为空同样要在联网前退出：配置错误不该白等全量取数。"""
+    proc = _run_script(tmp_path, "{ma_cross: {fast: 20, slow: 60}}",
+                       extra_args=["--strategy", "ma_corss"])
+    out = proc.stdout + proc.stderr
+    assert proc.returncode != 0
+    assert "策略" in out
+    assert "login" not in out
 
 
 def test_equal_weight_hold_normalizes_each_symbol_to_one():

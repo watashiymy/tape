@@ -106,6 +106,41 @@ strategies: {}
         c.stamp_rate(date(2021, 6, 1))  # 落在缺口里必须报错，不能悄悄返回某个税率
 
 
+_BODY = """
+universe: %s
+benchmark: "000300"
+backtest: {start: "2016-01-01", capital: %s}
+costs:
+  commission_rate: 0.00025
+  commission_min: 5.0
+  stamp_tax:
+    - {until: "2023-08-27", rate: 0.001}
+    - {from: "2023-08-28", rate: 0.0005}
+  slippage: 0.001
+strategies: {}
+"""
+
+
+def test_empty_universe_raises(tmp_path):
+    """回归：空 universe 旧代码放行——run_daily_signal 打印误导性的
+    "全部标的数据均未更新"（0==0 恒真）退出，run_backtest 在 equal_weight_hold
+    深处抛 No objects to concatenate。必须在加载配置时就报错。"""
+    cfg = tmp_path / "s.yaml"
+    cfg.write_text(_BODY % ("[]", "5000000"), encoding="utf-8")
+    with pytest.raises(ValueError, match="universe 不能为空"):
+        load_settings(cfg)
+
+
+@pytest.mark.parametrize("capital", ["-5000000", "0"])
+def test_nonpositive_capital_raises(tmp_path, capital):
+    """回归：负本金旧代码"成功"跑完回测——产出全零 metrics + 上万行
+    "资金不足"跳过记录，exit 0，看起来像策略从不交易。"""
+    cfg = tmp_path / "s.yaml"
+    cfg.write_text(_BODY % ('["600519"]', capital), encoding="utf-8")
+    with pytest.raises(ValueError, match="capital"):
+        load_settings(cfg)
+
+
 def test_real_config_file():
     """两个 tmp_path 测试都自带 YAML，谁也管不到真正被脚本加载的那个文件。
     这里钉住 config/settings.yaml 本身，防止手改配置时打错字。"""

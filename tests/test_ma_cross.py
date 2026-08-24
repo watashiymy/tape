@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 from quant.strategy.ma_cross import MaCross
 from tests.conftest import make_bars
@@ -56,3 +57,29 @@ def test_no_lookahead():
     for n in range(4, len(ADJ_DOWN)):
         trunc = MaCross(fast=2, slow=4).generate_positions(_bars(ADJ_DOWN[:n], FAC_DOWN[:n]))
         assert list(full.iloc[:n]) == list(trunc), f"截断到第 {n} 天后，历史信号被改写"
+
+
+@pytest.mark.parametrize("kw", [
+    dict(fast=0, slow=60),           # rolling(0) 静默全 NaN → 全程空仓零告警
+    dict(fast=-1, slow=60), dict(fast=20, slow=0), dict(fast=20, slow=-60),
+    dict(fast=20.0, slow=60), dict(fast=20, slow=60.0),  # 浮点迟至 generate_positions 才崩
+    dict(fast=20, slow=20), dict(fast=60, slow=20),      # fast >= slow
+])
+def test_invalid_params_raise_at_construction(kw):
+    """必须 raise ValueError 而非 assert：原有 `assert fast < slow` 在 -O 下会被剥除。
+    （实测 -O 下 MaCross(fast=60, slow=20) 能构造成功。）"""
+    with pytest.raises(ValueError):
+        MaCross(**kw)
+
+
+def test_invalid_param_error_names_param_and_value():
+    with pytest.raises(ValueError, match=r"fast.*0"):
+        MaCross(fast=0, slow=60)
+    with pytest.raises(ValueError, match=r"fast.*slow"):
+        MaCross(fast=60, slow=20)
+
+
+def test_valid_params_still_construct():
+    s = MaCross(fast=20, slow=60)
+    assert (s.fast, s.slow) == (20, 60)
+    assert MaCross(fast=1, slow=2).fast == 1

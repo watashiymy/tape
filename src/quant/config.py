@@ -72,11 +72,20 @@ def load_settings(path: str | Path) -> Settings:
         slippage=float(raw["costs"]["slippage"]),
         stamp_tax=rules,
     )
+    universe = tuple(str(s) for s in raw["universe"] or ())
+    if not universe:
+        # 放行的下场都是静默的：run_daily_signal 打印误导性的"全部标的数据均未更新"
+        # （0==0 恒真）退出；run_backtest 在 equal_weight_hold 深处抛 No objects to concatenate
+        raise ValueError("universe 不能为空")
+    capital = float(raw["backtest"]["capital"])
+    if capital <= 0:
+        # 负本金能"成功"跑完回测：全零 metrics + 上万行"资金不足"，exit 0
+        raise ValueError(f"capital 必须大于 0，实际为 {capital!r}")
     return Settings(
-        universe=tuple(str(s) for s in raw["universe"]),
+        universe=universe,
         benchmark=str(raw["benchmark"]),
         start=_to_date(raw["backtest"]["start"]),
-        capital=float(raw["backtest"]["capital"]),
+        capital=capital,
         costs=costs,
         strategies={k: dict(v) for k, v in (raw.get("strategies") or {}).items()},
     )

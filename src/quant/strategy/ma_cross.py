@@ -11,7 +11,14 @@ class MaCross(Strategy):
     name = "ma_cross"
 
     def __init__(self, fast: int = 20, slow: int = 60):
-        assert fast < slow, "fast 必须小于 slow"
+        # 构造期校验，用 raise 而非 assert（-O 下 assert 会被剥除）。
+        # fast=0 时 rolling(0) 无警告地返回全 NaN → 全程静默空仓；
+        # 浮点参数迟至 generate_positions 才崩且报错误导。
+        for pname, v in (("fast", fast), ("slow", slow)):
+            if not isinstance(v, int) or v < 1:
+                raise ValueError(f"参数 {pname} 必须是不小于 1 的整数，实际为 {v!r}")
+        if fast >= slow:
+            raise ValueError(f"参数 fast 必须小于 slow，实际为 fast={fast!r}, slow={slow!r}")
         self.fast, self.slow = fast, slow
 
     def generate_positions(self, df: pd.DataFrame) -> pd.Series:

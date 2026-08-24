@@ -15,6 +15,15 @@ class Donchian(Strategy):
 
     def __init__(self, entry_n: int = 20, exit_n: int = 10,
                  amount_n: int = 20, amount_ratio: float = 1.5):
+        # 构造期校验，用 raise 而非 assert（-O 下 assert 会被剥除）。
+        # 不校验的代价是静默出错：rolling(0) 无警告地返回全 NaN——
+        # exit_n=0 入场后永不卖出，entry_n=0/amount_n=0 全程空仓，
+        # 回测照常完成零告警；浮点窗口则迟至 generate_positions 才崩且报错误导。
+        for pname, v in (("entry_n", entry_n), ("exit_n", exit_n), ("amount_n", amount_n)):
+            if not isinstance(v, int) or v < 1:
+                raise ValueError(f"参数 {pname} 必须是不小于 1 的整数，实际为 {v!r}")
+        if not isinstance(amount_ratio, (int, float)) or amount_ratio <= 0:
+            raise ValueError(f"参数 amount_ratio 必须大于 0，实际为 {amount_ratio!r}")
         self.entry_n, self.exit_n = entry_n, exit_n
         self.amount_n, self.amount_ratio = amount_n, amount_ratio
 

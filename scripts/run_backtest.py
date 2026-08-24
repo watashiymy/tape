@@ -51,6 +51,16 @@ def main() -> None:
     args = ap.parse_args()
 
     settings = load_settings(args.config)
+    # 策略构造 + 过滤 + 空表守卫必须在联网取数**之前**：配置错误不该白等全量取数；
+    # 空策略表若放行会静默空跑 exit 0（循环体一次不进），与"回测没产出"不可区分。
+    strategies = build_strategies(settings.strategies)
+    if args.strategy:
+        strategies = [s for s in strategies if s.name == args.strategy]
+        if not strategies:
+            sys.exit(f"未知策略: {args.strategy}")
+    if not strategies:
+        sys.exit("配置里没有任何策略（settings.yaml 的 strategies 段缺失或为空），拒绝空跑")
+
     cache = BarCache("data/cache")
     bars: dict[str, pd.DataFrame] = {}
     with BaostockProvider() as provider:
@@ -63,12 +73,6 @@ def main() -> None:
             print(f"[data] {sym}: {len(df)} 根K线 ({df.index.min().date()} ~ {df.index.max().date()})")
         bench_close = provider.get_index_daily(
             settings.benchmark, settings.start, pd.Timestamp.now().date())["close"]
-
-    strategies = build_strategies(settings.strategies)
-    if args.strategy:
-        strategies = [s for s in strategies if s.name == args.strategy]
-        if not strategies:
-            sys.exit(f"未知策略: {args.strategy}")
 
     benchmarks = {"沪深300(价格指数,不含分红)": bench_close, "等权买入持有": equal_weight_hold(bars)}
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")

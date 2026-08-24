@@ -1,3 +1,5 @@
+import pytest
+
 from quant.strategy.donchian import Donchian
 from tests.conftest import make_bars
 
@@ -148,3 +150,33 @@ def test_no_lookahead():
     full = strat.generate_positions(_bars(closes, amounts))
     trunc = strat.generate_positions(_bars(closes[:-5], amounts[:-5]))
     assert (full.iloc[: len(trunc)].values == trunc.values).all()
+
+
+@pytest.mark.parametrize("kw", [
+    dict(entry_n=0), dict(exit_n=0), dict(amount_n=0),      # rolling(0) 静默全 NaN
+    dict(entry_n=-5), dict(exit_n=-1), dict(amount_n=-3),
+    dict(entry_n=20.0), dict(exit_n=10.0), dict(amount_n=20.0),  # 浮点窗口
+    dict(amount_ratio=0), dict(amount_ratio=-1.5), dict(amount_ratio="1.5"),
+])
+def test_invalid_params_raise_at_construction(kw):
+    """回归：pandas 的 rolling(0) 静默返回全 NaN（无警告）——
+    exit_n=0 时入场后价格腰斩仍满仓永不卖出；entry_n=0/amount_n=0 全程静默空仓，
+    回测照常完成零告警，产出退化策略的错误结论。浮点窗口迟至 generate_positions
+    才崩且报错误导。必须在构造期就 raise ValueError（不用 assert：-O 下会被剥除）。"""
+    with pytest.raises(ValueError):
+        Donchian(**kw)
+
+
+def test_invalid_param_error_names_param_and_value():
+    """报错必须带参数名和实际值，用户才能对着 settings.yaml 定位改哪一行。"""
+    with pytest.raises(ValueError, match=r"exit_n.*0"):
+        Donchian(exit_n=0)
+    with pytest.raises(ValueError, match=r"amount_ratio.*-1\.5"):
+        Donchian(amount_ratio=-1.5)
+
+
+def test_valid_params_still_construct():
+    """反向断言：校验不能误伤合法参数（含 amount_ratio 给整数）。"""
+    s = Donchian(entry_n=20, exit_n=10, amount_n=20, amount_ratio=1.5)
+    assert (s.entry_n, s.exit_n, s.amount_n, s.amount_ratio) == (20, 10, 20, 1.5)
+    assert Donchian(entry_n=1, exit_n=1, amount_n=1, amount_ratio=2).amount_ratio == 2
