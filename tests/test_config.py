@@ -1,8 +1,13 @@
 from datetime import date
+from pathlib import Path
 
 import pytest
 
 from quant.config import load_settings
+
+# 必须从 __file__ 推导仓库根：相对路径 "config/settings.yaml" 依赖 cwd，
+# 从任何非仓库根目录跑 pytest（IDE、CI 的绝对路径调用）该用例必挂。
+REAL_CONFIG = Path(__file__).resolve().parent.parent / "config" / "settings.yaml"
 
 
 def test_load_settings(tmp_path):
@@ -144,7 +149,7 @@ def test_nonpositive_capital_raises(tmp_path, capital):
 def test_real_config_file():
     """两个 tmp_path 测试都自带 YAML，谁也管不到真正被脚本加载的那个文件。
     这里钉住 config/settings.yaml 本身，防止手改配置时打错字。"""
-    s = load_settings("config/settings.yaml")
+    s = load_settings(REAL_CONFIG)
     assert len(s.universe) == 10
     # 全部 6 位数字：YAML 1.1 会把不加引号的 000333 当八进制解析成 219，
     # str() 之后变成 "219" —— 一个静默错误的股票代码。

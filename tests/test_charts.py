@@ -70,6 +70,18 @@ def test_equity_on_row1_drawdown_on_row2():
     assert [t.yaxis for t in fig.data] == ["y", "y", "y2"]
 
 
+def test_equity_chart_skips_empty_and_all_nan_benchmark():
+    """空 Series / 全 NaN 基准 dropna 后 s.iloc[0] 直接 IndexError 崩整张图。
+    该基准应被跳过：策略线 + 回撤线照常画。"""
+    eq = _eq([100.0, 110.0, 120.0])
+    bench = {
+        "空": pd.Series(dtype=float),
+        "全NaN": pd.Series([float("nan")] * 3, index=eq.index),
+    }
+    fig = equity_chart(eq, bench)
+    assert [t.name for t in fig.data] == ["策略", "回撤"]
+
+
 def test_benchmark_nan_head_dropped_not_silently_blank():
     # 少了 dropna：s.iloc[0] 是 NaN → 整条基准线全 NaN，图上什么也没有却不报错
     eq = _eq([100.0, 101.0, 102.0, 103.0])

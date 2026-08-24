@@ -35,10 +35,27 @@ def test_sharpe_sign_follows_returns():
     assert up > 0 and down < 0
 
 
-def test_cagr_annualizes_by_bar_count():
-    # 126 根 bar = 0.5 年（252 交易日/年），100 -> 121 → cagr = 1.21**2 - 1
+def test_cagr_annualizes_by_calendar_days():
+    """CAGR 定义即日历年化：years = 首末日期差天数 / 365.25。
+    旧口径 bar数/252 会系统性高估——A 股一年只有约 243 个交易日，
+    126 根 bar 按旧口径算 0.5 年，按日历实际跨 175 天 ≈ 0.4791 年。
+    期望值用 Decimal 手算：1.21 ** (1 / (175/365.25)) - 1。"""
     m = compute_metrics(_equity([100.0] * 125 + [121.0]), trades=[])
-    assert m["cagr"] == pytest.approx(0.4641)
+    # bdate_range("2024-01-02", periods=126) 末日 2024-06-25，跨 175 天
+    assert m["cagr"] == pytest.approx(0.48862358115820816)
+
+
+def test_cagr_exact_four_julian_years():
+    # 1461 天 = 4 × 365.25 → years 恰为 4.0；100 -> 146.41 = 1.1**4 → cagr = 0.1
+    idx = pd.DatetimeIndex([pd.Timestamp("2023-01-01"), pd.Timestamp("2027-01-01")])
+    m = compute_metrics(pd.Series([100.0, 146.41], index=idx), trades=[])
+    assert m["cagr"] == pytest.approx(0.1)
+
+
+def test_cagr_single_point_returns_zero():
+    # 单点净值 years == 0：不能除零，也不能抛异常
+    m = compute_metrics(_equity([100.0]), trades=[])
+    assert m["cagr"] == 0.0
 
 
 def test_trade_stats():
@@ -73,6 +90,24 @@ def test_profit_factor_none_when_no_losses():
     m = compute_metrics(_equity([100, 101]), trades)
     assert m["profit_factor"] is None
     assert m["win_rate"] == pytest.approx(1.0)
+
+
+def test_profit_factor_zero_when_all_losses():
+    """全亏 PF 是良定义的 0.0（分子为 0），不能与"无平仓交易"共用 None——
+    面板上两者都显示 —，"策略每单都亏"这个强信号就被吞掉了。"""
+    t = pd.Timestamp("2024-01-05")
+    trades = [
+        Trade("A", "sell", t, 10, 100, 5, 5, pnl=-30.0, holding_days=10),
+        Trade("A", "sell", t, 10, 100, 5, 5, pnl=-70.0, holding_days=20),
+    ]
+    m = compute_metrics(_equity([100, 99]), trades)
+    assert m["profit_factor"] == 0.0
+    assert m["win_rate"] == 0.0
+
+
+def test_profit_factor_none_when_no_closed_trades():
+    m = compute_metrics(_equity([100, 101]), trades=[])
+    assert m["profit_factor"] is None
 
 
 def test_flat_equity_no_crash():

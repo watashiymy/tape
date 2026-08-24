@@ -1,12 +1,12 @@
 """回测入口：python scripts/run_backtest.py [--config config/settings.yaml] [--strategy 名称]
-输出到 output/<策略>_<运行时间戳>/：metrics.json、equity.csv、trades.csv、report.html、
-kline_<代码>.html × N。"""
+输出到 output/<策略>_<运行时间戳>/：config_snapshot.json、equity.csv、trades.csv、
+report.html、kline_<代码>.html × N、metrics.json（最后写，完成标记）。"""
 from __future__ import annotations
 
 import argparse
 import json
 import sys
-from dataclasses import fields
+from dataclasses import asdict, fields
 from datetime import datetime
 from pathlib import Path
 
@@ -15,8 +15,8 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from quant.backtest.engine import Backtester
-from quant.backtest.portfolio import Trade
-from quant.config import load_settings
+from quant.backtest.portfolio import BacktestResult, Trade
+from quant.config import Settings, load_settings
 from quant.data.baostock_provider import BaostockProvider
 from quant.data.cache import BarCache
 from quant.data.service import DataService
@@ -38,9 +38,41 @@ def write_trades(trades: list[Trade], path: Path) -> None:
 
 
 def equal_weight_hold(bars: dict[str, pd.DataFrame]) -> pd.Series:
-    """等权买入持有基准：各标的后复权收盘归一化后取均值（分红再投资口径，与策略同权）。"""
+    """等权买入持有基准：各标的后复权收盘归一化后取均值（分红再投资口径，与策略同权）。
+
+    fillna(1.0) 补的是**前导** NaN（晚上市/晚有数据的标的入场之前）：该份额按现金
+    1.0 计，与引擎"固定额度、闲置为现金"口径一致。少了它 mean(skipna) 会直接忽略
+    缺席标的——先涨的标的把基准顶高，晚来的一出现又拽回来，凭空一段虚高。
+    ffill 补的是中段 NaN（停牌日），必须在 fillna 之前。"""
     norm = [df["adj_close"] / df["adj_close"].iloc[0] for df in bars.values()]
-    return pd.concat(norm, axis=1).ffill().mean(axis=1)
+    return pd.concat(norm, axis=1).ffill().fillna(1.0).mean(axis=1)
+
+
+def config_snapshot(settings: Settings) -> dict:
+    """本次回测的配置留档（universe/benchmark/start/capital/costs/strategies）。
+    date 不能直接进 json.dumps，经 default=str 一次往返统一转成 ISO 字符串。"""
+    return json.loads(json.dumps(asdict(settings), ensure_ascii=False, default=str))
+
+
+def write_run_outputs(run_dir: Path, metrics: dict, result: BacktestResult,
+                      bars: dict[str, pd.DataFrame], benchmarks: dict[str, pd.Series],
+                      snapshot: dict) -> None:
+    """落盘一次回测的全部产物。metrics.json 必须**最后**写（完成标记）：
+    HTML 要花 1-2 秒写几十 MB，Ctrl-C 打断后若 metrics.json 已在，
+    面板会把这个半截目录当成一次完整回测。"""
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "config_snapshot.json").write_text(
+        json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+    result.equity.rename("equity").to_csv(run_dir / "equity.csv")
+    write_trades(result.trades, run_dir / "trades.csv")
+    pd.DataFrame(result.skipped, columns=["date", "symbol", "reason"]).to_csv(
+        run_dir / "skipped.csv", index=False)
+    equity_chart(result.equity, benchmarks).write_html(run_dir / "report.html")
+    for sym, df in bars.items():
+        sym_trades = [t for t in result.trades if t.symbol == sym]
+        kline_chart(df, sym_trades, sym).write_html(run_dir / f"kline_{sym}.html")
+    (run_dir / "metrics.json").write_text(
+        json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def main() -> None:
@@ -76,6 +108,7 @@ def main() -> None:
 
     benchmarks = {"沪深300(价格指数,不含分红)": bench_close, "等权买入持有": equal_weight_hold(bars)}
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    snapshot = config_snapshot(settings)
 
     for strat in strategies:
         positions = {s: strat.generate_positions(df) for s, df in bars.items()}
@@ -83,17 +116,7 @@ def main() -> None:
         metrics = compute_metrics(result.equity, result.trades)
 
         run_dir = OUTPUT / f"{strat.name}_{stamp}"
-        run_dir.mkdir(parents=True, exist_ok=True)
-        (run_dir / "metrics.json").write_text(
-            json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
-        result.equity.rename("equity").to_csv(run_dir / "equity.csv")
-        write_trades(result.trades, run_dir / "trades.csv")
-        pd.DataFrame(result.skipped, columns=["date", "symbol", "reason"]).to_csv(
-            run_dir / "skipped.csv", index=False)
-        equity_chart(result.equity, benchmarks).write_html(run_dir / "report.html")
-        for sym, df in bars.items():
-            sym_trades = [t for t in result.trades if t.symbol == sym]
-            kline_chart(df, sym_trades, sym).write_html(run_dir / f"kline_{sym}.html")
+        write_run_outputs(run_dir, metrics, result, bars, benchmarks, snapshot)
 
         print(f"\n===== {strat.name} =====")
         for k, v in metrics.items():

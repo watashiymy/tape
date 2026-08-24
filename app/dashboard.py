@@ -30,6 +30,22 @@ METRIC_LABELS = {
 
 RUN_STAMP = re.compile(r"_(\d{8}_\d{6})$")   # run_backtest.py 的 {策略}_{YYYYMMDD}_{HHMMSS}
 
+# 一次可展示的回测最少要有这三件；缺任何一件都是被 Ctrl-C 打断留下的半截目录。
+# run_backtest.py 已把 metrics.json 挪到最后写作为完成标记，但老目录仍可能残缺。
+_REQUIRED_FILES = ("metrics.json", "report.html", "trades.csv")
+
+
+def _fmt_metric(key: str, value) -> str:
+    """指标卡数值格式化。int 必须原样 str()：一律 f"{v:.2f}" 会把交易次数
+    渲染成 '243.00'。None（无平仓交易等）显示 —，比率类显示百分号。"""
+    if value is None:
+        return "—"
+    if isinstance(value, int):
+        return str(value)
+    if key in ("total_return", "cagr", "max_drawdown", "win_rate"):
+        return f"{value:.2%}"
+    return f"{value:.2f}"
+
 
 def _run_key(p: Path) -> tuple[str, str]:
     """按目录名尾部的时间戳排序。直接 sorted(paths, reverse=True) 比的是整条路径字符串，
@@ -43,7 +59,7 @@ def list_runs() -> list[Path]:
     if not OUTPUT.exists():
         return []
     return sorted((p for p in OUTPUT.iterdir()
-                   if p.is_dir() and (p / "metrics.json").exists()),
+                   if p.is_dir() and all((p / f).exists() for f in _REQUIRED_FILES)),
                   key=_run_key, reverse=True)
 
 
@@ -53,24 +69,31 @@ def page_backtest() -> None:
         st.info("暂无回测结果。先运行: python scripts/run_backtest.py")
         return
     run = st.selectbox("选择回测", runs, format_func=lambda p: p.name)
-    metrics = json.loads((run / "metrics.json").read_text(encoding="utf-8"))
+    # 所有文件读取集中在 try 里：即便三件套都在，metrics.json 仍可能只写了一半
+    # （JSONDecodeError）。JSONDecodeError / EmptyDataError 都是 ValueError 子类，
+    # FileNotFoundError 是 OSError 子类。崩页不如明说：提示删除残缺目录。
+    try:
+        metrics = json.loads((run / "metrics.json").read_text(encoding="utf-8"))
+        report_html = (run / "report.html").read_text(encoding="utf-8")
+        # dtype 必须显式给：symbol 写出去是字符串 "000333"，pd.read_csv 会推断成 int64
+        # 吃掉前导零，表里就显示成不存在的股票代码 333（所有深市 000xxx 都中招）
+        trades = pd.read_csv(run / "trades.csv", dtype={"symbol": str})
+        skipped_path = run / "skipped.csv"
+        skipped = (pd.read_csv(skipped_path, dtype={"symbol": str})
+                   if skipped_path.exists() else None)
+    except (ValueError, OSError) as e:
+        st.error(f"回测目录 {run.name} 数据残缺（{type(e).__name__}），"
+                 f"多半是回测中途被打断；请删除该目录后刷新页面。")
+        return
     cols = st.columns(4)
     for i, (k, label) in enumerate(METRIC_LABELS.items()):
-        v = metrics.get(k)
-        text = "—" if v is None else (f"{v:.2%}" if k in
-                ("total_return", "cagr", "max_drawdown", "win_rate") else f"{v:.2f}")
-        cols[i % 4].metric(label, text)
-    components.html((run / "report.html").read_text(encoding="utf-8"),
-                    height=650, scrolling=True)
+        cols[i % 4].metric(label, _fmt_metric(k, metrics.get(k)))
+    components.html(report_html, height=650, scrolling=True)
     st.subheader("交易明细")
-    # dtype 必须显式给：symbol 写出去是字符串 "000333"，pd.read_csv 会推断成 int64
-    # 吃掉前导零，表里就显示成不存在的股票代码 333（所有深市 000xxx 都中招）
-    st.dataframe(pd.read_csv(run / "trades.csv", dtype={"symbol": str}),
-                 use_container_width=True)
-    skipped = run / "skipped.csv"
-    if skipped.exists():
+    st.dataframe(trades, use_container_width=True)
+    if skipped is not None:
         st.subheader("被跳过的订单（涨跌停/资金不足等）")
-        st.dataframe(pd.read_csv(skipped, dtype={"symbol": str}), use_container_width=True)
+        st.dataframe(skipped, use_container_width=True)
 
 
 def page_kline() -> None:
@@ -79,7 +102,12 @@ def page_kline() -> None:
         st.info("暂无回测结果。先运行: python scripts/run_backtest.py")
         return
     run = st.selectbox("选择回测", runs, format_func=lambda p: p.name)
-    trades_df = pd.read_csv(run / "trades.csv", dtype={"symbol": str})
+    try:
+        trades_df = pd.read_csv(run / "trades.csv", dtype={"symbol": str})
+    except (ValueError, OSError):
+        st.error(f"回测目录 {run.name} 的 trades.csv 读取失败，"
+                 f"多半是回测中途被打断；请删除该目录后刷新页面。")
+        return
     symbols = sorted({p.stem.replace("kline_", "") for p in run.glob("kline_*.html")})
     sym = st.selectbox("选择标的", symbols)
     raw = BarCache(ROOT / "data" / "cache").load(sym)

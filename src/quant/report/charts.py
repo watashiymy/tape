@@ -15,6 +15,8 @@ def equity_chart(equity: pd.Series, benchmarks: dict[str, pd.Series]) -> go.Figu
                              name="策略", line=dict(width=2)), row=1, col=1)
     for name, series in benchmarks.items():
         s = series.dropna()
+        if s.empty:            # 空/全 NaN 基准：跳过，否则 s.iloc[0] IndexError 崩整张图
+            continue
         fig.add_trace(go.Scatter(x=s.index, y=s / s.iloc[0], name=name,
                                  line=dict(dash="dot")), row=1, col=1)
     dd = equity / equity.cummax() - 1

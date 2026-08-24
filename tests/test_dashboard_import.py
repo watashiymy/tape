@@ -1,12 +1,17 @@
 import ast
 import importlib.util
+import json
 import shutil
 from pathlib import Path
 
 import pandas as pd
+import pytest
 import streamlit as st
+from streamlit.testing.v1 import AppTest
 
-DASHBOARD = Path("app/dashboard.py")
+# 必须从 __file__ 推导仓库根：Path("app/dashboard.py") 依赖 cwd，
+# 从任何非仓库根目录跑 pytest（IDE、CI 的绝对路径调用）整个文件全挂。
+DASHBOARD = Path(__file__).resolve().parent.parent / "app" / "dashboard.py"
 
 
 def test_dashboard_syntax_ok():
@@ -91,14 +96,95 @@ def test_signal_page_keeps_leading_zero_symbols(tmp_path, monkeypatch):
     assert [f["symbol"].tolist() for f in frames] == [["000333"], ["000001"]]
 
 
+def test_fmt_metric_int_has_no_decimals(tmp_path, monkeypatch):
+    """指标卡把所有数值一律 f"{v:.2f}"，n_trades（int）显示成 '243.00'。
+    int 必须原样 str()；None 显示 —；比率类走百分号。"""
+    mod, _ = _load_dashboard(tmp_path, monkeypatch, "今日信号")  # 空 output，不读文件
+    assert mod._fmt_metric("n_trades", 243) == "243"
+    assert mod._fmt_metric("total_return", 1.1642) == "116.42%"
+    assert mod._fmt_metric("win_rate", 0.41975) == "41.98%"
+    assert mod._fmt_metric("sharpe", 0.9621) == "0.96"
+    assert mod._fmt_metric("profit_factor", None) == "—"
+
+
+def _make_apptest(tmp_path) -> AppTest:
+    """dashboard.py 复制进 tmp_path/app 再交给 AppTest，使 OUTPUT 指向 tmp_path/output。"""
+    app_dir = tmp_path / "app"
+    app_dir.mkdir(exist_ok=True)
+    shutil.copy(DASHBOARD, app_dir / "dashboard.py")
+    return AppTest.from_file(str(app_dir / "dashboard.py"), default_timeout=15)
+
+
+def _complete_run(out: Path, name: str, metrics: dict) -> Path:
+    """造一个完整的回测目录（与半截目录形成对照）。"""
+    run = out / name
+    run.mkdir(parents=True)
+    (run / "metrics.json").write_text(json.dumps(metrics), encoding="utf-8")
+    (run / "report.html").write_text("<html></html>", encoding="utf-8")
+    (run / "trades.csv").write_text(
+        "symbol,action,date,price,shares,commission,stamp,pnl,holding_days\n",
+        encoding="utf-8")
+    return run
+
+
+def test_metric_card_shows_n_trades_as_integer(tmp_path):
+    """真渲染（AppTest）：交易次数卡必须是 '243'，不是 '243.00'。"""
+    _complete_run(tmp_path / "output", "ma_cross_20260817_121152", {"n_trades": 243})
+    at = _make_apptest(tmp_path).run()
+    assert not at.exception
+    values = {m.label: m.value for m in at.metric}
+    assert values["交易次数"] == "243"
+
+
+@pytest.mark.parametrize("files", [
+    ["metrics.json"],                    # Ctrl-C 在写 report.html 之前：只有 metrics.json
+    ["metrics.json", "report.html"],     # 缺 trades.csv
+], ids=["只有metrics", "缺trades"])
+def test_half_written_run_dir_is_excluded_not_crashing(tmp_path, files):
+    """run_backtest 被 Ctrl-C 打断留下半截目录，面板默认选中最新目录直接
+    FileNotFoundError 崩页。半截目录必须被 list_runs 排除。"""
+    run = tmp_path / "output" / "ma_cross_20260824_151600"
+    run.mkdir(parents=True)
+    for f in files:
+        (run / f).write_text('{"n_trades": 1}' if f.endswith("json") else "<html></html>",
+                             encoding="utf-8")
+    at = _make_apptest(tmp_path).run()
+    assert not at.exception, f"半截目录（{files}）不该崩页: {at.exception}"
+    assert at.info, "半截目录被排除后应显示'暂无回测结果'提示"
+
+
+def test_truncated_metrics_json_shows_error_not_crash(tmp_path):
+    """metrics.json 本身写了一半（无效 JSON）但其余文件齐全：
+    页面不能抛 JSONDecodeError，要用 st.error 提示删除残缺目录。"""
+    run = tmp_path / "output" / "ma_cross_20260824_151600"
+    run.mkdir(parents=True)
+    (run / "metrics.json").write_text('{"total_return": 0.48', encoding="utf-8")  # 截断
+    (run / "report.html").write_text("<html></html>", encoding="utf-8")
+    (run / "trades.csv").write_text("symbol,action\n", encoding="utf-8")
+    at = _make_apptest(tmp_path).run()
+    assert not at.exception, f"残缺 metrics.json 不该崩页: {at.exception}"
+    assert any("删除" in e.value for e in at.error), "应出现提示删除残缺目录的 st.error"
+
+
+def test_half_written_run_does_not_shadow_complete_run(tmp_path):
+    """最新目录半截、更早目录完整：完整的那次必须仍然可看（默认被选中）。"""
+    out = tmp_path / "output"
+    _complete_run(out, "ma_cross_20260817_121152", {"n_trades": 7})
+    broken = out / "ma_cross_20260824_151600"
+    broken.mkdir(parents=True)
+    (broken / "metrics.json").write_text('{"n_trades": 1}', encoding="utf-8")
+    at = _make_apptest(tmp_path).run()
+    assert not at.exception
+    assert at.selectbox[0].value.name == "ma_cross_20260817_121152"
+
+
 def test_list_runs_puts_newest_first_regardless_of_strategy_name(tmp_path, monkeypatch):
     """目录名是 {策略}_{YYYYMMDD}_{HHMMSS}；按整条路径字符串排序会让策略名压过时间戳
     （"ma_cross_" > "donchian_"），面板默认选中的就不是最新那次回测。"""
     out = tmp_path / "output"
     for name in ("ma_cross_20260817_121152", "donchian_20260817_123313",
                  "ma_cross_20200101_000000"):
-        (out / name).mkdir(parents=True)
-        (out / name / "metrics.json").write_text("{}", encoding="utf-8")
+        _complete_run(out, name, {})   # 必须造完整目录：半截目录会被 list_runs 排除
 
     mod, _ = _load_dashboard(tmp_path, monkeypatch, "今日信号")  # 信号页不读 run 目录
 

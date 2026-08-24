@@ -1,5 +1,6 @@
 # tests/test_run_backtest.py
 import importlib.util
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -7,7 +8,8 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from quant.backtest.portfolio import Trade
+from quant.backtest.portfolio import BacktestResult, Trade
+from quant.config import load_settings
 
 _SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "run_backtest.py"
 _SPEC = importlib.util.spec_from_file_location("run_backtest", _SCRIPT)
@@ -102,6 +104,81 @@ def test_unknown_strategy_filter_aborts_before_network(tmp_path):
     assert proc.returncode != 0
     assert "策略" in out
     assert "login" not in out
+
+
+def test_equal_weight_hold_treats_pre_listing_share_as_cash():
+    """一只标的晚开始（晚上市/晚有数据）：入场前该份额按现金 1.0 计，
+    与引擎"固定额度、闲置为现金"口径一致。旧代码 mean(skipna) 直接忽略缺席标的：
+    A 先涨 50% 时基准被顶到 1.5，B 一出现又拽回 1.25——凭空一段虚高再跳水。"""
+    idx = pd.bdate_range("2024-01-01", periods=4)
+    bars = {
+        "A": pd.DataFrame({"adj_close": [100.0, 150.0, 150.0, 150.0]}, index=idx),
+        "B": pd.DataFrame({"adj_close": [50.0, 50.0]}, index=idx[2:]),
+    }
+    got = run_backtest.equal_weight_hold(bars)
+    # 手算：d1 (1+1)/2=1，d2 A=1.5 B=现金1.0 → 1.25，d3 (1.5+1)/2=1.25，d4 同
+    assert got.tolist() == pytest.approx([1.0, 1.25, 1.25, 1.25])
+
+
+def _fake_run_inputs():
+    idx = pd.bdate_range("2024-01-02", periods=3)
+    equity = pd.Series([100.0, 101.0, 102.0], index=idx)
+    result = BacktestResult(equity=equity, trades=[_trade()], skipped=[])
+    bars = {"600519": pd.DataFrame(
+        {"open": [10.0] * 3, "high": [11.0] * 3, "low": [9.0] * 3, "close": [10.5] * 3},
+        index=idx)}
+    return result, bars, {"基准": equity.copy()}
+
+
+def test_metrics_json_is_written_last_as_completion_marker(tmp_path, monkeypatch):
+    """Ctrl-C 时序：旧代码先写 metrics.json 再花 1-2 秒写 55MB 的 report.html，
+    打断后留下带合法 metrics.json 的半截目录，面板默认选中它直接崩页。
+    metrics.json 必须最后写（完成标记）：模拟写 HTML 时被打断，目录里不得有它。"""
+    result, bars, benchmarks = _fake_run_inputs()
+    run_dir = tmp_path / "ma_cross_20260824_000000"
+
+    def boom(self, *a, **k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("plotly.graph_objects.Figure.write_html", boom, raising=True)
+    with pytest.raises(KeyboardInterrupt):
+        run_backtest.write_run_outputs(run_dir, {"total_return": 0.1}, result,
+                                       bars, benchmarks, snapshot={})
+    assert not (run_dir / "metrics.json").exists(), \
+        "被打断的半截目录不该有 metrics.json——完成标记必须最后写"
+
+
+def test_write_run_outputs_writes_full_set(tmp_path):
+    """完整跑完时七件套齐全，metrics/config_snapshot 内容逐字可回读。"""
+    result, bars, benchmarks = _fake_run_inputs()
+    run_dir = tmp_path / "run"
+    run_backtest.write_run_outputs(run_dir, {"total_return": 0.1}, result, bars,
+                                   benchmarks, snapshot={"capital": 5000000.0})
+    for f in ("config_snapshot.json", "equity.csv", "trades.csv", "skipped.csv",
+              "report.html", "kline_600519.html", "metrics.json"):
+        assert (run_dir / f).exists(), f"缺 {f}"
+    assert json.loads((run_dir / "metrics.json").read_text(encoding="utf-8")) \
+        == {"total_return": 0.1}
+    assert json.loads((run_dir / "config_snapshot.json").read_text(encoding="utf-8")) \
+        == {"capital": 5000000.0}
+
+
+def test_config_snapshot_serializes_dates_and_costs(tmp_path):
+    """run 目录要能留档本次配置。date 不可直接 json.dumps，必须已转成 ISO 字符串。"""
+    cfg = tmp_path / "s.yaml"
+    cfg.write_text(_CFG_BODY % "{ma_cross: {fast: 20, slow: 60}}", encoding="utf-8")
+    snap = run_backtest.config_snapshot(load_settings(cfg))
+    assert snap["universe"] == ["600519"]
+    assert snap["benchmark"] == "000300"
+    assert snap["start"] == "2026-01-05"          # date → ISO 字符串
+    assert snap["capital"] == 5000000.0
+    assert snap["costs"]["commission_rate"] == 0.00025
+    assert snap["costs"]["commission_min"] == 5.0
+    assert snap["costs"]["slippage"] == 0.001
+    assert snap["costs"]["stamp_tax"][0] == \
+        {"rate": 0.001, "until": "2023-08-27", "frm": None}
+    assert snap["strategies"] == {"ma_cross": {"fast": 20, "slow": 60}}
+    json.dumps(snap, ensure_ascii=False)           # 整体必须可直接序列化
 
 
 def test_equal_weight_hold_normalizes_each_symbol_to_one():
