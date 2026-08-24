@@ -47,6 +47,14 @@ class Costs:
 
 
 @dataclass(frozen=True)
+class ScanConfig:
+    """全市场扫描（v0.1.1 §3.2）。默认值即设计值，旧配置无 scan: 段时全部生效。"""
+    history_days: int = 400            # 拉取历史窗口（自然日），约 270 根 K 线 > MA60 两倍
+    min_avg_amount: float = 50_000_000  # 20 日均成交额门槛（元）
+    top_n: int = 20                    # 终端打印条数（CSV 存全量）
+
+
+@dataclass(frozen=True)
 class Settings:
     universe: tuple[str, ...]  # 用 tuple 而非 list：frozen 只挡重新赋值，挡不住 list 原地修改
     benchmark: str
@@ -54,6 +62,9 @@ class Settings:
     capital: float
     costs: Costs
     strategies: dict[str, dict]
+    # 带默认值（且必须放末位）：既容旧 YAML 无 scan: 段，也容测试/脚本里
+    # 直接 Settings(...) 构造的既有调用点——缺省即设计默认。
+    scan: ScanConfig = ScanConfig()
 
 
 def load_settings(path: str | Path) -> Settings:
@@ -81,6 +92,13 @@ def load_settings(path: str | Path) -> Settings:
     if capital <= 0:
         # 负本金能"成功"跑完回测：全零 metrics + 上万行"资金不足"，exit 0
         raise ValueError(f"capital 必须大于 0，实际为 {capital!r}")
+    scan_raw = raw.get("scan") or {}   # 无 scan: 段的旧配置走 ScanConfig 默认值
+    d = ScanConfig()                   # 默认值只在 dataclass 声明处维护一份
+    scan = ScanConfig(
+        history_days=int(scan_raw.get("history_days", d.history_days)),
+        min_avg_amount=float(scan_raw.get("min_avg_amount", d.min_avg_amount)),
+        top_n=int(scan_raw.get("top_n", d.top_n)),
+    )
     return Settings(
         universe=universe,
         benchmark=str(raw["benchmark"]),
@@ -88,4 +106,5 @@ def load_settings(path: str | Path) -> Settings:
         capital=capital,
         costs=costs,
         strategies={k: dict(v) for k, v in (raw.get("strategies") or {}).items()},
+        scan=scan,
     )

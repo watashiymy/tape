@@ -14,3 +14,7 @@ costs:
 strategies:
   ma_cross: {fast: 20, slow: 60}
   donchian: {entry_n: 20, exit_n: 10, amount_n: 20, amount_ratio: 1.5}
+scan:                              # 全市场扫描（v0.1.1）
+  history_days: 400                # 拉取历史窗口（自然日），约 270 根 K 线 > MA60 两倍
+  min_avg_amount: 50000000         # 20 日均成交额门槛（元）：流动性差的票信号无意义且滑点假设失效
+  top_n: 20                        # 终端打印条数（CSV 存全量）

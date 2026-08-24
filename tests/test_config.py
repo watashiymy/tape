@@ -161,3 +161,31 @@ def test_real_config_file():
     assert s.costs.stamp_rate(date(2023, 8, 27)) == 0.001
     assert s.costs.stamp_rate(date(2023, 8, 28)) == 0.0005
     assert set(s.strategies) == {"ma_cross", "donchian"}
+    assert s.scan.history_days == 400
+    assert s.scan.min_avg_amount == 50_000_000
+    assert s.scan.top_n == 20
+
+
+# ---------- scan 段（v0.1.1 §3.2）----------
+
+def test_scan_defaults_when_section_missing(tmp_path):
+    """旧配置没有 scan: 段必须照常加载并给出设计默认值——
+    否则升级后所有既有配置文件（含用户手上的副本）集体 KeyError。"""
+    cfg = tmp_path / "s.yaml"
+    cfg.write_text(_BODY % ('["600519"]', "5000000"), encoding="utf-8")  # _BODY 无 scan 段
+    s = load_settings(cfg)
+    assert s.scan.history_days == 400
+    assert s.scan.min_avg_amount == 50_000_000
+    assert s.scan.top_n == 20
+
+
+def test_scan_section_parsed(tmp_path):
+    """显式 scan 段逐项覆盖默认；未给的键仍取默认（部分覆盖是配置文件的常态）。"""
+    cfg = tmp_path / "s.yaml"
+    cfg.write_text(_BODY % ('["600519"]', "5000000")
+                   + "scan: {history_days: 500, min_avg_amount: 80000000}\n",
+                   encoding="utf-8")
+    s = load_settings(cfg)
+    assert s.scan.history_days == 500
+    assert s.scan.min_avg_amount == 80_000_000
+    assert s.scan.top_n == 20  # 未显式给出 → 默认

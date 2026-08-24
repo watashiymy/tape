@@ -33,6 +33,11 @@ class FakeProvider(DataProvider):
     def get_trade_calendar(self, start, end):
         return [d for d in ALL_DAYS if start <= d <= end]
 
+    def get_all_symbols(self, as_of):
+        # 最小实现：DataProvider 是 ABC，缺这个抽象方法 FakeProvider 直接无法实例化，
+        # 本文件 11 个用例全体 TypeError。DataService 不用它，故只需占位。
+        raise NotImplementedError
+
 
 def test_first_fetch_pulls_full_range_and_caches(tmp_path):
     provider, cache = FakeProvider(), BarCache(tmp_path)

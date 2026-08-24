@@ -1,8 +1,11 @@
 # tests/test_baostock_provider.py —— 不联网的单元测试（联网用例见 test_baostock_integration.py）
+from datetime import date
+
 import pandas as pd
 import pytest
 
-from quant.data.baostock_provider import _factors_to_series, _fetch, to_bs_code
+from quant.data.baostock_provider import (_factors_to_series, _fetch,
+                                          _filter_scan_universe, to_bs_code)
 
 
 class FakeResultSet:
@@ -80,3 +83,120 @@ def test_factors_to_series_converts_types_and_sorts():
     assert list(s.index) == [pd.Timestamp("2023-06-30"), pd.Timestamp("2024-06-14")]
     assert s.tolist() == [1.20, 1.30]
     assert s.dtype == "float64"
+
+
+# ---------- _filter_scan_universe（v0.1.1 扫描池过滤，纯函数离线测）----------
+# 字段名照抄真实接口（2026-08-24 探针实测）：
+#   query_all_stock  → code / tradeStatus / code_name
+#   query_stock_basic → code / code_name / ipoDate / outDate / type / status
+
+AS_OF = date(2026, 8, 21)
+OLD_IPO = "2001-08-27"  # 距 as_of 远超 400 自然日
+
+
+def _all_df(*rows):
+    """rows: (code, name[, tradeStatus])"""
+    return pd.DataFrame(
+        [{"code": c, "tradeStatus": (r[2] if len(r) > 2 else "1"), "code_name": n}
+         for r in rows for c, n in [(r[0], r[1])]],
+        columns=["code", "tradeStatus", "code_name"])
+
+
+def _basic_df(*rows):
+    """rows: (code, name[, ipoDate, type, status])"""
+    return pd.DataFrame(
+        [{"code": r[0], "code_name": r[1],
+          "ipoDate": (r[2] if len(r) > 2 else OLD_IPO), "outDate": "",
+          "type": (r[3] if len(r) > 3 else "1"),
+          "status": (r[4] if len(r) > 4 else "1")}
+         for r in rows],
+        columns=["code", "code_name", "ipoDate", "outDate", "type", "status"])
+
+
+def test_scan_universe_keeps_mainboard_and_strips_prefix():
+    """主板前缀 sh.60*/sz.00*（含原中小板 002/003）保留；返回 6 位 symbol + name。"""
+    out = _filter_scan_universe(
+        _all_df(("sh.600519", "贵州茅台"), ("sh.601318", "中国平安"),
+                ("sh.603259", "药明康德"), ("sz.000333", "美的集团"),
+                ("sz.002594", "比亚迪")),
+        _basic_df(("sh.600519", "贵州茅台"), ("sh.601318", "中国平安"),
+                  ("sh.603259", "药明康德"), ("sz.000333", "美的集团"),
+                  ("sz.002594", "比亚迪")),
+        AS_OF)
+    assert list(out.columns) == ["symbol", "name"]
+    assert sorted(out["symbol"]) == ["000333", "002594", "600519", "601318", "603259"]
+    assert set(out["name"]) == {"贵州茅台", "中国平安", "药明康德", "美的集团", "比亚迪"}
+    assert (out["symbol"].str.len() == 6).all()
+
+
+def test_scan_universe_drops_non_mainboard_prefixes():
+    """科创板 688 / 创业板 300 / 北交所 bj. 一律剔除。"""
+    out = _filter_scan_universe(
+        _all_df(("sh.688111", "金山办公"), ("sz.300750", "宁德时代"),
+                ("bj.832566", "梓橦宫"), ("sh.600519", "贵州茅台")),
+        _basic_df(("sh.688111", "金山办公"), ("sz.300750", "宁德时代"),
+                  ("bj.832566", "梓橦宫"), ("sh.600519", "贵州茅台")),
+        AS_OF)
+    assert list(out["symbol"]) == ["600519"]
+
+
+def test_scan_universe_drops_indexes():
+    """query_all_stock 混有指数（sh.000001 上证综指等）。sh.00 前缀天然出局；
+    即便前缀撞上主板（构造 sz.00 的 type=2），type!=1 也必须兜住。"""
+    out = _filter_scan_universe(
+        _all_df(("sh.000001", "上证综合指数"), ("sz.399001", "深证成指"),
+                ("sz.000998", "假想指数"), ("sz.000333", "美的集团")),
+        _basic_df(("sh.000001", "上证综合指数", "1991-07-15", "2"),
+                  ("sz.399001", "深证成指", "1994-01-03", "2"),
+                  ("sz.000998", "假想指数", OLD_IPO, "2"),
+                  ("sz.000333", "美的集团")),
+        AS_OF)
+    assert list(out["symbol"]) == ["000333"]
+
+
+def test_scan_universe_drops_st_names():
+    """名称含 'ST' 剔除（ST/*ST/S*ST 全命中子串）。"""
+    out = _filter_scan_universe(
+        _all_df(("sh.600876", "ST凯盛"), ("sz.000004", "*ST国华"),
+                ("sh.600606", "S*ST绿庭"), ("sh.600519", "贵州茅台")),
+        _basic_df(("sh.600876", "ST凯盛"), ("sz.000004", "*ST国华"),
+                  ("sh.600606", "S*ST绿庭"), ("sh.600519", "贵州茅台")),
+        AS_OF)
+    assert list(out["symbol"]) == ["600519"]
+
+
+def test_scan_universe_drops_young_ipo_with_400d_boundary():
+    """上市距 as_of 不足 400 自然日剔除；恰好 400 天保留（"不足"是严格小于）。
+    as_of=2026-08-21：2025-07-17 恰 400 天留，2025-07-18 是 399 天剔。"""
+    out = _filter_scan_universe(
+        _all_df(("sh.605599", "恰好四百"), ("sz.001999", "新股次新"),
+                ("sh.600519", "贵州茅台")),
+        _basic_df(("sh.605599", "恰好四百", "2025-07-17"),
+                  ("sz.001999", "新股次新", "2025-07-18"),
+                  ("sh.600519", "贵州茅台")),
+        AS_OF)
+    assert sorted(out["symbol"]) == ["600519", "605599"]
+
+
+def test_scan_universe_drops_delisted_and_missing_basic():
+    """status!=1（退市）剔除；只出现在 all_df 而 basic 缺失的 code 走交集剔除，
+    缺 ipoDate 的行不能因 NaT 比较静默放行。"""
+    out = _filter_scan_universe(
+        _all_df(("sh.600001", "邯郸钢铁"), ("sh.600002", "齐鲁石化"),
+                ("sh.600519", "贵州茅台")),
+        _basic_df(("sh.600001", "邯郸钢铁", OLD_IPO, "1", "0"),
+                  ("sh.600519", "贵州茅台")),
+        AS_OF)
+    assert list(out["symbol"]) == ["600519"]
+
+
+def test_scan_universe_output_sorted_and_reindexed():
+    """输出按 symbol 升序、RangeIndex——扫描主循环/CSV 依赖稳定顺序。"""
+    out = _filter_scan_universe(
+        _all_df(("sh.600519", "贵州茅台"), ("sz.000333", "美的集团"),
+                ("sh.600036", "招商银行")),
+        _basic_df(("sh.600519", "贵州茅台"), ("sz.000333", "美的集团"),
+                  ("sh.600036", "招商银行")),
+        AS_OF)
+    assert list(out["symbol"]) == ["000333", "600036", "600519"]
+    assert list(out.index) == [0, 1, 2]

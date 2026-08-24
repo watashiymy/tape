@@ -32,3 +32,15 @@ def test_large_range_crosses_pagination_boundary():
         assert df["adj_factor"].notna().all()
         cal = p.get_trade_calendar(date(2016, 1, 1), date(2026, 8, 14))
         assert len(cal) > 2000
+
+
+def test_get_all_symbols_mainboard_universe():
+    """v0.1.1 扫描池：>1000 只、全部主板前缀（60*/00*）、无 ST 名、无重复。
+    2026-08-21 为已收盘交易日，query_all_stock 对历史交易日结果稳定。"""
+    with BaostockProvider() as p:
+        df = p.get_all_symbols(date(2026, 8, 21))
+    assert len(df) > 1000
+    assert list(df.columns) == ["symbol", "name"]
+    assert df["symbol"].str.match(r"^(60|00)\d{4}$").all()
+    assert not df["name"].str.contains("ST").any()
+    assert df["symbol"].is_unique
