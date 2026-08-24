@@ -1,3 +1,5 @@
+import multiprocessing as mp
+
 import pandas as pd
 import pytest
 
@@ -7,6 +9,54 @@ from tests.conftest import make_bars
 
 def _row(d, px):
     return dict(date=d, open=px, high=px, low=px, close=px, volume=1000, amount=px * 1000)
+
+
+def _hammer_cache(cache_dir: str, n: int) -> None:
+    """子进程入口（spawn 要求模块级函数）：反复 save+load 同一标的。"""
+    cache = BarCache(cache_dir)
+    df = make_bars([_row("2024-01-02", 10.0), _row("2024-01-03", 11.0)])
+    for _ in range(n):
+        cache.save("600519", df)
+        loaded = cache.load("600519")
+        assert loaded is not None and loaded["close"].tolist() == [10.0, 11.0]
+        cache.save_meta("600519", {"covered_start": "2016-01-01"})
+        assert cache.load_meta("600519") == {"covered_start": "2016-01-01"}
+
+
+def test_concurrent_save_load_two_processes(tmp_path):
+    """两个进程共用 data/cache 是生产常态（回测跑着、面板/信号脚本也在跑）。
+    临时文件名若固定为 <symbol>.parquet.tmp，两进程互抢：一方先 rename 走共享 tmp，
+    另一方 FileNotFoundError；更糟的窗口是互相截断写入后把混写内容 rename 成正式文件。
+    临时名必须进程唯一（mkstemp）。"""
+    ctx = mp.get_context("spawn")
+    procs = [ctx.Process(target=_hammer_cache, args=(str(tmp_path), 300)) for _ in range(2)]
+    for p in procs:
+        p.start()
+    for p in procs:
+        p.join(300)
+    assert [p.exitcode for p in procs] == [0, 0]
+
+
+def test_load_corrupt_parquet_raises_with_symbol_and_path(tmp_path):
+    """损坏 parquet 的原生报错只有 '<Buffer>'，10 只循环里根本不知道该删哪个文件。
+    必须包出带 symbol 和路径的错误，告诉用户删掉即可自动重拉。"""
+    cache = BarCache(tmp_path)
+    cache.save("600519", make_bars([_row("2024-01-02", 10.0)]))
+    p = tmp_path / "600519.parquet"
+    p.write_bytes(p.read_bytes()[:20])          # 截断，模拟写坏的缓存
+    with pytest.raises(RuntimeError, match="600519") as ei:
+        cache.load("600519")
+    assert str(p) in str(ei.value)
+
+
+def test_load_meta_corrupt_json_raises_with_symbol_and_path(tmp_path):
+    cache = BarCache(tmp_path)
+    cache.save_meta("600519", {"covered_start": "2016-01-01"})
+    p = tmp_path / "600519.meta.json"
+    p.write_bytes(p.read_bytes()[:5])           # 截断成非法 JSON
+    with pytest.raises(RuntimeError, match="600519") as ei:
+        cache.load_meta("600519")
+    assert str(p) in str(ei.value)
 
 
 def test_save_and_load_roundtrip(tmp_path):

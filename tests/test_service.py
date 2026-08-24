@@ -1,5 +1,6 @@
 # tests/test_service.py
 import pandas as pd
+import pytest
 from datetime import date, timedelta
 
 from quant.data.cache import BarCache
@@ -124,6 +125,25 @@ def test_overlap_refetch_corrects_stale_intraday_bar(tmp_path):
     df, _ = svc.get_bars("600519", date(2024, 1, 1), date(2024, 1, 31))
     good = provider.data.loc[pd.Timestamp("2024-01-19"), "close"]
     assert df.loc[pd.Timestamp("2024-01-19"), "close"] == good  # 已被修正
+
+
+def test_refresh_with_empty_fetch_does_not_clobber_good_cache(tmp_path):
+    """refresh=True 时 cached 为 None，若数据源抽风返回空表，先把空表落盘再抛错
+    会毁掉磁盘上仅有的好缓存——报错必须发生在落盘之前。"""
+    provider, cache = FakeProvider(), BarCache(tmp_path)
+    svc = DataService(provider, cache)
+    svc.get_bars("600519", date(2024, 1, 1), date(2024, 1, 31))
+    original = cache.load("600519")
+    original_meta = cache.load_meta("600519")
+
+    provider.data = provider.data.iloc[0:0]        # 数据源临时抽风：返回空表
+    with pytest.raises(ValueError, match="无可用数据"):
+        svc.get_bars("600519", date(2024, 1, 1), date(2024, 1, 31), refresh=True)
+
+    after = cache.load("600519")
+    assert after is not None and len(after) == len(original)   # 好缓存必须原样还在
+    assert after["close"].tolist() == original["close"].tolist()
+    assert cache.load_meta("600519") == original_meta          # meta 同理不能被动过
 
 
 def test_refresh_forces_full_fetch(tmp_path):

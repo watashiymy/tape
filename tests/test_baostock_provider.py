@@ -1,7 +1,8 @@
 # tests/test_baostock_provider.py —— 不联网的单元测试（联网用例见 test_baostock_integration.py）
+import pandas as pd
 import pytest
 
-from quant.data.baostock_provider import _fetch, to_bs_code
+from quant.data.baostock_provider import _factors_to_series, _fetch, to_bs_code
 
 
 class FakeResultSet:
@@ -57,3 +58,25 @@ def test_fetch_raises_when_pagination_fails_midway():
     rows = [["2024-01-02", "10"], ["2024-01-03", "11"], ["2024-01-04", "12"]]
     with pytest.raises(RuntimeError, match="10002"):
         _fetch(FakeResultSet(rows, fail_after=2))
+
+
+def test_factors_to_series_empty_table_supports_ffill_reindex():
+    """无除权记录的标的（新股）因子表为空。兜底若返回默认 RangeIndex 的空 Series，
+    get_daily_bars 里 reindex(DatetimeIndex, method='ffill') 直接
+    TypeError: Cannot compare dtypes int64 and datetime64[us]——
+    兜底本想让 fillna(1.0) 全填 1，实际那条路径永远走不到。"""
+    s = _factors_to_series(pd.DataFrame(columns=["dividOperateDate", "backAdjustFactor"]))
+    idx = pd.DatetimeIndex(["2024-01-02", "2024-01-03"])
+    out = s.reindex(idx, method="ffill")        # 修复前在这里就 TypeError
+    assert out.isna().all()
+    assert out.fillna(1.0).tolist() == [1.0, 1.0]
+
+
+def test_factors_to_series_converts_types_and_sorts():
+    """非空路径钉住：字符串日期/因子 → DatetimeIndex + float，且按日期升序（ffill 的前提）。"""
+    fac = pd.DataFrame({"dividOperateDate": ["2024-06-14", "2023-06-30"],
+                        "backAdjustFactor": ["1.30", "1.20"]})
+    s = _factors_to_series(fac)
+    assert list(s.index) == [pd.Timestamp("2023-06-30"), pd.Timestamp("2024-06-14")]
+    assert s.tolist() == [1.20, 1.30]
+    assert s.dtype == "float64"

@@ -42,6 +42,10 @@ class DataService:
         if fetch_start <= end:
             new = self.provider.get_daily_bars(symbol, fetch_start, end)
             merged = self.cache.merge(cached, new)  # merge 自己会处理 new 为空
+            if merged.empty:
+                # 必须在落盘**之前**抛：refresh=True 时 cached 为 None，数据源抽风返回
+                # 空表的话，先把空表写进缓存再报错会毁掉磁盘上仅有的好数据。
+                raise ValueError(f"{symbol}: 无可用数据（{start}~{end}）")
             self.cache.save(symbol, merged)
             self.cache.save_meta(symbol, {"covered_start":
                                           min(fetch_start, covered_start or fetch_start).isoformat()})

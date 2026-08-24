@@ -41,6 +41,19 @@ def _fetch(rs) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=rs.fields)
 
 
+def _factors_to_series(fac: pd.DataFrame) -> pd.Series:
+    """复权因子表 → 日期索引的 float Series（供 reindex(ffill) 展开到日频）。
+
+    空表（新股无除权记录）必须返回**空 DatetimeIndex** 的 Series：默认 RangeIndex 的
+    空 Series 在 reindex(DatetimeIndex, method='ffill') 时直接
+    TypeError: Cannot compare dtypes int64 and datetime64[us]，兜底等于没兜。
+    """
+    if fac.empty:
+        return pd.Series(dtype=float, index=pd.DatetimeIndex([]))
+    idx = pd.to_datetime(fac["dividOperateDate"])
+    return pd.Series(fac["backAdjustFactor"].astype(float).values, index=idx).sort_index()
+
+
 class BaostockProvider(DataProvider):
     def __enter__(self):
         _check(bs.login())
@@ -74,11 +87,7 @@ class BaostockProvider(DataProvider):
         # 探针已确认 backAdjustFactor 是"自上市累积"口径（单调不减、每个除权日一条、日期无重复），
         # 所以直接 ffill 即可，无需累乘。
         rs = bs.query_adjust_factor(code=code, start_date="1990-01-01", end_date=str(end))
-        fac = _fetch(rs)
-        if fac.empty:
-            return pd.Series(dtype=float)
-        idx = pd.to_datetime(fac["dividOperateDate"])
-        return pd.Series(fac["backAdjustFactor"].astype(float).values, index=idx).sort_index()
+        return _factors_to_series(_fetch(rs))
 
     def get_index_daily(self, index_code: str, start: date, end: date) -> pd.DataFrame:
         code = "sh." + index_code if index_code.startswith("0") else index_code
