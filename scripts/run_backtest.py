@@ -28,6 +28,8 @@ OUTPUT = Path("output")
 
 # 显式列名从 Trade 字段派生：加字段不会漏列，零成交时表头也不会消失。
 TRADE_COLUMNS = [f.name for f in fields(Trade)]
+# 被跳过的订单（涨跌停/资金不足等）。与成交明细不是一套列，面板的列配置按它对齐。
+SKIPPED_COLUMNS = ["date", "symbol", "reason"]
 
 
 def write_trades(trades: list[Trade], path: Path) -> None:
@@ -65,7 +67,7 @@ def write_run_outputs(run_dir: Path, metrics: dict, result: BacktestResult,
         json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
     result.equity.rename("equity").to_csv(run_dir / "equity.csv")
     write_trades(result.trades, run_dir / "trades.csv")
-    pd.DataFrame(result.skipped, columns=["date", "symbol", "reason"]).to_csv(
+    pd.DataFrame(result.skipped, columns=SKIPPED_COLUMNS).to_csv(
         run_dir / "skipped.csv", index=False)
     equity_chart(result.equity, benchmarks).write_html(run_dir / "report.html")
     for sym, df in bars.items():

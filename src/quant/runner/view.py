@@ -12,8 +12,17 @@ from quant.runner.jobs import JOBS
 from quant.runner.process import FAILED, RUNNING, STOPPED, SUCCESS, RunState
 from quant.runner.progress import CRASHED, DONE, Progress
 
-IDLE_BADGE = "⚪ 空闲"
-_BADGES = {RUNNING: "🔵 运行中", SUCCESS: "✅ 成功", FAILED: "❌ 失败", STOPPED: "⏹ 已停止"}
+# 状态 pill 的四个类目（§2.3 第 5 条：运行中琥珀 / 成功绿 / 失败红 / 已停止灰）。
+# 这里只给类目字符串，配色在 app/theme.py 的 .qd-pill-* 里——纯函数不该知道十六进制。
+PILL_RUNNING, PILL_SUCCESS, PILL_FAILED, PILL_IDLE = (
+    "running", "success", "failed", "idle")
+IDLE_TEXT = "空闲"
+# 状态文件损坏时页头用这句。绝不能退回"空闲"——互斥状态不可知恰恰是最该
+# fail-safe 的时候，谎报空闲会让用户以为可以随手点开始。
+UNKNOWN_TEXT = "任务状态未知"
+# 已停止归灰而不是红：那是用户自己按的停止，不是故障。
+_PILLS = {RUNNING: ("运行中", PILL_RUNNING), SUCCESS: ("成功", PILL_SUCCESS),
+          FAILED: ("失败", PILL_FAILED), STOPPED: ("已停止", PILL_IDLE)}
 
 # 任务已终止时用来顶掉日志相位的终态词。日志解析器只看得见日志，看不见进程死活：
 # 被 SIGTERM 停掉的扫描，日志最后一行仍是 `[1800/3010]`，相位就一直卡在"扫描中"。
@@ -22,17 +31,23 @@ _END_PHASES = {SUCCESS: DONE, FAILED: "失败", STOPPED: "已停止"}
 _LOG_TERMINAL = (DONE, CRASHED)
 
 
-def status_badge(state: RunState | None) -> str:
-    """状态徽标。失败必须把退出码带出来——1=脚本自己 sys.exit、2=argparse 参数错、
-    -9/-15=被信号打死，这是排查的第一手线索。僵尸清理拿不到退出码（进程不是面板的孩子），
-    如实写"未知"，不能渲染出 "退出码 None"。"""
+def status_pill(state: RunState | None) -> tuple[str, str]:
+    """(pill 文案, CSS 类目)。取代 v0.2.0 的 emoji 徽标：有底色的 pill 更容易扫到。
+
+    失败必须把退出码带出来——1=脚本自己 sys.exit、2=argparse 参数错、
+    -9/-15=被信号打死，这是排查的第一手线索。僵尸清理拿不到退出码（进程不是面板的
+    孩子），如实写"未知"，不能渲染出 "退出码 None"。
+
+    未知状态（状态文件是普通 JSON，手工改成 "paused" 也可能）原样显示文案但**归灰**：
+    用下标取值会 KeyError 崩页，猜成 running 则等于谎报"有任务在跑"。
+    """
     if state is None:
-        return IDLE_BADGE
-    badge = _BADGES.get(state.status, f"❔ {state.status}")
+        return IDLE_TEXT, PILL_IDLE
+    text, kind = _PILLS.get(state.status, (state.status, PILL_IDLE))
     if state.status == FAILED:
         code = "未知" if state.exit_code is None else state.exit_code
-        badge += f"（退出码 {code}）"
-    return badge
+        text += f"（退出码 {code}）"
+    return text, kind
 
 
 def human_duration(seconds: float | None) -> str:
@@ -84,8 +99,13 @@ def _phase(p: Progress, status: str) -> str:
     return _END_PHASES.get(status, p.phase)
 
 
-def progress_caption(p: Progress, elapsed_s: float | None = None, *, status: str) -> str:
-    """一行进度文案：阶段、百分比、已用、预计剩余、计数。
+def progress_lines(p: Progress, elapsed_s: float | None = None, *,
+                   status: str) -> tuple[str, str]:
+    """进度文案，拆成两行（§2.4）：("主状态", "细节")。
+
+    主状态 = 阶段 + 计数 + 百分比；细节 = 已用 + 预计剩余 + 额外计数（信号条数等）。
+    挤成一行时"扫描中"和"失败 0 只"视觉权重一样，眼睛没有落点。
+    细节没内容时返回**空串**，面板据此不渲染第二行（别留一条空 caption 撑版面）。
 
     阶段永远排第一且不被百分比顶掉——扫描跑到一半崩了的时候，"异常退出"比 "60%" 重要。
     `elapsed_s` 是**墙钟**耗时（由调用方按状态文件算），不能拿日志里的"耗时 673s"冒充：
@@ -97,17 +117,18 @@ def progress_caption(p: Progress, elapsed_s: float | None = None, *, status: str
     用户照着等就是白等（设计 §3.2"宁可不显示，不显示假数字"）。
     停在 1800/3010、已用多久、出了几条信号都是既成事实，照常留着。
     """
-    parts = [_phase(p, status)]
+    head = [_phase(p, status)]
     ratio = progress_ratio(p)
     if ratio is not None:
-        parts.append(f"{p.current}/{p.total}（{ratio:.0%}）")
+        head.append(f"{p.current}/{p.total}（{ratio:.0%}）")
+    detail: list[str] = []
     if elapsed_s is not None:
-        parts.append(f"已用 {human_duration(elapsed_s)}")
+        detail.append(f"已用 {human_duration(elapsed_s)}")
     eta = human_eta(p.eta_s) if status == RUNNING else ""
     if eta:
-        parts.append(f"预计剩余 {eta}")
-    parts += [f"{k} {v}" for k, v in p.extras.items()]
-    return "，".join(parts)
+        detail.append(f"预计剩余 {eta}")
+    detail += [f"{k} {v}" for k, v in p.extras.items()]
+    return "，".join(head), "，".join(detail)
 
 
 def elapsed_seconds(state: RunState, now: datetime | None = None) -> float | None:
@@ -126,6 +147,23 @@ def elapsed_seconds(state: RunState, now: datetime | None = None) -> float | Non
     return max(0.0, ((end or now or datetime.now()) - start).total_seconds())
 
 
+def job_label(name: str) -> str:
+    """任务的中文显示名。JOBS 里没有（runs/ 混进手工实验残留的 json）就原样回显，
+    绝不 KeyError 崩页。"""
+    return JOBS[name].label if name in JOBS else name
+
+
+def busy_pill(busy: str | None) -> tuple[str, str]:
+    """页头右侧的**全局**任务 pill（文案, 类目）。busy 取自 process.any_running()。
+
+    全局而不是按页：用户在 K 线页也该看见"扫描还在跑"，否则他会去点另一个开始，
+    然后对着一句"启动失败"发愁。
+    """
+    if busy is None:
+        return IDLE_TEXT, PILL_IDLE
+    return f"{job_label(busy)} 运行中", PILL_RUNNING
+
+
 def start_button_state(busy: str | None, job_name: str) -> tuple[bool, str]:
     """(是否禁用"开始", 提示文案)。全局互斥在按钮层强制（设计 §5.1）。
 
@@ -135,5 +173,5 @@ def start_button_state(busy: str | None, job_name: str) -> tuple[bool, str]:
     """
     if busy is None:
         return False, ""
-    label = JOBS[busy].label if busy in JOBS else busy
-    return True, f"「{label}」正在运行，同时只允许一个任务（baostock 单会话）"
+    return True, (f"「{job_label(busy)}」正在运行，"
+                  f"同时只允许一个任务（baostock 单会话）")

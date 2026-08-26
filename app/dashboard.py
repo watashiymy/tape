@@ -24,6 +24,7 @@ import theme  # noqa: E402  视觉基座，与本文件同目录（app/theme.py�
 from quant.backtest.portfolio import Trade  # noqa: E402
 from quant.data.cache import BarCache       # noqa: E402
 from quant.data.pipeline import prepare_bars  # noqa: E402
+from quant.report import fmt                  # noqa: E402  格式化/配色/列配置（纯函数）
 from quant.report.charts import kline_chart   # noqa: E402
 from quant.runner import jobs, process, progress, view  # noqa: E402
 
@@ -32,13 +33,21 @@ RUNS_DIR = OUTPUT / "runs"
 
 AUTO_REFRESH_S = "2s"     # 运行中卡片的局部刷新间隔（空闲时不设，避免面板空转）
 LOG_TAIL_LINES = 30
+LOG_BOX_HEIGHT = 220      # 日志区固定高度滚动（§2.4）：几十行日志不许把版面顶飞
+# 标的名称取自最近这么多份扫描 CSV。名称几乎不变，30 份够用，同时把每次渲染的
+# 文件读取量兜住（一天一份，长期跑下来 output/scan/ 会攒到几百份）。
+NAME_LOOKBACK_FILES = 30
 
-METRIC_LABELS = {
-    "total_return": "总收益率", "cagr": "年化收益率", "max_drawdown": "最大回撤",
-    "sharpe": "夏普比率(rf=0)", "n_trades": "交易次数", "win_rate": "胜率",
-    "profit_factor": "盈亏比", "avg_holding_days": "平均持仓天数",
+# 每页顶部那句话（§2.4 通用页头）。只讲"这页给你看什么、什么时候看"，
+# 数字必须与实测一致（baostock 约 17:30 后才有当日数据 —— README/spec §11）。
+PAGE_INTRO = {
+    "回测报告": "历史检验的结果：绩效指标、净值报告与逐笔成交，读自 output/ 里已完成的回测。",
+    "个股K线": "单只标的的日线走势，叠加本次回测在它身上的买卖点。",
+    "今日信号": "固定池的每日买卖信号，页尾是全市场扫描当日新 BUY；"
+            "收盘后 17:30 之后跑才有当日数据。",
+    "任务控制台": "在本机启动三个任务并盯进度、日志与结果；"
+             "同时只允许一个任务（baostock 单会话）。",
 }
-
 
 RUN_STAMP = re.compile(r"_(\d{8}_\d{6})$")   # run_backtest.py 的 {策略}_{YYYYMMDD}_{HHMMSS}
 
@@ -47,16 +56,69 @@ RUN_STAMP = re.compile(r"_(\d{8}_\d{6})$")   # run_backtest.py 的 {策略}_{YYY
 _REQUIRED_FILES = ("metrics.json", "report.html", "trades.csv")
 
 
-def _fmt_metric(key: str, value) -> str:
-    """指标卡数值格式化。int 必须原样 str()：一律 f"{v:.2f}" 会把交易次数
-    渲染成 '243.00'。None（无平仓交易等）显示 —，比率类显示百分号。"""
-    if value is None:
-        return "—"
-    if isinstance(value, int):
-        return str(value)
-    if key in ("total_return", "cagr", "max_drawdown", "win_rate"):
-        return f"{value:.2%}"
-    return f"{value:.2f}"
+def _page_head(page: str) -> None:
+    """通用页头（§2.4）：页名衬线大字 + 一句话说明 + 右侧全局任务状态 pill。
+
+    这里**不**报 st.error：状态文件损坏时下面的控制条/卡片会报，页头再喊一遍只是噪声；
+    但 pill 必须如实说"未知"，不能退回"空闲"（那是猜的，而且正是 fail-safe 要挡的误导）。
+    """
+    try:
+        text, kind = view.busy_pill(process.any_running(RUNS_DIR))
+    except RuntimeError:
+        text, kind = view.UNKNOWN_TEXT, view.PILL_IDLE
+    st.html(theme.page_head(page, PAGE_INTRO[page], theme.pill(text, kind)))
+
+
+def _metric_grid(metrics: dict, per_row: int = 4) -> None:
+    """指标卡网格。默认 2 行 × 4 列（§2.4）；控制台卡片只有三分之一宽，传 per_row=2。
+
+    老写法 `st.columns(4)` 配 `cols[i % 4]` 是**一行 4 列、每列纵向摞两张**：
+    右半边版面空着，两排数字还错位。这里按行现开列。
+    """
+    items = list(fmt.METRIC_LABELS.items())
+    for start in range(0, len(items), per_row):
+        row = items[start:start + per_row]
+        for col, (key, label) in zip(st.columns(per_row), row):
+            value = metrics.get(key)
+            col.html(theme.metric(label, fmt.fmt_metric(key, value),
+                                  fmt.metric_color(key, value)))
+
+
+def _data_table(df: pd.DataFrame, config: dict, empty_text: str,
+                color_columns: tuple[str, ...] = ()) -> None:
+    """信号/扫描/交易表的统一渲染口。
+
+    `color_columns` 走 pandas Styler：`column_config` 里没有条件着色能力
+    （NumberColumn 无 color 参数），红绿只能这么给；而 column_config 的格式串
+    优先级高于 Styler，所以千分位、百分号不会被顶掉。
+    必须写成 if/return 语句：裸三元会被 streamlit magic 整条包进 st.write。
+    """
+    if not len(df):
+        st.write(empty_text)
+        return
+    data = fmt.direction_styler(df, color_columns) if color_columns else df
+    st.dataframe(data, width="stretch", column_config=config, hide_index=True)
+
+
+def symbol_names() -> dict[str, str]:
+    """symbol → 名称。唯一的离线来源是扫描 CSV，而扫描只记录**出信号**的标的，
+    所以多数标的（含 universe 里那十只蓝筹）查不到名字——缺名是常态，不是异常。
+
+    坏掉的扫描文件一律跳过：K 线页不该因为一份半截 CSV 就打不开。
+    """
+    scan_dir = OUTPUT / "scan"
+    files = sorted(scan_dir.glob("*.csv"), reverse=True) if scan_dir.exists() else []
+    names: dict[str, str] = {}
+    for path in files[:NAME_LOOKBACK_FILES]:   # 新的排前面，先到者胜（改过名的取最近）
+        try:
+            df = pd.read_csv(path, dtype={"symbol": str})
+        except (ValueError, OSError):
+            continue
+        if "symbol" not in df.columns or "name" not in df.columns:
+            continue
+        for sym, name in zip(df["symbol"], df["name"]):
+            names.setdefault(str(sym), name)
+    return names
 
 
 def _run_key(p: Path) -> tuple[str, str]:
@@ -76,6 +138,7 @@ def list_runs() -> list[Path]:
 
 
 def page_backtest() -> None:
+    _page_head("回测报告")
     _control_bar("backtest")   # §4.2 控制条；下面的只读逻辑一行未动
     runs = list_runs()
     if not runs:
@@ -97,22 +160,24 @@ def page_backtest() -> None:
         st.error(f"回测目录 {run.name} 数据残缺（{type(e).__name__}），"
                  f"多半是回测中途被打断；请删除该目录后刷新页面。")
         return
-    cols = st.columns(4)
-    for i, (k, label) in enumerate(METRIC_LABELS.items()):
-        cols[i % 4].metric(label, _fmt_metric(k, metrics.get(k)))
+    _metric_grid(metrics)
     # src 直接给 Path：st.iframe 会自己读这个 HTML 文件并内嵌（report.html 约 5 MB，
     # 自己 read_text 白读一遍）。st.iframe **没有** scrolling 参数（签名只有
     # src/width/height/tab_index），iframe 自带滚动条，不需要它。
     # 不能换成 st.html：那个不套 iframe 且默认忽略 JavaScript，plotly 报告会是空白页。
     st.iframe(run / "report.html", height=650)
-    st.subheader("交易明细")
-    st.dataframe(trades, width="stretch")
+    st.html(theme.section("交易明细"))
+    st.caption("金额与股数已加千分位、数字列右对齐；盈亏只在**平仓**那一笔上有值，"
+               "买入行与仍持仓的标的是空值。")
+    _data_table(trades, fmt.trades_column_config(), "本次回测没有任何成交")
     if skipped is not None:
-        st.subheader("被跳过的订单（涨跌停/资金不足等）")
-        st.dataframe(skipped, width="stretch")
+        st.html(theme.section("被跳过的订单（涨跌停/资金不足等）"))
+        # 这张表只有 date/symbol/reason，列配置得各用各的（成交表那套会漏掉 reason）
+        _data_table(skipped, fmt.skipped_column_config(), "无被跳过的订单")
 
 
 def page_kline() -> None:
+    _page_head("个股K线")
     _control_bar("backtest")   # K 线图也是回测产物（kline_*.html + trades.csv）
     runs = list_runs()
     if not runs:
@@ -126,7 +191,13 @@ def page_kline() -> None:
                  f"多半是回测中途被打断；请删除该目录后刷新页面。")
         return
     symbols = sorted({p.stem.replace("kline_", "") for p in run.glob("kline_*.html")})
-    sym = st.selectbox("选择标的", symbols)
+    # 名称让人看得出这是哪家公司（§2.4）。查不到就只显示代码——扫描 CSV 是唯一的
+    # 离线名称来源，而它只记录出信号的标的，所以缺名是常态。
+    names = symbol_names()
+    sym = st.selectbox("选择标的", symbols,
+                       format_func=lambda s: fmt.symbol_label(s, names.get(s)))
+    rows = trades_df[trades_df["symbol"].astype(str).str.zfill(6) == sym]
+    _symbol_summary(rows)
     raw = BarCache(ROOT / "data" / "cache").load(sym)
     if raw is None:
         st.error(f"缓存中无 {sym} 行情")
@@ -134,9 +205,27 @@ def page_kline() -> None:
     df, _ = prepare_bars(raw)
     sym_trades = [
         Trade(r.symbol, r.action, pd.Timestamp(r.date), r.price, r.shares, r.commission)
-        for r in trades_df[trades_df["symbol"].astype(str).str.zfill(6) == sym].itertuples()
+        for r in rows.itertuples()
     ]
     st.plotly_chart(kline_chart(df, sym_trades, sym), width="stretch")
+
+
+def _symbol_summary(rows: pd.DataFrame) -> None:
+    """图上方那行小结（§2.4）：本次回测在该标的上成交几笔、盈亏多少。
+
+    盈亏只算已平仓的那些；一笔都没平（仍持仓）时显示 —，不能写 0
+    ——那等于宣布"这只不赚不亏"，是编出来的数字。
+    """
+    s = fmt.symbol_trade_summary(rows)
+    cards = (("成交笔数", str(s["n_trades"]), None),
+             ("买入笔数", str(s["n_buy"]), None),
+             ("卖出笔数", str(s["n_sell"]), None),
+             ("已平仓盈亏", fmt.fmt_amount(s["pnl"]), fmt.signed_color(s["pnl"])))
+    for col, (label, value, color) in zip(st.columns(len(cards)), cards):
+        col.html(theme.metric(label, value, color))
+
+
+SCAN_COLOR_COLUMNS = ("pct_chg",)   # 扫描表里唯一有方向的列（红涨绿跌）
 
 
 def scan_section() -> None:
@@ -149,7 +238,7 @@ def scan_section() -> None:
         return
     latest = files[0]
     # 标题必须带扫描日期（文件名 stem）：停牌日/忘跑的日子，别让人把旧扫描当今天的
-    st.subheader(f"全市场扫描（{latest.stem}）")
+    st.html(theme.section(f"全市场扫描（{latest.stem}）"))
     # 扫描被 Ctrl-C 打断可能留下零字节/半截 CSV：EmptyDataError / ParserError
     # 都是 ValueError 子类，与回测页同一套容错口径，崩页不如明说
     try:
@@ -158,13 +247,13 @@ def scan_section() -> None:
         st.error(f"扫描文件 {latest.name} 读取失败（{type(e).__name__}），"
                  f"多半是扫描中途被打断；请删除该文件后重新运行扫描。")
         return
-    if len(df):
-        st.dataframe(df, width="stretch")
-    else:
-        st.write("当日无新信号")
+    st.caption("放量倍数（当日成交额 / 前 20 日均额）是判断信号质量最该看的一列——"
+               "没有量的突破多半是假突破；涨跌幅的参考价值反而低。")
+    _data_table(df, fmt.scan_column_config(), "当日无新信号", SCAN_COLOR_COLUMNS)
 
 
 def page_signals() -> None:
+    _page_head("今日信号")
     # 本页同屏展示两类产物：固定池每日信号 + 页尾的全市场扫描区块，故控制条有两条
     _control_bar("daily_signal", "market_scan")
     sig_dir = OUTPUT / "signals"
@@ -174,24 +263,17 @@ def page_signals() -> None:
         st.info("暂无信号记录。收盘后运行: python scripts/run_daily_signal.py")
     else:
         latest = files[0]
-        st.subheader(f"最新信号（{latest.stem}）")
+        st.html(theme.section(f"最新信号（{latest.stem}）"))
         df = pd.read_csv(latest, dtype={"symbol": str})
-        # 必须写成 if/else 语句：streamlit 的 magic 会把函数体内**裸的三元表达式**
-        # （ast.IfExp，不属于它豁免的 ast.Call）整个包进 st.write()，
-        # 于是 st.dataframe() 的返回值 DeltaGenerator 被 st.write 当对象内省，
-        # 把整份 Streamlit API 手册糊在信号表下面；无信号那天则渲染出一个 `None`。
-        if len(df):
-            st.dataframe(df, width="stretch")
-        else:
-            st.write("当日无新信号")
+        # 表格渲染统一走 _data_table：空表时那句提示必须是 if/else **语句**，
+        # streamlit 的 magic 会把裸三元（ast.IfExp）整条包进 st.write()，
+        # 于是 st.dataframe 的返回值被当对象内省，把整份 API 手册糊在信号表下面。
+        _data_table(df, fmt.signal_column_config(), "当日无新信号")
         if len(files) > 1:
-            st.subheader("历史信号")
+            st.html(theme.section("历史信号"))
             hist = pd.concat([pd.read_csv(f, dtype={"symbol": str}) for f in files[1:]],
                              ignore_index=True)
-            if len(hist):
-                st.dataframe(hist, width="stretch")
-            else:
-                st.write("无")
+            _data_table(hist, fmt.signal_column_config(), "无")
     scan_section()
 
 
@@ -286,7 +368,7 @@ def _control_bar(*job_names: str) -> None:
         running = state is not None and state.status == process.RUNNING
         disabled, notice = view.start_button_state(busy, name)
         head, start_col, stop_col = st.columns([6, 1, 1], vertical_alignment="center")
-        head.markdown(f"**{job.label}** {view.status_badge(state)}")
+        head.html(theme.section(job.label, theme.pill(*view.status_pill(state))))
         if start_col.button("▶ 开始", key=f"bar_start_{name}", disabled=disabled):
             _start(name, {})              # 精简条无参数控件：一律默认参数
         if stop_col.button("⏹ 停止", key=f"bar_stop_{name}", disabled=not running):
@@ -300,33 +382,39 @@ def _control_bar(*job_names: str) -> None:
     st.divider()
 
 
-def _result_table(path_str: str) -> None:
+def _result_table(path_str: str, config: dict, color_columns: tuple[str, ...]) -> None:
     """扫描/信号的产物 CSV。symbol 必须按字符串读，否则 000333 变成 333。"""
     try:
         df = pd.read_csv(_resolve(path_str), dtype={"symbol": str})
     except (ValueError, OSError) as e:
         st.warning(f"产物 {path_str} 读取失败（{type(e).__name__}），可能已被删除或仍在写。")
         return
-    if len(df):
-        st.dataframe(df, width="stretch")
-    else:
-        st.write("当次无新信号")
+    _data_table(df, config, "当次无新信号", color_columns)
+
+
+def _result_scan(path_str: str) -> None:
+    _result_table(path_str, fmt.scan_column_config(), SCAN_COLOR_COLUMNS)
+
+
+def _result_signal(path_str: str) -> None:
+    """每日信号 CSV 的列与扫描**不是**同一套（没有 name/成交额/放量倍数），
+    列配置也得各用各的，否则 action / close 连中文标签都没有。"""
+    _result_table(path_str, fmt.signal_column_config(), ())
 
 
 def _result_metrics(dir_str: str) -> None:
-    """回测产物：每个策略一个报告目录，各出一组指标卡。"""
+    """回测产物：每个策略一个报告目录，各出一组指标卡。
+    卡片只有三分之一宽，指标网格用 2 列（4 列会挤成一团）。"""
     try:
         metrics = json.loads((_resolve(dir_str) / "metrics.json").read_text(encoding="utf-8"))
     except (ValueError, OSError) as e:
         st.warning(f"产物 {dir_str} 读取失败（{type(e).__name__}），可能已被删除或仍在写。")
         return
     st.caption(dir_str)
-    cols = st.columns(4)
-    for i, (k, label) in enumerate(METRIC_LABELS.items()):
-        cols[i % 4].metric(label, _fmt_metric(k, metrics.get(k)))
+    _metric_grid(metrics, per_row=2)
 
 
-_RESULT_RENDERERS = {"scan_csv": _result_table, "signal_csv": _result_table,
+_RESULT_RENDERERS = {"scan_csv": _result_scan, "signal_csv": _result_signal,
                      "backtest_run": _result_metrics}
 
 
@@ -341,10 +429,10 @@ def _render_card(job_name: str) -> str | None:
         busy = process.any_running(RUNS_DIR)
     except RuntimeError as e:
         # 状态文件损坏必须响亮失败：静默当"空闲"会放开互斥，两个 baostock 会话互踢。
-        st.subheader(job.label)
+        st.html(theme.section(job.label))
         st.error(str(e))
         return None
-    st.subheader(f"{job.label} {view.status_badge(state)}")
+    st.html(theme.section(job.label, theme.pill(*view.status_pill(state))))
     params = _param_widgets(job)
     disabled, notice = view.start_button_state(busy, job_name)
     running = state is not None and state.status == process.RUNNING
@@ -365,19 +453,25 @@ def _render_card(job_name: str) -> str | None:
     prog = job.parser(log)
     # status 必须一路带到文案里：解析器只看得见日志，看不见进程死活——被停掉的扫描
     # 日志最后一行仍是 [1800/3010]，不告诉它状态就会继续喊"扫描中，预计剩余 ~8分钟"。
-    caption = view.progress_caption(prog, view.elapsed_seconds(state), status=state.status)
+    # 两行（§2.4）：主状态进进度条，细节（已用/ETA/信号条数）单独一行灰字。
+    head, detail = view.progress_lines(prog, view.elapsed_seconds(state),
+                                       status=state.status)
     ratio = view.progress_ratio(prog)
     if ratio is not None:
         # 已终止也照画：进度条这时是"停在哪儿"的存档（文案已由 view 换成终态词、不带 ETA），
         # 用户据此判断要不要从这儿接着补跑。
-        st.progress(ratio, text=caption)
+        st.progress(ratio, text=head)
     elif running:
-        st.status(caption, state="running")   # 不确定态：转圈 + 阶段 + 已用时长
+        st.status(head, state="running")     # 不确定态：转圈 + 阶段
     else:
-        st.caption(caption)
-    st.code(progress.tail(log, LOG_TAIL_LINES) or "（暂无输出）", language="text")
+        st.caption(head)
+    if detail:
+        st.caption(detail)
+    # 固定高度滚动：不给 height 的话几十行日志会把三张卡片顶得错开老远。
+    st.code(progress.tail(log, LOG_TAIL_LINES) or "（暂无输出）", language="text",
+            height=LOG_BOX_HEIGHT)
     with st.expander("完整日志"):
-        st.code(log or "（暂无输出）", language="text")
+        st.code(log or "（暂无输出）", language="text", height=LOG_BOX_HEIGHT)
     if state.status == process.SUCCESS:
         for out in prog.outputs:
             _RESULT_RENDERERS[job.result_kind](out)
@@ -404,6 +498,7 @@ def _card_for(busy: str | None):
 
 
 def page_console() -> None:
+    _page_head("任务控制台")
     st.caption("任务在独立进程里运行：关掉浏览器、甚至停掉本面板都不会中断它。"
                "同时只允许一个任务（baostock 单会话，并发会互踢下线）。")
     try:
@@ -412,8 +507,11 @@ def page_console() -> None:
         st.error(str(e))
         busy = None
     card = _card_for(busy)
-    for name in jobs.JOBS:
-        card(name, busy or "")
+    # 三张卡片等宽并排（§2.4）：纵向堆叠时要滚很久才看得见第三张。
+    # fragment 写进列里是允许的（实测过）——列就是它的父容器，局部重跑照旧只动这一列。
+    for col, name in zip(st.columns(len(jobs.JOBS)), jobs.JOBS):
+        with col:
+            card(name, busy or "")
 
 
 st.set_page_config(page_title="quant_demo v0.2.0", layout="wide")

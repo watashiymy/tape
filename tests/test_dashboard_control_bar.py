@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from quant.runner import jobs, process
+from quant.runner import jobs, process, view
 from tests.conftest import copy_app
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -65,6 +65,13 @@ def _fake_run(root: Path, job: str, status: str, *, log: str = "", exit_code=Non
 
 def _bar_keys(at: AppTest) -> list[str]:
     return [b.key for b in at.button if b.key.startswith("bar_")]
+
+
+def _htmls(at: AppTest) -> list[str]:
+    """页面上我们自己包的 .qd-* HTML（st.html 在 AppTest 里没有 .value）；
+    theme.inject() 那段 <style> 也走 st.html，滤掉免得断言蒙对。"""
+    return [b for e in at.get("html")
+            if not (b := e.proto.body).lstrip().startswith("<style>")]
 
 
 # ------------------------------------------------------------------ §4.3 侧边栏
@@ -137,8 +144,10 @@ def test_control_bar_shows_the_current_status(page, tmp_path):
     _fake_run(tmp_path, job, "failed", exit_code=3, log="Traceback\n")
     at = _page(tmp_path, page)
     assert not at.exception, at.exception
-    text = " ".join(m.value for m in at.markdown)
+    # 状态徽标自 v0.2.1 起是有底色的 pill（st.html），不再是 markdown 里的 emoji
+    text = " ".join(_htmls(at))
     assert jobs.JOBS[job].label in text and "退出码 3" in text, text
+    assert "qd-pill-failed" in text, text
 
 
 def test_control_bar_points_to_the_console_for_details(tmp_path):
@@ -238,7 +247,10 @@ def test_corrupt_state_file_offers_no_start_but_keeps_the_readonly_page(tmp_path
     assert not at.exception, at.exception
     assert _bar_keys(at) == [], f"互斥状态未知却给了按钮: {_bar_keys(at)}"
     assert any("损坏" in e.value for e in at.error), [e.value for e in at.error]
-    assert any(m.value == "243" for m in at.metric), "只读内容被控制条的故障连坐了"
+    blob = " ".join(_htmls(at))
+    assert 'class="qd-metric-value">243<' in blob, "只读内容被控制条的故障连坐了"
+    # 页头那颗 pill 此时必须如实说"未知"：报"空闲"就是猜的，而这正是 fail-safe 要挡的
+    assert view.UNKNOWN_TEXT in blob, blob
 
 
 @pytest.mark.parametrize("page", ALL_PAGES)

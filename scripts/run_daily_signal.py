@@ -17,6 +17,8 @@ from quant.signal.scan import scan
 from quant.strategy import build_strategies
 
 SIGNAL_DIR = Path("output/signals")
+# 信号 CSV 的列（面板的列配置按它对齐；与全市场扫描的 CSV_COLUMNS 不是同一套）
+CSV_COLUMNS = ["date", "symbol", "strategy", "action", "close"]
 
 
 def require_strategies(strategy_cfg: dict[str, dict]) -> list:
@@ -76,8 +78,7 @@ def main() -> None:
         print(pd.DataFrame(signals).to_string(index=False))
     SIGNAL_DIR.mkdir(parents=True, exist_ok=True)
     out = SIGNAL_DIR / f"{expected}.csv"
-    pd.DataFrame(signals, columns=["date", "symbol", "strategy", "action", "close"]).to_csv(
-        out, index=False)
+    pd.DataFrame(signals, columns=CSV_COLUMNS).to_csv(out, index=False)
     print(f"已保存: {out}")
 
 

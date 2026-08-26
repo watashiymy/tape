@@ -24,36 +24,55 @@ def _state(**kw) -> RunState:
     return RunState(**(base | kw))
 
 
-# ---------------------------------------------------------------- 状态徽标
-def test_idle_badge_when_never_run():
-    assert view.status_badge(None) == view.IDLE_BADGE
-    assert "空闲" in view.IDLE_BADGE
+# ---------------------------------------------------------------- 状态 pill（§2.3 第 5 条）
+def test_idle_pill_when_never_run():
+    """从未跑过 = 灰底"空闲"。pill 的两个返回值都要能单测：文案给用户看，
+    第二个是 CSS 类目（qd-pill-*），面板只负责把它拼进 class 属性。"""
+    text, kind = view.status_pill(None)
+    assert text == "空闲"
+    assert kind == view.PILL_IDLE
 
 
-@pytest.mark.parametrize("status, word", [
-    ("running", "运行中"), ("success", "成功"), ("stopped", "已停止"),
+@pytest.mark.parametrize("status, word, kind", [
+    ("running", "运行中", "running"),
+    ("success", "成功", "success"),
+    ("stopped", "已停止", "idle"),      # 已停止 = 灰，不是失败的红
+    ("failed", "失败", "failed"),
 ])
-def test_badge_words(status, word):
-    assert word in view.status_badge(_state(status=status))
+def test_pill_words_and_colors(status, word, kind):
+    """四色对应 §2.3 第 5 条：运行中琥珀 / 成功绿 / 失败红 / 已停止灰。"""
+    text, got = view.status_pill(_state(status=status, exit_code=0))
+    assert word in text
+    assert got == kind
 
 
-def test_failed_badge_carries_exit_code():
+def test_failed_pill_carries_exit_code():
     """退出码是排查的第一手线索（1=脚本 sys.exit，2=argparse 参数错，-9=被 kill）。
     只显示"失败"等于把它藏起来。"""
-    assert "退出码 3" in view.status_badge(_state(status="failed", exit_code=3))
+    text, kind = view.status_pill(_state(status="failed", exit_code=3))
+    assert "退出码 3" in text
+    assert kind == view.PILL_FAILED
 
 
-def test_unknown_status_badge_does_not_crash():
-    """状态文件是普通 JSON，手工改成任何字符串都可能（status: "paused"）。
-    _BADGES 用下标取值会 KeyError 直接崩页——整个控制台连"删掉这个文件"的提示都给不出。"""
-    badge = view.status_badge(_state(status="paused"))
-    assert "paused" in badge
-
-
-def test_failed_badge_says_unknown_when_exit_code_lost():
+def test_failed_pill_says_unknown_when_exit_code_lost():
     """僵尸清理（进程不是面板的孩子）拿不到退出码，如实写"未知"，不能显示"退出码 None"。"""
-    badge = view.status_badge(_state(status="failed", exit_code=None))
-    assert "未知" in badge and "None" not in badge
+    text, _ = view.status_pill(_state(status="failed", exit_code=None))
+    assert "未知" in text and "None" not in text
+
+
+def test_unknown_status_pill_does_not_crash():
+    """状态文件是普通 JSON，手工改成任何字符串都可能（status: "paused"）。
+    用下标取值会 KeyError 直接崩页——整个控制台连"删掉这个文件"的提示都给不出。
+    未知状态归灰：绝不能瞎报成"运行中"（那会把互斥说成正在跑）。"""
+    text, kind = view.status_pill(_state(status="paused"))
+    assert "paused" in text
+    assert kind == view.PILL_IDLE
+
+
+def test_pill_kinds_are_the_four_css_classes():
+    """类目字符串直接拼进 .qd-pill-* 类名，写错就是没有底色的裸文字。"""
+    assert {view.PILL_RUNNING, view.PILL_SUCCESS, view.PILL_FAILED, view.PILL_IDLE} == \
+        {"running", "success", "failed", "idle"}
 
 
 # ---------------------------------------------------------------- 时长格式化
@@ -101,38 +120,79 @@ def test_progress_ratio_survives_zero_and_overflow():
 
 
 # ---------------------------------------------------------------- 进度文案
+def _joined(*args, **kw) -> str:
+    """两行文案接回一行来断言原有口径。§2.4 把进度文案拆成"主状态"+"细节"两行，
+    但拆的位置不能改变说了什么——下面这批用例逐字沿用 v0.2.0 的期望串。"""
+    return "，".join(x for x in view.progress_lines(*args, **kw) if x)
+
+
+def test_progress_lines_split_headline_from_detail():
+    """§2.4：主状态（阶段 + 计数 + 百分比）一行，细节（已用/预计剩余/额外计数）另一行。
+    挤成一行的问题是眼睛没有落点——"扫描中"和"失败 0 只"视觉权重一样。"""
+    running = "\n".join(SCAN_LOG.splitlines()[:20])
+    head, detail = view.progress_lines(parse_market_scan(running), elapsed_s=900,
+                                       status="running")
+    assert head == "扫描中，1800/3010（60%）"
+    assert detail == "已用 15分0秒，预计剩余 ~8分钟，信号 58 条，失败 0 只"
+
+
+def test_progress_lines_detail_is_empty_when_nothing_to_say():
+    """细节为空串（不是 None、不是 "—"）：面板据此**不渲染**第二行，
+    免得留一条空 caption 把版面撑开。"""
+    assert view.progress_lines(Progress(phase="启动中"), status="running") == ("启动中", "")
+
+
+def test_progress_lines_headline_never_hides_the_phase():
+    """扫描跑到一半崩了：主状态那行必须以"异常退出"开头，不能被百分比顶掉。"""
+    crashed = ("\n".join(SCAN_LOG.splitlines()[:20])
+               + "\nTraceback (most recent call last):\nValueError: boom")
+    head, _ = view.progress_lines(parse_market_scan(crashed), elapsed_s=900,
+                                  status="running")
+    assert head.startswith("异常退出")
+
+
+def test_progress_lines_of_stopped_run_keeps_eta_out_of_both_lines():
+    """B1 回归：ETA 不许"搬到第二行"偷偷复活。两行都不能有。"""
+    stopped = "\n".join(SCAN_LOG.splitlines()[:20])
+    head, detail = view.progress_lines(parse_market_scan(stopped), elapsed_s=900,
+                                       status="stopped")
+    assert "预计剩余" not in head and "预计剩余" not in detail
+    assert "扫描中" not in head and "扫描中" not in detail
+    assert head.startswith("已停止")
+
+
 def test_caption_of_running_scan_uses_real_log():
     """真实扫描日志（截到第 20 行 = 跑到 1800/3010）：百分比、ETA 都对着手算结果。
     ETA = 673s/1800 × 1210 只 ≈ 452s ≈ 8 分钟；"已用"取墙钟（含 get_all_symbols
     那 2-4 分钟固定开销），不能拿日志里的"耗时 673s"冒充。"""
     running = "\n".join(SCAN_LOG.splitlines()[:20])
-    caption = view.progress_caption(parse_market_scan(running), elapsed_s=900, status="running")
+    caption = _joined(parse_market_scan(running), elapsed_s=900, status="running")
     assert caption == "扫描中，1800/3010（60%），已用 15分0秒，预计剩余 ~8分钟，信号 58 条，失败 0 只"
 
 
 def test_caption_without_progress_falls_back_to_phase_and_elapsed():
     """每日信号没有可解析的进度行：只能给阶段 + 已用时长，不许出现百分比或 ETA。"""
-    caption = view.progress_caption(Progress(phase="取数中"), elapsed_s=12, status="running")
+    caption = _joined(Progress(phase="取数中"), elapsed_s=12, status="running")
     assert caption == "取数中，已用 12秒"
 
 
 def test_caption_keeps_phase_when_progress_known():
     """扫描到一半崩了：百分比还在，但"异常退出"绝不能被百分比顶掉。"""
     crashed = "\n".join(SCAN_LOG.splitlines()[:20]) + "\nTraceback (most recent call last):\nValueError: boom"
-    caption = view.progress_caption(parse_market_scan(crashed), elapsed_s=900, status="running")
+    caption = _joined(parse_market_scan(crashed), elapsed_s=900, status="running")
     assert caption.startswith("异常退出，1800/3010（60%）")
 
 
 def test_caption_of_finished_backtest_lists_every_strategy():
     """默认配置两个策略，两个报告目录都要出现（只留第一个 = donchian 的产物人间蒸发）。"""
-    caption = view.progress_caption(parse_backtest(BACKTEST_LOG), elapsed_s=243, status="success")
+    caption = _joined(parse_backtest(BACKTEST_LOG), elapsed_s=243, status="success")
     assert caption.startswith("完成，已用 4分3秒")
     assert "output/ma_cross_20260826_112606" in caption
     assert "output/donchian_20260826_112606" in caption
 
 
 def test_caption_never_shows_elapsed_when_unknown():
-    assert view.progress_caption(Progress(phase="启动中"), status="running") == "启动中"
+    assert _joined(Progress(phase="启动中"), status="running") == "启动中"
 
 
 # ------------------------------------------------ 终止态的文案（B1：进程都没了还在报 ETA）
@@ -143,7 +203,7 @@ def test_caption_of_stopped_run_drops_eta_and_running_phase():
        "宁可不显示，不显示假数字"）。
     停在哪儿（1800/3010、已用时长、信号条数）都是既成事实，必须留着。"""
     stopped = "\n".join(SCAN_LOG.splitlines()[:20])
-    caption = view.progress_caption(parse_market_scan(stopped), elapsed_s=900, status="stopped")
+    caption = _joined(parse_market_scan(stopped), elapsed_s=900, status="stopped")
     assert caption == "已停止，1800/3010（60%），已用 15分0秒，信号 58 条，失败 0 只"
 
 
@@ -151,7 +211,7 @@ def test_caption_of_failed_run_without_traceback_says_failed():
     """崩在 argparse（退出码 2，日志里只有 usage 没有 traceback）：解析器只能看出"扫描中"，
     状态却是 failed。文案得跟徽标一致，且照样不许有 ETA。"""
     failed = "\n".join(SCAN_LOG.splitlines()[:20])
-    caption = view.progress_caption(parse_market_scan(failed), elapsed_s=900, status="failed")
+    caption = _joined(parse_market_scan(failed), elapsed_s=900, status="failed")
     assert caption.startswith("失败，1800/3010（60%）")
     assert "预计剩余" not in caption and "扫描中" not in caption
 
@@ -160,7 +220,7 @@ def test_caption_keeps_crashed_phase_from_log_but_still_no_eta():
     """日志里有 traceback：解析出的"异常退出"比状态词"失败"更具体，保留它；ETA 仍然不给。"""
     crashed = ("\n".join(SCAN_LOG.splitlines()[:20])
                + "\nTraceback (most recent call last):\nValueError: boom")
-    caption = view.progress_caption(parse_market_scan(crashed), elapsed_s=900, status="failed")
+    caption = _joined(parse_market_scan(crashed), elapsed_s=900, status="failed")
     assert caption.startswith("异常退出，1800/3010（60%）")
     assert "预计剩余" not in caption
 
@@ -169,7 +229,7 @@ def test_caption_of_success_whose_log_is_gone_still_says_done():
     """日志被手工删了/只剩半截（read_log 读不到就是空串），status 却是 success：
     以状态为准说"完成"，不能因为日志里最后一行是进度行就继续喊"扫描中"。"""
     partial = "\n".join(SCAN_LOG.splitlines()[:20])
-    caption = view.progress_caption(parse_market_scan(partial), elapsed_s=1500, status="success")
+    caption = _joined(parse_market_scan(partial), elapsed_s=1500, status="success")
     assert caption.startswith("完成，1800/3010（60%）")
     assert "预计剩余" not in caption
 
@@ -219,3 +279,30 @@ def test_unknown_running_job_name_does_not_crash():
     """状态目录里混进别的 json（手工实验残留）：提示照出，绝不 KeyError 崩页。"""
     disabled, notice = view.start_button_state("ghost", "backtest")
     assert disabled is True and "ghost" in notice
+
+
+# ---------------------------------------------------------------- 页头的全局任务 pill
+def test_busy_pill_is_idle_when_nothing_runs():
+    assert view.busy_pill(None) == (view.IDLE_TEXT, view.PILL_IDLE)
+
+
+def test_busy_pill_names_the_running_job_in_chinese():
+    """页头右侧那颗 pill 是**全局**状态：用户在 K 线页也该看见"扫描还在跑"，
+    否则他会去点另一个开始，然后对着"启动失败"发愁。用中文显示名，不是内部 key。"""
+    text, kind = view.busy_pill("market_scan")
+    assert "全市场扫描" in text and "运行中" in text
+    assert "market_scan" not in text
+    assert kind == view.PILL_RUNNING
+
+
+def test_busy_pill_of_an_unknown_job_name_does_not_crash():
+    """runs/ 里混进别的 json（手工实验残留）：照样出 pill，不许 KeyError 崩页。"""
+    text, kind = view.busy_pill("ghost")
+    assert "ghost" in text and kind == view.PILL_RUNNING
+
+
+def test_unknown_text_never_claims_idle():
+    """状态文件损坏时页头用这句：绝不能说"空闲"——那是猜的，
+    而互斥状态不可知恰恰是最该 fail-safe 的时候。"""
+    assert "未知" in view.UNKNOWN_TEXT
+    assert "空闲" not in view.UNKNOWN_TEXT

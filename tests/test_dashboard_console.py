@@ -22,6 +22,19 @@ BACKTEST_LOG = (FIXTURES / "backtest_sample.log").read_text(encoding="utf-8")
 CONSOLE = "任务控制台"
 
 
+def _htmls(at: AppTest) -> list[str]:
+    """页面上我们自己包的 .qd-* HTML（st.html 在 AppTest 里没有 .value）。
+    theme.inject() 那段 <style> 也走 st.html，必须滤掉——CSS 里出现每一个
+    .qd-pill-* 类名，不滤的话"页面上有没有红 pill"这种断言永远为真。"""
+    return [b for e in at.get("html")
+            if not (b := e.proto.body).lstrip().startswith("<style>")]
+
+
+def _sections(at: AppTest) -> list[str]:
+    """三张卡片的标题（衬线小标题 + 状态 pill），取代 v0.2.0 的 st.subheader。"""
+    return [h for h in _htmls(at) if 'class="qd-section"' in h]
+
+
 def _console(tmp_path: Path) -> AppTest:
     """app/ 整目录复制进 tmp_path 再交给 AppTest：ROOT/OUTPUT/RUNS_DIR 全落在
     tmp_path，与仓库真实 output/runs/ 完全隔离（否则测试会读到、甚至停掉真任务）。"""
@@ -71,7 +84,7 @@ def test_console_is_a_sidebar_page_and_not_the_default(tmp_path):
 def test_three_cards_render(tmp_path):
     at = _console(tmp_path)
     assert not at.exception, at.exception
-    text = " ".join(s.value for s in at.subheader)
+    text = " ".join(_sections(at))
     for job in jobs.JOBS.values():
         assert job.label in text, f"缺少「{job.label}」卡片，实际: {text}"
     for name in jobs.JOBS:
@@ -87,7 +100,10 @@ def test_empty_state_when_nothing_ever_ran(tmp_path):
         assert at.button(f"stop_{name}").disabled is True, name
         assert at.button(f"rerun_{name}").disabled is True, name
     assert sum("尚未运行过" in c.value for c in at.caption) == len(jobs.JOBS)
-    assert all("空闲" in s.value for s in at.subheader)
+    sections = _sections(at)
+    assert len(sections) == len(jobs.JOBS), sections
+    for head in sections:
+        assert "空闲" in head and "qd-pill-idle" in head, head
 
 
 def test_console_page_starts_no_process(tmp_path, monkeypatch):
@@ -124,14 +140,15 @@ def test_failed_state_shows_exit_code(tmp_path):
               log="login success!\nTraceback (most recent call last):\nValueError: boom\n")
     at = _console(tmp_path)
     assert not at.exception, at.exception
-    assert any("退出码 3" in s.value for s in at.subheader), [s.value for s in at.subheader]
+    assert any("退出码 3" in h and "qd-pill-failed" in h for h in _sections(at)), \
+        _sections(at)
 
 
 def test_stopped_state_shows_badge_and_reenables_start(tmp_path):
     _fake_run(tmp_path, "market_scan", "stopped", exit_code=-15,
               log=SCAN_LOG.split("已保存")[0])
     at = _console(tmp_path)
-    assert any("已停止" in s.value for s in at.subheader)
+    assert any("已停止" in h and "qd-pill-idle" in h for h in _sections(at)), _sections(at)
     assert at.button("start_market_scan").disabled is False, "停掉的任务不该继续占着互斥"
 
 
@@ -144,7 +161,11 @@ def test_running_scan_shows_progress_bar_with_real_percent(tmp_path):
     assert len(bars) == 1, f"运行中且有 current/total 时应有且仅有一个进度条，实际 {len(bars)}"
     # 1800/3010 = 59.8%：st.progress 内部取整是**截断**（59），文案 {:.0%} 是四舍五入（60%）
     assert bars[0].proto.value == 59
-    assert "1800/3010" in bars[0].proto.text and "预计剩余" in bars[0].proto.text
+    assert "1800/3010" in bars[0].proto.text
+    # v0.2.1 §2.4：文案拆两行——进度条只放主状态，ETA 在下面那行细节里
+    assert "预计剩余" not in bars[0].proto.text, bars[0].proto.text
+    assert any("预计剩余" in c.value for c in at.main.caption), \
+        [c.value for c in at.main.caption]
 
 
 def test_stopped_midway_scan_shows_where_it_stopped_without_faking_eta(tmp_path):
@@ -160,11 +181,13 @@ def test_stopped_midway_scan_shows_where_it_stopped_without_faking_eta(tmp_path)
     assert not at.exception, at.exception
     bars = at.get("progress")
     assert len(bars) == 1, f"停在 60% 也该看得见停在哪儿，实际进度条 {len(bars)} 个"
-    text = bars[0].proto.text
+    # 文案自 v0.2.1 起分两行，所以要连细节行一起看：把 ETA 挪到第二行
+    # 等于让这个缺陷原地复活
+    text = " ".join([bars[0].proto.text, *(c.value for c in at.main.caption)])
     assert "1800/3010" in text and "已用" in text, text
     assert "预计剩余" not in text, f"任务已停止却还在报 ETA: {text}"
     assert "扫描中" not in text, f"任务已停止却还在说「扫描中」: {text}"
-    assert "已停止" in text, text
+    assert "已停止" in bars[0].proto.text, bars[0].proto.text
     assert at.get("status") == [], "已终止的任务不该再转圈"
 
 
@@ -175,9 +198,10 @@ def test_crashed_scan_does_not_extrapolate_eta_either(tmp_path):
                   + "\nTraceback (most recent call last):\nValueError: boom\n")
     at = _console(tmp_path)
     assert not at.exception, at.exception
-    text = at.get("progress")[0].proto.text
-    assert text.startswith("异常退出，1800/3010"), text
-    assert "预计剩余" not in text, f"任务已崩溃却还在报 ETA: {text}"
+    bar_text = at.get("progress")[0].proto.text
+    assert bar_text.startswith("异常退出，1800/3010"), bar_text
+    everything = " ".join([bar_text, *(c.value for c in at.main.caption)])
+    assert "预计剩余" not in everything, f"任务已崩溃却还在报 ETA: {everything}"
 
 
 def test_running_job_without_parsable_progress_shows_spinner(tmp_path):
@@ -186,7 +210,9 @@ def test_running_job_without_parsable_progress_shows_spinner(tmp_path):
     at = _console(tmp_path)
     assert at.get("progress") == [], "无 current/total 时不许画进度条"
     assert len(at.status) == 1 and at.status[0].state == "running"
-    assert "已用" in at.status[0].label
+    assert at.status[0].label == "取数中", at.status[0].label
+    assert any("已用" in c.value for c in at.main.caption), \
+        [c.value for c in at.main.caption]
 
 
 def test_log_tail_is_30_lines_and_expander_has_everything(tmp_path):
@@ -234,8 +260,10 @@ def test_finished_backtest_shows_metrics_of_every_strategy(tmp_path):
     _fake_run(tmp_path, "backtest", "success", exit_code=0, log=BACKTEST_LOG)
     at = _console(tmp_path)
     assert not at.exception, at.exception
-    values = [m.value for m in at.metric]
-    assert "243" in values and "436" in values, values
+    blob = "\n".join(_htmls(at))
+    for n in ("243", "436"):
+        assert f'class="qd-metric-value">{n}<' in blob, blob
+    assert at.metric == [], "指标卡已改成 .qd-metric，不该再有 st.metric"
 
 
 def test_missing_result_file_warns_instead_of_crashing(tmp_path):
@@ -420,13 +448,24 @@ def test_card_requests_full_rerun_when_the_running_job_finishes(tmp_path, monkey
     _fake_run(tmp_path, "market_scan", "success", exit_code=0, log=SCAN_LOG)
     at = _console(tmp_path)
     real_any_running = process.any_running
-    calls = {"n": 0}
+    real_read_state = process.read_state
+    entered_card = {"yes": False}
+
+    def read_state_probe(*a, **kw):
+        # 卡片渲染的第一件事就是 read_state：拿它当"整页快照阶段已结束"的分界，
+        # 比数 any_running 的调用次数稳——页头也会问一次（v0.2.1 新增），
+        # 数次数的写法会因此错位一格，测的就不是"跑完了没请求重跑"这件事了。
+        entered_card["yes"] = True
+        return real_read_state(*a, **kw)
 
     def any_running_that_just_finished(runs_dir):
-        # 第 1 次 = page_console 拿的整页快照（那会儿还在跑）；之后 = 2 秒后 fragment 再问（已结束）
-        calls["n"] += 1
-        return "market_scan" if calls["n"] == 1 else real_any_running(runs_dir)
+        # 卡片之前 = page_console 拿的整页快照（那会儿还在跑）；
+        # 卡片之内 = 2 秒后 fragment 再问（已结束）
+        if entered_card["yes"]:
+            return real_any_running(runs_dir)
+        return "market_scan"
 
+    monkeypatch.setattr(process, "read_state", read_state_probe)
     monkeypatch.setattr(process, "any_running", any_running_that_just_finished)
     reruns.clear()
     at.run()

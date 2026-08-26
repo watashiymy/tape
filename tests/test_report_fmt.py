@@ -8,6 +8,7 @@ import importlib.util
 from dataclasses import fields
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from quant.backtest.portfolio import Trade
@@ -209,3 +210,294 @@ def test_column_configs_are_fresh_objects(builder):
     一改就串到下一次渲染。"""
     build = getattr(fmt, builder)
     assert build() is not build()
+
+
+# ================================================================ v0.2.1 M2
+
+_SIG_SPEC = importlib.util.spec_from_file_location(
+    "run_daily_signal", ROOT / "scripts" / "run_daily_signal.py")
+run_daily_signal = importlib.util.module_from_spec(_SIG_SPEC)
+_SIG_SPEC.loader.exec_module(run_daily_signal)
+
+
+# ---------------------------------------------------------------- 指标卡下沉
+
+def test_metric_labels_cover_exactly_the_metrics_json_keys():
+    """指标卡的标签表与 fmt_metric 一起下沉到 fmt（§4"UI 层只做组装"）。
+
+    键必须与 compute_metrics 的输出**逐一对齐**：少一项那项指标在面板上人间蒸发，
+    多一项则永远显示 —（metrics.get 拿不到），两种都是静默的。
+    """
+    from quant.report.metrics import compute_metrics
+
+    equity = pd.Series([1.0, 1.1], index=pd.to_datetime(["2016-01-04", "2026-08-26"]))
+    assert set(fmt.METRIC_LABELS) == set(compute_metrics(equity, []))
+
+
+def test_metric_labels_are_chinese_and_ordered_return_first():
+    """2×4 网格按字典顺序铺：第一格必须是总收益率（最该先看到的数）。"""
+    assert list(fmt.METRIC_LABELS)[0] == "total_return"
+    assert fmt.METRIC_LABELS["total_return"] == "总收益率"
+    assert "rf=0" in fmt.METRIC_LABELS["sharpe"], "夏普的 rf=0 口径必须写在标签里"
+
+
+@pytest.mark.parametrize("key, value, text", [
+    ("n_trades", 243, "243"),              # int 不许变成 '243.00'
+    ("total_return", 1.1642, "116.42%"),
+    ("win_rate", 0.41975, "41.98%"),
+    ("max_drawdown", -0.3512, "-35.12%"),
+    ("sharpe", 0.9621, "0.96"),
+    ("profit_factor", None, fmt.MISSING),  # 零平仓时 metrics.py 明确留 None
+    ("avg_holding_days", None, fmt.MISSING),
+    ("sharpe", float("nan"), fmt.MISSING),
+    ("total_return", float("inf"), fmt.MISSING),
+])
+def test_fmt_metric(key, value, text):
+    assert fmt.fmt_metric(key, value) == text
+
+
+def test_fmt_metric_of_unknown_key_does_not_crash():
+    """metrics.json 是文件，将来加了新键（或手工改过）不能崩页。"""
+    assert fmt.fmt_metric("brand_new_metric", 1.5) == "1.50"
+
+
+# ---------------------------------------------------------------- metric_color
+
+def test_metric_color_reds_the_gain_and_greens_the_drawdown():
+    """§2.4：总收益/回撤按正负上红绿（A 股口径，与 K 线图一致）。
+    实测值走一遍：双均线 +116.1%、回撤 -35.12%。"""
+    assert fmt.metric_color("total_return", 1.161) == fmt.UP
+    assert fmt.metric_color("cagr", 0.0789) == fmt.UP
+    assert fmt.metric_color("max_drawdown", -0.3512) == fmt.DOWN
+    assert fmt.metric_color("total_return", -0.2) == fmt.DOWN
+
+
+@pytest.mark.parametrize("key, value", [
+    ("sharpe", -1.5),          # 负夏普不是"跌"，别跟收益率抢红绿
+    ("win_rate", 0.4198),      # 胜率没有方向
+    ("profit_factor", 0.8),
+    ("n_trades", 243),
+    ("avg_holding_days", 12.5),
+])
+def test_metric_color_is_none_for_non_directional_metrics(key, value):
+    """§2.3 第 4 条：色只用在有意义处。给胜率上红绿等于制造四个假信号。"""
+    assert fmt.metric_color(key, value) is None
+
+
+@pytest.mark.parametrize("value", [0, 0.0, None, float("nan"), float("inf"), "涨"])
+def test_metric_color_is_none_when_flat_or_missing(value):
+    """平盘与缺值一律不上色（返回 None = 用默认文字色，不是灰掉）。"""
+    assert fmt.metric_color("total_return", value) is None
+
+
+# ---------------------------------------------------------------- 每日信号列配置
+
+def test_signal_column_config_covers_signal_csv_columns():
+    """每日信号 CSV 的列与扫描 CSV **不同**（没有 name/amount/放量倍数）：
+    拿 scan_column_config 顶替，多出来的键会被 Streamlit 静默忽略，
+    而真正需要中文标签的 action / close 反而没配上。"""
+    cfg = fmt.signal_column_config()
+    assert set(cfg) <= set(run_daily_signal.CSV_COLUMNS), \
+        f"配置了不存在的列: {set(cfg) - set(run_daily_signal.CSV_COLUMNS)}"
+    for col in ("symbol", "action", "close", "date", "strategy"):
+        assert col in cfg, f"信号表的 {col} 列应有列配置"
+
+
+def test_signal_column_config_close_is_right_aligned_number():
+    close = fmt.signal_column_config()["close"]
+    assert close["alignment"] == "right"
+    assert _col_format(close) == "%.2f"
+
+
+def test_signal_column_config_has_chinese_labels():
+    for name, col in fmt.signal_column_config().items():
+        assert col["label"], f"{name} 缺中文标签"
+
+
+def test_signal_column_config_is_a_fresh_object():
+    assert fmt.signal_column_config() is not fmt.signal_column_config()
+
+
+# ---------------------------------------------------------------- direction_styler
+
+def _css_of(styler) -> dict:
+    """Styler 的单元格样式：{(行, 列): [("color", "#xxxxxx")]}。
+    _compute() 才会真正求值（否则 ctx 一直是空的，断言全绿但什么都没测）。"""
+    styler._compute()
+    return {k: dict(v) for k, v in styler.ctx.items() if v}
+
+
+def test_direction_styler_colors_up_red_and_down_green():
+    """column_config 没有条件着色能力（NumberColumn 无 color 参数，实测确认），
+    红绿只能走 pandas Styler；st.dataframe 支持它，且 column_config 的
+    格式串优先级更高，所以千分位/百分号不会被 Styler 顶掉。"""
+    df = pd.DataFrame({"symbol": ["000020", "600519"], "pct_chg": [-5.09, 3.2]})
+    css = _css_of(fmt.direction_styler(df, ["pct_chg"]))
+    assert css == {(0, 1): {"color": fmt.DOWN}, (1, 1): {"color": fmt.UP}}
+
+
+def test_direction_styler_leaves_flat_and_missing_cells_uncolored():
+    """0 与 NaN（未平仓那行的 pnl、停牌日的空涨跌幅）不许上色，
+    否则表里全是彩的，红绿就没信息量了。"""
+    df = pd.DataFrame({"pct_chg": [0.0, float("nan"), float("inf")]})
+    assert _css_of(fmt.direction_styler(df, ["pct_chg"])) == {}
+
+
+def test_direction_styler_colors_by_the_same_rule_as_the_metric_cards():
+    """着色一律走 direction_color——表格与指标卡不能各有一套判定（那才会出现
+    "表格绿、指标卡红"的对撞）。副作用是数值噪声（-1e-9，显示成 -0.00%）也会被判绿；
+    真实 pct_chg 是百分点（-5.09 这种量级），这个量级的噪声不存在，不值得为它加阈值。"""
+    df = pd.DataFrame({"pct_chg": [-1e-9]})
+    assert _css_of(fmt.direction_styler(df, ["pct_chg"])) == {(0, 0): {"color": fmt.DOWN}}
+
+
+def test_direction_styler_ignores_columns_the_csv_does_not_have():
+    """每日信号 CSV 没有 pct_chg：Styler 的 subset 指向不存在的列会
+    KeyError 直接崩页（同一个渲染函数要同时喂扫描表和信号表）。"""
+    df = pd.DataFrame({"symbol": ["000020"], "close": [11.74]})
+    assert _css_of(fmt.direction_styler(df, ["pct_chg", "amount_ratio_20d"])) == {}
+
+
+def test_direction_styler_survives_an_empty_frame():
+    """当日无新信号是常态：只有表头的 CSV 也得能上色不崩。"""
+    df = pd.DataFrame({"symbol": [], "pct_chg": []})
+    assert _css_of(fmt.direction_styler(df, ["pct_chg"])) == {}
+
+
+def test_direction_styler_does_not_touch_other_columns():
+    """只给方向列上色：把整表染红绿等于宣布收盘价也有涨跌。"""
+    df = pd.DataFrame({"close": [11.74], "pct_chg": [-5.09]})
+    css = _css_of(fmt.direction_styler(df, ["pct_chg"]))
+    assert list(css) == [(0, 1)], css
+
+
+def test_direction_styler_keeps_the_underlying_frame_intact():
+    """Styler 不得改动数据本身（前导零、dtype 都得原样交给 st.dataframe）。"""
+    df = pd.DataFrame({"symbol": ["000020"], "pct_chg": [-5.09]})
+    styler = fmt.direction_styler(df, ["pct_chg"])
+    assert styler.data is df
+    assert df["symbol"].tolist() == ["000020"]
+
+
+# ---------------------------------------------------------------- 个股小结（K线页）
+
+def _trades_df(rows: list[dict], columns: list[str] | None = None) -> pd.DataFrame:
+    return pd.DataFrame(rows, columns=columns or ["symbol", "action", "pnl"])
+
+
+def test_symbol_trade_summary_counts_and_sums():
+    """K 线图上方那行小结：成交笔数 + 买卖各几笔 + 已平仓盈亏合计。"""
+    df = _trades_df([
+        {"symbol": "600519", "action": "buy", "pnl": None},
+        {"symbol": "600519", "action": "sell", "pnl": 12345.6},
+        {"symbol": "600519", "action": "buy", "pnl": None},
+        {"symbol": "600519", "action": "sell", "pnl": -2345.6},
+    ])
+    assert fmt.symbol_trade_summary(df) == {
+        "n_trades": 4, "n_buy": 2, "n_sell": 2, "pnl": pytest.approx(10000.0)}
+
+
+def test_symbol_trade_summary_of_open_position_has_no_pnl():
+    """只买未卖（仍持仓）：pnl 全是 NaN。`sum()` 会给 0.0——那等于宣布"这只不赚不亏"，
+    是编出来的数字；必须给 None 让面板显示 —。"""
+    df = _trades_df([{"symbol": "600519", "action": "buy", "pnl": None}])
+    out = fmt.symbol_trade_summary(df)
+    assert out["n_trades"] == 1 and out["n_buy"] == 1 and out["n_sell"] == 0
+    assert out["pnl"] is None
+
+
+def test_symbol_trade_summary_of_empty_frame():
+    """该标的一笔没成交（策略从没进场）：全零 + 盈亏 None，不能崩。"""
+    assert fmt.symbol_trade_summary(_trades_df([])) == {
+        "n_trades": 0, "n_buy": 0, "n_sell": 0, "pnl": None}
+
+
+def test_symbol_trade_summary_without_pnl_column():
+    """老回测目录的 trades.csv 没有 pnl / holding_days 列（v0.1 早期产物）：
+    KeyError 会把整个 K 线页崩掉。"""
+    df = _trades_df([{"symbol": "600519", "action": "buy"}],
+                    columns=["symbol", "action"])
+    assert fmt.symbol_trade_summary(df)["pnl"] is None
+
+
+def test_symbol_trade_summary_ignores_inf_pnl():
+    """脏值（手工改过的 CSV）不能把小结变成 'inf'。"""
+    df = _trades_df([{"symbol": "600519", "action": "sell", "pnl": float("inf")},
+                     {"symbol": "600519", "action": "sell", "pnl": 100.0}])
+    assert fmt.symbol_trade_summary(df)["pnl"] == pytest.approx(100.0)
+
+
+# ---------------------------------------------------------------- 标的选择器标签
+
+@pytest.mark.parametrize("name, label", [
+    ("贵州茅台", "600519 贵州茅台"),
+    (None, "600519"),          # 名称未知时不许显示 "600519 None"
+    ("", "600519"),
+    (float("nan"), "600519"),   # 从 CSV 读出来的空单元格
+    ("   ", "600519"),
+])
+def test_symbol_label(name, label):
+    """§2.4：标的选择器要显示"代码 名称"。名称来源是扫描 CSV，未必有——
+    没有就老实只显示代码，绝不渲染 'None' / 'nan'。"""
+    assert fmt.symbol_label("600519", name) == label
+
+
+# ---------------------------------------------------------------- signed_color
+
+def test_signed_color_is_the_shared_red_green_gate():
+    """指标卡、个股小结共用同一道判定：有方向给红绿，平盘/缺值给 None（不上色）。
+    None 而不是灰色——把正常数字灰掉会让它比标题还暗。"""
+    assert fmt.signed_color(195.0) == fmt.UP
+    assert fmt.signed_color(-195.0) == fmt.DOWN
+    assert fmt.signed_color(0) is None
+    assert fmt.signed_color(None) is None
+    assert fmt.signed_color(float("nan")) is None
+    assert fmt.signed_color("盈") is None
+
+
+def test_metric_color_reuses_signed_color():
+    """两处判定必须是同一个函数，否则"表格绿、指标卡红"的对撞就会回来。"""
+    assert fmt.metric_color("total_return", 1.161) == fmt.signed_color(1.161)
+
+
+# -------------------------------------------------- 实跑面板时发现的两处显示缺陷（M2）
+
+def test_scan_column_config_labels_every_column():
+    """扫描表**每一列**都要有中文标签。漏一列的表现很轻微（表头出现一个裸
+    'date'），但那正是"配好了"的错觉：实跑 2026-08-25 那份扫描时就漏在这里。
+    改成相等而不是子集：将来 CSV 加了列，这条会提醒去配它。"""
+    assert set(fmt.scan_column_config()) == set(run_market_scan.CSV_COLUMNS)
+
+
+def test_signal_column_config_labels_every_column():
+    assert set(fmt.signal_column_config()) == set(run_daily_signal.CSV_COLUMNS)
+
+
+def test_trades_pnl_column_is_wide_enough_for_a_negative_amount():
+    """实跑发现的显示缺陷：默认列宽装不下 "-58,419.224"，表格网格从**左边**裁字，
+    于是一笔亏 5.8 万渲染成 "8,419.224" —— 亏损看起来像盈利，是最坏的那种假信息。
+    盈亏是本表唯一会出现"负号 + 千分位 + 五位整数"的列，给它一档宽度。"""
+    assert fmt.trades_column_config()["pnl"]["width"] == "medium"
+
+
+# -------------------------------------------------- 被跳过的订单表（列与成交表不同）
+
+_BT_SPEC = importlib.util.spec_from_file_location(
+    "run_backtest", ROOT / "scripts" / "run_backtest.py")
+run_backtest = importlib.util.module_from_spec(_BT_SPEC)
+_BT_SPEC.loader.exec_module(run_backtest)
+
+
+def test_skipped_column_config_matches_the_skipped_csv():
+    """skipped.csv 只有 date/symbol/reason，与成交明细**不是**一套列。
+    拿 trades_column_config 顶替时页面照样能跑：多出来的 7 个键被 Streamlit
+    静默忽略，而真正要解释的 reason（涨停/资金不足）连中文标签都没有。"""
+    cfg = fmt.skipped_column_config()
+    assert set(cfg) == set(run_backtest.SKIPPED_COLUMNS)
+    for name, col in cfg.items():
+        assert col["label"], f"{name} 缺中文标签"
+
+
+def test_skipped_reason_column_is_wide_enough_to_read():
+    """原因是这张表唯一有信息量的列（"涨停无法买入"/"资金不足"），别缩成一条。"""
+    assert fmt.skipped_column_config()["reason"]["width"] == "medium"

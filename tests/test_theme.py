@@ -159,3 +159,103 @@ def test_dashboard_injects_the_theme():
     """theme.py 写好了但面板没调 inject()，字体与排版一行都不会生效。"""
     src = DASHBOARD.read_text(encoding="utf-8")
     assert "theme.inject()" in src, "dashboard.py 必须调用 theme.inject()"
+
+
+# ================================================================ v0.2.1 M2：HTML 组件
+# 这四个构造函数是纯字符串函数，所以能在这里逐条断言。面板里只剩 st.html(...) 一句。
+#
+# **必须转义**：pill 的文案里带 state.status（普通 JSON，用户手改得动）、
+# 小结里带 run 目录名。st.html 不套 iframe，未转义的 '<' 会把版面撕开。
+
+def test_pill_wraps_text_in_the_two_classes():
+    html = theme.pill("运行中", "running")
+    assert 'class="qd-pill qd-pill-running"' in html
+    assert ">运行中<" in html
+
+
+def test_pill_escapes_its_text():
+    """状态文件是手工改得动的 JSON：status: "<b>x" 不能变成真的标签。"""
+    html = theme.pill("<img src=x onerror=1>", "idle")
+    assert "<img" not in html
+    assert "&lt;img" in html
+
+
+def test_pill_of_unknown_kind_falls_back_to_idle():
+    """类目拼错（或将来加了新状态）不能渲染出没有底色的裸文字。"""
+    assert "qd-pill-idle" in theme.pill("怪状态", "no-such-kind")
+
+
+@pytest.mark.parametrize("kind", ["running", "success", "failed", "idle"])
+def test_every_pill_kind_has_a_css_rule(kind):
+    """构造出来的类名必须在 CSS 里真有对应规则，否则 pill 就是没底色的白字。"""
+    assert f".qd-pill-{kind} {{" in theme.CSS
+
+
+def test_page_head_has_title_subtitle_and_pill():
+    """§2.4 通用页头：页名（衬线大字）+ 一句话说明（灰色小字）+ 右侧状态 pill。"""
+    html = theme.page_head("回测报告", "看历史检验结果", theme.pill("空闲", "idle"))
+    assert 'class="qd-head"' in html
+    assert 'class="qd-title"' in html and ">回测报告<" in html
+    assert 'class="qd-sub"' in html and "看历史检验结果" in html
+    assert "qd-pill-idle" in html
+
+
+def test_page_head_without_a_pill_still_renders():
+    html = theme.page_head("回测报告", "看历史检验结果")
+    assert "qd-pill" not in html
+    assert "回测报告" in html
+
+
+def test_page_head_escapes_title_and_subtitle():
+    html = theme.page_head("<b>x</b>", "<i>y</i>")
+    assert "<b>" not in html and "<i>" not in html
+
+
+def test_section_is_a_serif_hairline_heading():
+    """§2.3 第 2 条：发丝线代替方框——小标题靠 1px 分隔线，不用四面描边。"""
+    html = theme.section("交易明细")
+    assert 'class="qd-section"' in html and ">交易明细<" in html
+    assert "border-bottom" in theme.CSS.split(".qd-section {")[1].split("}")[0]
+
+
+def test_section_escapes_its_title():
+    assert "<script" not in theme.section("<script>x</script>")
+
+
+def test_metric_puts_the_value_in_a_mono_class():
+    """§2.3 第 1 条：数值最大最亮（等宽放大），标签降为小号灰字。"""
+    html = theme.metric("总收益率", "+116.10%")
+    assert 'class="qd-metric-label"' in html and "总收益率" in html
+    assert 'class="qd-metric-value"' in html and "+116.10%" in html
+
+
+def test_metric_color_is_applied_inline_when_given():
+    """红绿是**按值**定的，写不进静态 CSS，只能内联；色值由 fmt 给（单一来源）。"""
+    html = theme.metric("总收益率", "+116.10%", fmt.UP)
+    assert f"color: {fmt.UP}" in html
+
+
+def test_metric_without_color_has_no_inline_style():
+    """不上色时不许留一个空 style（也不许悄悄塞灰色：那会让正常数字比标题还暗）。"""
+    html = theme.metric("夏普比率(rf=0)", "0.96")
+    assert "style=" not in html
+
+
+def test_metric_escapes_label_and_value():
+    html = theme.metric("<b>l</b>", "<b>v</b>")
+    assert "<b>" not in html
+
+
+def test_metric_color_only_takes_palette_values():
+    """内联色值必须来自色板/方向色，不许调用方随便塞字符串（那就是 CSS 注入口子）。"""
+    with pytest.raises(ValueError):
+        theme.metric("总收益率", "+1%", "red; background: url(x)")
+
+
+def test_html_builders_never_emit_streamlit_internals():
+    """与 CSS 同一条纪律：我们只包自己的 .qd-* 容器。"""
+    blobs = [theme.pill("x", "idle"), theme.page_head("a", "b"), theme.section("c"),
+             theme.metric("d", "e")]
+    for html in blobs:
+        for banned in ("st-emotion", "data-testid", "emotion-cache"):
+            assert banned not in html

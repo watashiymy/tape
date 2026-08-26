@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 
+import pandas as pd
 import streamlit.column_config as column_config
 
 # A 股惯例红涨绿跌，与 K 线图一致。**全局铁律**：收益率、涨跌幅、盈亏一律用这两个色，
@@ -24,6 +25,19 @@ MISSING = "—"          # 缺值占位符。宁可显示占位符，不显示 '
 # 放量倍数进度条的满格值。实测扫描结果里出现过 4.22 倍；再往上（打板、借壳复牌）
 # 一律满格——超过 5 倍之后的差别对"是否放量"这个判断已经没有意义。
 RATIO_BAR_MAX = 6.0
+
+# 指标卡：键、顺序、中文标签。顺序就是 2×4 网格的铺排顺序，总收益率排第一格
+# （最该先看到的数）。键必须与 quant.report.metrics.compute_metrics 的输出逐一对齐。
+METRIC_LABELS = {
+    "total_return": "总收益率", "cagr": "年化收益率", "max_drawdown": "最大回撤",
+    "sharpe": "夏普比率(rf=0)", "n_trades": "交易次数", "win_rate": "胜率",
+    "profit_factor": "盈亏比", "avg_holding_days": "平均持仓天数",
+}
+# 比率类指标：显示成百分号。其余（夏普、盈亏比、持仓天数）是无单位数字。
+PERCENT_METRICS = ("total_return", "cagr", "max_drawdown", "win_rate")
+# **只有这三项**有涨跌方向，才配得上红绿（§2.3 第 4 条"色只用在有意义处"）。
+# 夏普为负不是"跌"，胜率 42% 更不是——给它们上色等于同屏多造几个假信号。
+DIRECTIONAL_METRICS = ("total_return", "cagr", "max_drawdown")
 
 
 def _finite(x) -> float | None:
@@ -69,6 +83,38 @@ def fmt_pct(x, *, decimals: int = 2) -> str:
     return f"{pct:+,.{decimals}f}%"
 
 
+def fmt_metric(key: str, value) -> str:
+    """指标卡数值。int 必须原样 str()：一律 f"{v:.2f}" 会把交易次数渲染成 '243.00'。
+    比率类走百分号；None / NaN / inf（零平仓、手改过的 metrics.json）显示 —。
+
+    不带正号：方向由 metric_color() 的红绿表达，再加个 '+' 是重复。
+    """
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    v = _finite(value)
+    if v is None:
+        return MISSING
+    if key in PERCENT_METRICS:
+        return f"{v:.2%}"
+    return f"{v:.2f}"
+
+
+def signed_color(x) -> str | None:
+    """红绿的唯一闸门：有方向给红/绿，平盘与缺值给 None。
+
+    None 而不是 NEUTRAL：不上色 ≠ 上一层灰。把正常数字灰掉会让它比标题还暗，
+    等于把主角降级（§2.3 第 1 条"数字最大最亮"）。
+    """
+    color = direction_color(x)
+    return None if color == NEUTRAL else color
+
+
+def metric_color(key: str, value) -> str | None:
+    """指标卡的正负着色判定。只有 DIRECTIONAL_METRICS 才有方向，
+    其余（夏普、胜率、盈亏比、持仓天数）一律不上色。"""
+    return signed_color(value) if key in DIRECTIONAL_METRICS else None
+
+
 def direction_color(x) -> str:
     """方向色：涨红、跌绿、平盘与缺值中性灰。
 
@@ -89,6 +135,8 @@ def scan_column_config() -> dict:
     于是"配好了"的千分位永远不出现（tests 里拿 CSV_COLUMNS 对过）。
     """
     return {
+        # 每一列都要有中文标签：漏一列只是表头多个裸 'date'，但那正是"配好了"的错觉
+        "date": column_config.TextColumn("日期", width="small"),
         # 代码按字符串读（000333 不能变 333），列宽给小档，别把表撑开
         "symbol": column_config.TextColumn("代码", width="small"),
         "name": column_config.TextColumn("名称", width="small"),
@@ -105,6 +153,94 @@ def scan_column_config() -> dict:
             help="当日成交额 / 前 20 日均额。判断信号质量最该看的一列："
                  "没有量的突破多半是假突破。"),
     }
+
+
+def signal_column_config() -> dict:
+    """固定池每日信号表的列配置（列名取自 run_daily_signal.CSV_COLUMNS）。
+
+    与扫描表**不是**同一套列：这里没有 name / amount / 放量倍数，却多一个 action
+    （buy/sell）。拿 scan_column_config 顶替的话，多出来的键被 Streamlit 静默忽略，
+    真正需要中文标签的 action / close 反而没配上。
+    """
+    return {
+        "date": column_config.TextColumn("日期", width="small"),
+        "symbol": column_config.TextColumn("代码", width="small"),
+        "strategy": column_config.TextColumn("策略", width="small"),
+        "action": column_config.TextColumn("方向", width="small",
+                                           help="buy=进场信号，sell=出场信号。"),
+        "close": column_config.NumberColumn("收盘价", format="%.2f", alignment="right"),
+    }
+
+
+def skipped_column_config() -> dict:
+    """被跳过的订单表（列名即 run_backtest.SKIPPED_COLUMNS）。
+
+    与成交明细**不是**一套列：只有 date/symbol/reason。拿 trades_column_config
+    顶替时页面照样能跑（多出来的键被静默忽略），但真正要解释的 reason 反而没标签。
+    """
+    return {
+        "date": column_config.TextColumn("日期", width="small"),
+        "symbol": column_config.TextColumn("代码", width="small"),
+        "reason": column_config.TextColumn(
+            "原因", width="medium",
+            help="涨跌停无法成交、资金不足、停牌等；引擎的约束都记在这里。"),
+    }
+
+
+def direction_styler(df: pd.DataFrame, columns) -> "pd.io.formats.style.Styler":
+    """给方向列（涨跌幅、盈亏）的文字上红绿，返回 Styler 交给 st.dataframe。
+
+    为什么不用 column_config：`st.column_config.NumberColumn` 没有 color 参数
+    （实测签名确认），条件着色在列配置里做不到。Streamlit 明确支持 pandas Styler 的
+    颜色，且"column_config 的文本/数字格式优先于 Styler"——所以千分位、百分号仍由
+    列配置说话，Styler 只管颜色，两者不打架。
+
+    `columns` 里不存在的列必须跳过：同一个渲染函数要同时喂扫描表（有 pct_chg）
+    和每日信号表（没有），Styler 的 subset 指向不存在的列会 KeyError 崩页。
+    """
+    present = [c for c in columns if c in df.columns]
+    styler = df.style
+    if present:
+        styler = styler.map(_direction_css, subset=present)
+    return styler
+
+
+def _direction_css(x) -> str:
+    """单元格的方向色 CSS。平盘/缺值返回空串——不上色，而不是上一层灰。"""
+    color = direction_color(x)
+    return "" if color == NEUTRAL else f"color: {color};"
+
+
+def symbol_trade_summary(trades: pd.DataFrame) -> dict:
+    """某标的的成交小结（K 线图上方那一行）：总笔数、买/卖笔数、已平仓盈亏合计。
+
+    `pnl` 只在平仓那一笔上有值，仍持仓的标的整列是 NaN。此时 `sum()` 给 0.0——
+    那等于宣布"这只不赚不亏"，是编出来的数字，必须返回 None 让面板显示 —。
+    老回测目录的 trades.csv 连 pnl 列都没有（v0.1 早期产物），也不能 KeyError。
+    """
+    n_trades = int(len(trades))
+    actions = (trades["action"].astype(str).str.lower()
+               if "action" in trades.columns else pd.Series(dtype=object))
+    values = [v for v in (_finite(x) for x in trades.get("pnl", ()))
+              if v is not None]
+    return {
+        "n_trades": n_trades,
+        "n_buy": int((actions == "buy").sum()),
+        "n_sell": int((actions == "sell").sum()),
+        "pnl": sum(values) if values else None,
+    }
+
+
+def symbol_label(symbol: str, name=None) -> str:
+    """标的选择器的显示文案："600519 贵州茅台"。
+
+    名称的唯一离线来源是扫描 CSV，多数标的没有（扫描只记录出信号的那些），
+    所以缺名是常态：老实只显示代码，绝不渲染 "600519 None" / "600519 nan"。
+    """
+    text = "" if name is None else str(name).strip()
+    if not text or text.lower() == "nan":
+        return str(symbol)
+    return f"{symbol} {text}"
 
 
 def trades_column_config() -> dict:
@@ -124,8 +260,11 @@ def trades_column_config() -> dict:
                                                  alignment="right"),
         "stamp": column_config.NumberColumn("印花税", format="%.2f", alignment="right",
                                             help="A 股只在卖出时收，买入行恒为 0。"),
+        # width 不是可有可无的美化：默认列宽装不下 "-58,419.224"，表格网格从
+        # **左边**裁字，一笔亏 5.8 万会渲染成 "8,419.224"——亏损看起来像盈利。
+        # 实跑面板时抓到的，本表只有这一列会出现"负号 + 千分位 + 五位整数"。
         "pnl": column_config.NumberColumn(
-            "盈亏", format="localized", alignment="right",
+            "盈亏", format="localized", alignment="right", width="medium",
             help="平仓那一笔才有盈亏；买入行与仍持仓的标的是空值。"),
         "holding_days": column_config.NumberColumn("持仓天数", format="%d",
                                                    alignment="right"),

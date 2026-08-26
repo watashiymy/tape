@@ -13,6 +13,8 @@
 """
 from __future__ import annotations
 
+import html as _html
+
 import streamlit as st
 from quant.report import fmt
 
@@ -89,6 +91,9 @@ CSS = f"""@import url("{FONT_IMPORT}");
   font-size: 0.8rem;
   color: var(--qd-muted);
 }}
+.qd-head-right {{
+  margin-left: auto;
+}}
 .qd-section {{
   font-family: var(--qd-serif);
   font-size: 1.05rem;
@@ -98,6 +103,9 @@ CSS = f"""@import url("{FONT_IMPORT}");
   border-bottom: 1px solid var(--qd-hairline);
   padding-bottom: 0.25rem;
   margin: 1.1rem 0 0.5rem;
+}}
+.qd-section-pill {{
+  margin-left: 0.5rem;
 }}
 .qd-metric {{
   border-left: 2px solid var(--qd-hairline);
@@ -161,6 +169,58 @@ CSS = f"""@import url("{FONT_IMPORT}");
   color: var(--qd-muted);
 }}
 """
+
+
+# ---------------------------------------------------------------- HTML 组件
+# 面板里只剩 st.html(theme.xxx(...))，这些构造函数是纯字符串函数（可单测）。
+#
+# 一律转义：pill 文案里带 state.status、小结里带目录名，都来自磁盘上手工改得动的
+# 文件。st.html **不套 iframe**，一个未转义的 '<' 就能把版面撕开。
+# 与 quant.runner.view.PILL_* 同一套词（两处各由测试钉住字面量，谁改了都会红）
+_PILL_KINDS = ("running", "success", "failed", "idle")
+# 允许内联的色值只有色板里那些：否则调用方能把任意 CSS 塞进 style 属性。
+_INLINE_COLORS = frozenset(PALETTE.values())
+
+
+def _esc(text) -> str:
+    return _html.escape(str(text), quote=True)
+
+
+def pill(text: str, kind: str) -> str:
+    """状态 pill。kind 取 quant.runner.view.PILL_*（running/success/failed/idle）；
+    拼错或将来多出一种状态时退回 idle——绝不渲染出没有底色的裸文字。"""
+    css = kind if kind in _PILL_KINDS else "idle"
+    return f'<span class="qd-pill qd-pill-{css}">{_esc(text)}</span>'
+
+
+def page_head(title: str, subtitle: str, pill_html: str = "") -> str:
+    """通用页头（§2.4）：页名衬线大字 + 一句话说明灰色小字 + 右侧任务状态 pill。
+    `pill_html` 是本模块 pill() 的输出（已转义的可信 HTML），空则不出 pill。"""
+    right = f'<span class="qd-head-right">{pill_html}</span>' if pill_html else ""
+    return (f'<div class="qd-head"><span class="qd-title">{_esc(title)}</span>'
+            f'<span class="qd-sub">{_esc(subtitle)}</span>{right}</div>')
+
+
+def section(title: str, pill_html: str = "") -> str:
+    """区块小标题：衬线 + 发丝线（§2.3 第 2 条，不用四面描边的卡片）。"""
+    right = f'<span class="qd-section-pill">{pill_html}</span>' if pill_html else ""
+    return f'<div class="qd-section">{_esc(title)}{right}</div>'
+
+
+def metric(label: str, value: str, color: str | None = None) -> str:
+    """指标卡：标签小号灰字 + 数值等宽放大（§2.3 第 1 条）。
+
+    `color` 只接受色板里的值（由 fmt.metric_color / fmt.direction_color 给出）：
+    红绿是按值算的，写不进静态 CSS，只能内联；但内联 style 是个注入口子，
+    所以在这里白名单挡一道。None = 不上色，且**不留空 style**。
+    """
+    style = ""
+    if color is not None:
+        if color not in _INLINE_COLORS:
+            raise ValueError(f"内联色值必须来自色板，收到 {color!r}")
+        style = f' style="color: {color}"'
+    return (f'<div class="qd-metric"><div class="qd-metric-label">{_esc(label)}</div>'
+            f'<div class="qd-metric-value"{style}>{_esc(value)}</div></div>')
 
 
 def inject() -> None:

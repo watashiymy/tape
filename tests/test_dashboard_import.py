@@ -54,7 +54,10 @@ def _load_dashboard(tmp_path, monkeypatch, page):
     frames: list[pd.DataFrame] = []
     # 顶层代码在 exec_module 时就会渲染选中页，所以桩必须先装好
     monkeypatch.setattr(st.sidebar, "radio", lambda *a, **k: page)
-    monkeypatch.setattr(st, "dataframe", lambda df, *a, **k: frames.append(df))
+    # 扫描表喂给 st.dataframe 的是 pandas Styler（column_config 没有条件着色能力，
+    # 红绿只能走 Styler）。这里取回底层 DataFrame——本文件关心的是"数据对不对"。
+    monkeypatch.setattr(st, "dataframe",
+                        lambda df, *a, **k: frames.append(getattr(df, "data", df)))
     spec = importlib.util.spec_from_file_location(
         f"dashboard_under_test_{page}", dashboard)
     mod = importlib.util.module_from_spec(spec)
@@ -95,15 +98,17 @@ def test_signal_page_keeps_leading_zero_symbols(tmp_path, monkeypatch):
     assert [f["symbol"].tolist() for f in frames] == [["000333"], ["000001"]]
 
 
-def test_fmt_metric_int_has_no_decimals(tmp_path, monkeypatch):
-    """指标卡把所有数值一律 f"{v:.2f}"，n_trades（int）显示成 '243.00'。
-    int 必须原样 str()；None 显示 —；比率类走百分号。"""
+def test_metric_formatting_is_not_duplicated_in_the_dashboard(tmp_path, monkeypatch):
+    """指标卡的标签与格式化自 v0.2.1 起在 quant.report.fmt（§4"UI 层只做组装"）。
+    面板里再留一份私有副本，改一处漏一处就会出现两种长相的指标卡。
+    边界（int/None/NaN/未知键）在 tests/test_report_fmt.py 里钉。"""
+    from quant.report import fmt
+
     mod, _ = _load_dashboard(tmp_path, monkeypatch, "今日信号")  # 空 output，不读文件
-    assert mod._fmt_metric("n_trades", 243) == "243"
-    assert mod._fmt_metric("total_return", 1.1642) == "116.42%"
-    assert mod._fmt_metric("win_rate", 0.41975) == "41.98%"
-    assert mod._fmt_metric("sharpe", 0.9621) == "0.96"
-    assert mod._fmt_metric("profit_factor", None) == "—"
+    assert not hasattr(mod, "_fmt_metric"), "格式化应已下沉到 fmt，面板不该再留一份"
+    assert not hasattr(mod, "METRIC_LABELS"), "标签表同理"
+    assert fmt.fmt_metric("n_trades", 243) == "243"
+    assert fmt.fmt_metric("total_return", 1.1642) == "116.42%"
 
 
 def _make_apptest(tmp_path) -> AppTest:
@@ -129,8 +134,8 @@ def test_metric_card_shows_n_trades_as_integer(tmp_path):
     _complete_run(tmp_path / "output", "ma_cross_20260817_121152", {"n_trades": 243})
     at = _make_apptest(tmp_path).run()
     assert not at.exception
-    values = {m.label: m.value for m in at.metric}
-    assert values["交易次数"] == "243"
+    blob = "\n".join(e.proto.body for e in at.get("html"))
+    assert '>交易次数</div><div class="qd-metric-value">243<' in blob, blob
 
 
 @pytest.mark.parametrize("files", [
@@ -240,8 +245,10 @@ def test_scan_block_shows_scan_date(tmp_path):
         encoding="utf-8")
     at = _goto_signals(tmp_path)
     assert not at.exception
-    assert any("2026-08-21" in s.value for s in at.subheader), \
-        f"扫描区块标题应含扫描日期，实际 subheader: {[s.value for s in at.subheader]}"
+    sections = [e.proto.body for e in at.get("html")
+                if 'class="qd-section"' in e.proto.body]
+    assert any("2026-08-21" in s for s in sections), \
+        f"扫描区块标题应含扫描日期，实际小标题: {sections}"
 
 
 def test_scan_block_empty_csv_says_no_signal(tmp_path):
