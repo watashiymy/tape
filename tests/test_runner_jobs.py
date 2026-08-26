@@ -2,7 +2,7 @@
 #
 # 面板能在本机起进程，参数校验就是唯一的闸门：这里的反向用例全部是"必须被拒"。
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import pytest
@@ -92,6 +92,12 @@ def test_limit_rejected(bad):
 def test_date_ok_as_str_and_as_date_object():
     assert build_argv("market_scan", {"date": "2026-08-24"})[-2:] == ["--date", "2026-08-24"]
     assert build_argv("market_scan", {"date": date(2026, 8, 24)})[-1] == "2026-08-24"
+
+
+def test_date_accepts_datetime_by_taking_its_date_part():
+    """datetime 是 date 的子类，必须先判 datetime 再判 date：
+    漏了这一步 isoformat() 会给出 '2026-08-24T15:30:00'，正则一挡就把合法输入拒掉。"""
+    assert build_argv("market_scan", {"date": datetime(2026, 8, 24, 15, 30)})[-1] == "2026-08-24"
 
 
 def test_date_omitted_when_none():

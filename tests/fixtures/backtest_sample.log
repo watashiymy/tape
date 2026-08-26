@@ -20,4 +20,17 @@ logout success!
             win_rate: 0.4198
        profit_factor: 2.4990
     avg_holding_days: 91.0494
-  报告目录: output/ma_cross_20260826_104235
+  报告目录: output/ma_cross_20260826_112606
+
+===== donchian =====
+        total_return: 0.4902
+                cagr: 0.0382
+        max_drawdown: -0.1241
+              sharpe: 0.5711
+            n_trades: 436
+            win_rate: 0.4266
+       profit_factor: 1.4907
+    avg_holding_days: 28.9771
+  报告目录: output/donchian_20260826_112606
+
+全部完成: 2 个策略

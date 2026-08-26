@@ -17,6 +17,8 @@ from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
+from quant.runner import progress
+
 RUNNING, SUCCESS, FAILED, STOPPED = "running", "success", "failed", "stopped"
 
 TERM_GRACE_S = 10.0     # SIGTERM 后等多久才升级 SIGKILL（设计 §5.2）
@@ -26,9 +28,11 @@ REAP_WAIT_S = 2.0       # SIGKILL 之后收尸的最长等待
 # 从而放开互斥、让第二个 baostock 会话把第一个踢下线。宁可晚认几分钟。
 LOG_STALE_S = 600.0
 # 僵尸清理时唯一可信的"跑完了"痕迹：两个信号脚本的收尾行是"已保存:"，
-# run_backtest.py 的收尾行是"  报告目录:"（缩进两格，故按子串匹配）。
-# 少了后者，一次被 kill -9 的**成功**回测会被判成 failed。
-DONE_MARKERS = ("已保存:", "报告目录:")
+# run_backtest.py 的收尾行是循环外只打一次的"全部完成: N 个策略"。
+# 少了后者，一次被 kill -9 的**成功**回测会被判成 failed；
+# 而拿 per-strategy 循环内部的"报告目录:"当标记更糟——默认配置两个策略，
+# 第一条落盘时整轮才跑了一半，被 kill -9 照样打 ✅ 成功（用户据此以为回测跑完了）。
+DONE_MARKERS = ("已保存:", "全部完成:")
 
 # 本进程亲手起的子进程。留着引用有两个作用：
 # 1) 拿得到真实退出码（Popen.poll）；2) 防止 Popen 被 GC 后由 subprocess 内部
@@ -143,9 +147,11 @@ def _reap_zombie(state: RunState, runs_dir: str | Path) -> RunState:
     不做这一步的话，一次异常退出（kill -9、关机、面板被 SIGKILL）会让
     "有任务在跑"永远为真，三个按钮从此全部禁用，只能手工删文件才能恢复。
     退出码拿不到了（进程不是我们的孩子），如实留 None。
+    崩溃痕迹优先于收尾标记，且不比先后：stdout 重定向到文件是块缓冲、stderr 不缓冲，
+    崩溃前 print 的"已保存:"完全可能被冲刷到 traceback 之后（与 progress.py 同一口径）。
     """
     log = _log_text(state)
-    ok = any(marker in log for marker in DONE_MARKERS)
+    ok = any(marker in log for marker in DONE_MARKERS) and progress.TRACEBACK not in log
     return _finish(state, runs_dir, exit_code=None, status=SUCCESS if ok else FAILED)
 
 
@@ -192,7 +198,9 @@ def start(job_name: str, argv: list[str], runs_dir: str | Path) -> RunState:
     busy = any_running(runs_dir)
     if busy:
         raise RuntimeError(f"「{busy}」正在运行，同时只允许一个任务（baostock 单会话）")
-    logs = Path(runs_dir) / "logs"
+    # 绝对化：log_path 会被写进状态文件长期保存，存相对路径的话换个 cwd 就读不到日志，
+    # 而 _log_text 把 OSError 吞成 ""——僵尸清理判 failed、实时输出全空白，且不报错。
+    logs = (Path(runs_dir) / "logs").resolve()
     logs.mkdir(parents=True, exist_ok=True)
     now = datetime.now()
     run_id = f"{job_name}_{now:%Y%m%d_%H%M%S}_{now.microsecond // 1000:03d}"

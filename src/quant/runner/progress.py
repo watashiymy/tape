@@ -13,7 +13,7 @@ STARTING = "启动中"
 DONE = "完成"
 CRASHED = "异常退出"
 
-_TRACEBACK = "Traceback (most recent call last):"
+TRACEBACK = "Traceback (most recent call last):"    # 崩溃痕迹，process.py 的僵尸清理共用
 
 # run_market_scan.py
 _SCAN_HEADER = re.compile(r"^基准日 \S+，扫描池 (\d+) 只", re.M)
@@ -25,20 +25,29 @@ _SIGNAL_HEADER = re.compile(r"^===== \S+ 信号 =====", re.M)
 # run_backtest.py
 _DATA_LINE = re.compile(r"^\[data\] \S+: \d+ 根K线", re.M)
 _STRATEGY_HEADER = re.compile(r"^===== (\S+) =====$", re.M)
+# 每个策略一条，**打在 per-strategy 循环内部**：默认配置两个策略就有两行，
+# 第一行落盘时下一个策略还没开始算。故只能 findall 全取，且它**不是**完成标记。
 _REPORT_DIR = re.compile(r"^\s*报告目录: (\S+)$", re.M)
+# 循环外只打一次的整轮完成标记（run_backtest.py 收尾行）。
+_ALL_DONE = re.compile(r"^全部完成: \d+ 个策略$", re.M)
 # 共用：两个信号脚本的收尾行
 _SAVED = re.compile(r"^已保存: (\S+)$", re.M)
 
 
 @dataclass(frozen=True)
 class Progress:
-    """current/total 缺一不可才谈得上百分比与 ETA；缺了就是不确定态（None）。"""
+    """current/total 缺一不可才谈得上百分比与 ETA；缺了就是不确定态（None）。
+
+    extras 是给人看的（面板直接铺开显示）；outputs 是给面板**读产物**用的机器可读清单：
+    扫描/信号 = CSV 路径，回测 = 每个策略一个报告目录（默认配置就是两个，不能只留一个）。
+    """
     current: int | None = None
     total: int | None = None
     elapsed_s: float | None = None
     eta_s: float | None = None
     phase: str = STARTING
     extras: dict[str, str] = field(default_factory=dict)
+    outputs: tuple[str, ...] = ()
 
 
 def _eta(current: int | None, total: int | None, elapsed: float | None) -> float | None:
@@ -55,18 +64,35 @@ def _last_nonempty(text: str) -> str:
     return ""
 
 
-def _terminal(text: str, saved: re.Match | None, saved_key: str) -> tuple[str, dict] | None:
-    """收尾态判定。traceback 优先于收尾行，且不比较两者的先后位置。
+def _crash(text: str) -> dict | None:
+    """崩溃判定。traceback 优先于收尾行，且不比较两者的先后位置。
 
     三个脚本的 traceback 只会从顶层逃逸（单票失败是被 catch 计数的），出现即崩溃；
     而重定向到文件时 stdout 是块缓冲、stderr 不缓冲，崩溃前 print 的"已保存:"完全
     可能被冲刷到 traceback **之后**——按位置判先后会把崩溃读成完成。
     """
-    if _TRACEBACK in text:
-        return CRASHED, {"错误": _last_nonempty(text)}
-    if saved is not None:
-        return DONE, {saved_key: saved.group(1)}
+    if TRACEBACK in text:
+        return {"错误": _last_nonempty(text)}
     return None
+
+
+def _saved_terminal(text: str, phase: str,
+                    extras: dict[str, str]) -> tuple[str, dict[str, str], tuple[str, ...]]:
+    """两个信号脚本共用的收尾：`已保存: <csv>` → 完成 + 输出路径，崩溃压倒完成态。
+
+    收尾态一律**并入**已有 extras（`|=`）而不是顶掉：顶掉的话完成时
+    "信号 58 条 / 失败 0 只"这类进度计数会凭空消失。
+    """
+    outputs: tuple[str, ...] = ()
+    saved = _SAVED.search(text)
+    if saved:
+        phase, outputs = DONE, (saved.group(1),)
+        extras |= {"输出": saved.group(1)}
+    crash = _crash(text)
+    if crash:
+        phase = CRASHED         # 崩溃优先，但已解析到的进度与产物都留着
+        extras |= crash
+    return phase, extras, outputs
 
 
 def parse_market_scan(log_text: str) -> Progress:
@@ -82,12 +108,10 @@ def parse_market_scan(log_text: str) -> Progress:
         current, total, elapsed = int(cur), int(tot), float(secs)
         extras = {"信号": f"{sigs} 条", "失败": f"{fails} 只"}
     phase = "扫描中" if (total is not None or current is not None) else STARTING
-    term = _terminal(log_text, _SAVED.search(log_text), "输出")
-    if term:
-        phase, term_extras = term
-        extras |= term_extras
+    phase, extras, outputs = _saved_terminal(log_text, phase, extras)
     return Progress(current=current, total=total, elapsed_s=elapsed,
-                    eta_s=_eta(current, total, elapsed), phase=phase, extras=extras)
+                    eta_s=_eta(current, total, elapsed), phase=phase, extras=extras,
+                    outputs=outputs)
 
 
 def parse_daily_signal(log_text: str) -> Progress:
@@ -107,17 +131,19 @@ def parse_daily_signal(log_text: str) -> Progress:
     stale = _STALE.search(log_text)
     if stale:
         phase = f"数据未更新到 {stale.group(1)}（收盘后 17:30 起才有当日数据）"
-    extras: dict[str, str] = {}
-    term = _terminal(log_text, _SAVED.search(log_text), "输出")
-    if term:
-        phase, extras = term
-    return Progress(current=current, phase=phase, extras=extras)
+    phase, extras, outputs = _saved_terminal(log_text, phase, {})
+    return Progress(current=current, phase=phase, extras=extras, outputs=outputs)
 
 
 def parse_backtest(log_text: str, total: int | None = None) -> Progress:
     """回测：`[data] …` 行计数当 current；total 只能由调用方给（日志里没有）。
 
     日志没有任何耗时字段，故 elapsed/ETA 一律 None——不许编。
+
+    **完成判定只认循环外那一行"全部完成: N 个策略"**。"报告目录:" 打在 per-strategy
+    循环内部，配置默认 ma_cross + donchian 两个策略，第一条落盘时 donchian 才刚要开始算
+    （而且那一段整段静默，"标记在日志尾部"也区分不出来）——拿它判完成会：
+    1) 回测跑到一半面板就显示"完成"；2) 只留第一个报告目录，donchian 的产物直接丢掉。
     """
     current = len(_DATA_LINE.findall(log_text)) or None
     phase = STARTING
@@ -127,10 +153,17 @@ def parse_backtest(log_text: str, total: int | None = None) -> Progress:
     if strat:
         phase = f"回测中: {strat[-1]}"
     extras: dict[str, str] = {}
-    term = _terminal(log_text, _REPORT_DIR.search(log_text), "报告目录")
-    if term:
-        phase, extras = term
-    return Progress(current=current, total=total, phase=phase, extras=extras)
+    outputs = tuple(_REPORT_DIR.findall(log_text))    # 每个策略一个，全取
+    if outputs:
+        extras["报告目录"] = "、".join(outputs)
+    if _ALL_DONE.search(log_text):
+        phase = DONE
+    crash = _crash(log_text)
+    if crash:
+        phase = CRASHED
+        extras |= crash
+    return Progress(current=current, total=total, phase=phase, extras=extras,
+                    outputs=outputs)
 
 
 def tail(log_text: str, n: int = 30) -> str:

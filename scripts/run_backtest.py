@@ -123,6 +123,11 @@ def main() -> None:
             print(f"  {k:>18}: {v:.4f}" if isinstance(v, float) else f"  {k:>18}: {v}")
         print(f"  报告目录: {run_dir}")
 
+    # 整轮完成标记（循环外，只打一次）。"报告目录:" 打在循环**内部**，配置里两个策略
+    # 就有两行，第一行落盘时 donchian 还没开始算——面板据此判"完成"会早报一半，
+    # 僵尸清理（process.DONE_MARKERS）更会把被 kill -9 的半截回测判成 success。
+    print(f"\n全部完成: {len(strategies)} 个策略")
+
 
 if __name__ == "__main__":
     main()

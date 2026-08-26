@@ -2,7 +2,9 @@
 #
 # 全部用例只吃**真实日志**：
 #   market_scan_sample.log      2026-08-24 全量扫描实跑截取（含表头/进度行/结果表/汇总/已保存）
-#   backtest_sample.log         2026-08-26 run_backtest.py --strategy ma_cross 实跑全文
+#   backtest_sample.log         2026-08-26 run_backtest.py 默认实跑全文（配置里的 ma_cross +
+#                               donchian 两个策略，exit 0）——默认路径就是多策略，
+#                               "报告目录:" 有两行，"全部完成:" 只有一行
 #   daily_signal_stale_sample.log  2026-08-26 上午 run_daily_signal.py 实跑（数据未更新，退出码 1）
 # 唯一没有实跑素材的是 run_daily_signal 的成功尾部（当日 17:30 前 baostock 无数据），
 # 该两行按脚本源码里的 f-string 逐字构造，构造依据见 DAILY_TAIL 处注释。
@@ -19,6 +21,7 @@ from quant.runner.progress import (
     tail,
 )
 
+ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 SCAN_LOG = (FIXTURES / "market_scan_sample.log").read_text(encoding="utf-8")
 BACKTEST_LOG = (FIXTURES / "backtest_sample.log").read_text(encoding="utf-8")
@@ -27,6 +30,11 @@ DAILY_STALE_LOG = (FIXTURES / "daily_signal_stale_sample.log").read_text(encodin
 # 真实日志的前 N 行 = 一次"跑到一半"的日志（进程仍在写，尚无汇总/已保存）
 SCAN_HEADER_ONLY = "\n".join(SCAN_LOG.splitlines()[:2]) + "\n"          # login + 基准日
 SCAN_MID = "\n".join(SCAN_LOG.splitlines()[:20]) + "\n"                 # 末行 [1800/3010]
+# 真实回测日志截到第一个"报告目录:"：ma_cross 已收尾，donchian 还没开始算。
+# 注意这一段"跑到一半"的日志尾行**就是**"报告目录:"——ma_cross 打完它之后，
+# donchian 整段计算（几十秒到几分钟）一个字都不输出，所以"标记出现在日志尾部"
+# 也照样区分不出半截与跑完，只能靠循环外那一行"全部完成:"。
+BACKTEST_HALF = BACKTEST_LOG.split("\n\n===== donchian")[0] + "\n"
 
 TRACEBACK_LOG = """login success!
 基准日 2026-08-24，扫描池 3010 只，策略: ['ma_cross', 'donchian']，流动性门槛 20日均额 ≥ 50,000,000 元
@@ -45,7 +53,8 @@ def test_empty_log_is_indeterminate():
     """空日志（进程刚起、还没冲刷第一行）必须是不确定态，不能瞎编 0/0。"""
     p = parse_market_scan("")
     assert (p.current, p.total, p.elapsed_s, p.eta_s) == (None, None, None, None)
-    assert p.phase and p.extras == {}
+    assert p.phase == "启动中"      # 不是"扫描中"：一个字节都还没输出，谈不上在扫
+    assert p.extras == {} and p.outputs == ()
 
 
 def test_market_scan_header_gives_total_but_no_eta():
@@ -95,6 +104,15 @@ def test_market_scan_done_phase_and_output_path():
     p = parse_market_scan(SCAN_LOG)
     assert p.phase == "完成"
     assert p.extras["输出"] == "output/scan/2026-08-24.csv"
+    assert p.outputs == ("output/scan/2026-08-24.csv",)
+
+
+def test_market_scan_done_keeps_progress_extras():
+    """收尾态必须**并入**而不是顶掉进度行带出来的计数：
+    真实日志（片段，进度行截到 [1800/3010]）跑完时 extras 得同时有计数和输出路径。"""
+    p = parse_market_scan(SCAN_LOG)
+    assert p.extras["信号"] == "58 条" and p.extras["失败"] == "0 只"
+    assert p.extras["输出"].endswith(".csv")
 
 
 def test_market_scan_running_phase_is_not_done():
@@ -161,6 +179,7 @@ def test_daily_signal_done_phase_and_output_path():
     p = parse_daily_signal(DAILY_TAIL)
     assert p.phase == "完成"
     assert p.extras["输出"] == "output/signals/2026-08-25.csv"
+    assert p.outputs == ("output/signals/2026-08-25.csv",)
 
 
 def test_daily_signal_scan_header_phase():
@@ -196,7 +215,37 @@ def test_backtest_has_no_eta():
 def test_backtest_done_phase_and_report_dir():
     p = parse_backtest(BACKTEST_LOG)
     assert p.phase == "完成"
-    assert p.extras["报告目录"] == "output/ma_cross_20260826_104235"
+    assert p.outputs == ("output/ma_cross_20260826_112606",
+                         "output/donchian_20260826_112606")
+    for d in p.outputs:
+        assert d in p.extras["报告目录"]
+
+
+def test_backtest_keeps_every_strategy_report_dir():
+    """配置里两个策略就有两个报告目录，一个都不能丢。
+
+    "报告目录:" 打在 per-strategy 循环内部，`re.search` 只拿第一个 →
+    donchian 的指标卡用户永远看不到（面板按 result_kind 渲染的就是这份产物清单）。
+    """
+    assert len(parse_backtest(BACKTEST_LOG).outputs) == 2
+
+
+def test_backtest_first_report_dir_is_not_completion():
+    """整轮跑到一半不得报"完成"。
+
+    真实日志截到第一个"报告目录:"（ma_cross 收尾、donchian 还在算）：
+    取 first-match 判完成，面板会在回测才跑一半时就打完成、并去读只有一半的产物。
+    """
+    p = parse_backtest(BACKTEST_HALF)
+    assert p.phase != "完成"
+    assert "回测中" in p.phase
+    assert p.outputs == ("output/ma_cross_20260826_112606",)   # 已出的那份不丢
+
+
+def test_backtest_done_needs_the_all_finished_marker():
+    """两个报告目录都出齐了，但循环外的"全部完成:"还没打 → 仍不算完成。
+    唯一可信的整轮完成痕迹就是那一行（脚本里只打一次）。"""
+    assert parse_backtest(BACKTEST_LOG.split("全部完成")[0]).phase != "完成"
 
 
 def test_backtest_fetching_phase_midway():
@@ -219,7 +268,20 @@ def test_backtest_truncated_data_line_not_counted():
 
 def test_backtest_empty_log():
     p = parse_backtest("")
-    assert p.current is None and p.phase
+    assert p.current is None and p.phase == "启动中" and p.outputs == ()
+
+
+def test_backtest_traceback_beats_report_dirs():
+    """回测崩在第二个策略上：已出的报告目录要留着，但阶段必须是异常，不能是完成。"""
+    crashed = BACKTEST_HALF + (
+        "Traceback (most recent call last):\n"
+        '  File "scripts/run_backtest.py", line 115, in main\n'
+        "    result = Backtester(bars, positions, settings).run()\n"
+        "ValueError: 仓位序列与行情索引不对齐\n")
+    p = parse_backtest(crashed)
+    assert "异常" in p.phase
+    assert "ValueError" in p.extras["错误"]
+    assert p.outputs == ("output/ma_cross_20260826_112606",)
 
 
 # ---------------------------------------------------------------- tail
@@ -237,9 +299,35 @@ def test_tail_shorter_than_n_returns_all():
     assert tail("a\nb\n", 30).splitlines() == ["a", "b"]
 
 
+def test_tail_zero_lines_returns_nothing():
+    """n<=0 必须返回空串：`splitlines()[-0:]` 是**整篇日志**，
+    少了这道守卫，"只显示 0 行"会变成把几十 MB 日志整个塞进面板。"""
+    assert tail("a\nb\nc\n", 0) == ""
+    assert tail("a\nb\nc\n", -5) == ""
+
+
 def test_tail_keeps_partial_last_line():
     """半行也要显示——面板的"实时输出"就是要看正在写的这一行。"""
     assert tail("a\nb\n[190", 2).splitlines() == ["b", "[190"]
+
+
+# ---------------------------------------------------------------- 收尾标记契约
+def test_done_markers_still_exist_in_the_scripts():
+    """解析器认的"跑完了"标记必须与脚本源码里的 print 字面对得上。
+
+    这是跨模块契约：脚本改了收尾口径而解析器没跟，面板会永远显示"回测中"、
+    僵尸清理会把成功的运行判成 failed——两边都不报错，只是结果错。
+    回测尤其不能只认"报告目录:"：它打在 per-strategy 循环**内部**，
+    默认两个策略就有两行，第一行出现时整轮回测才跑了一半。
+    """
+    scan = (ROOT / "scripts" / "run_market_scan.py").read_text(encoding="utf-8")
+    daily = (ROOT / "scripts" / "run_daily_signal.py").read_text(encoding="utf-8")
+    backtest = (ROOT / "scripts" / "run_backtest.py").read_text(encoding="utf-8")
+    assert 'print(f"已保存: {out}")' in scan
+    assert 'print(f"已保存: {out}")' in daily
+    assert "全部完成:" in backtest, "回测脚本必须打一行整轮完成标记（循环外、只打一次）"
+    assert backtest.index("全部完成:") > backtest.index("报告目录:"), \
+        "整轮完成标记必须在 per-strategy 的报告目录行之后（循环外）"
 
 
 def test_progress_is_frozen():
