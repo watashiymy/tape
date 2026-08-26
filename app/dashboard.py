@@ -1,6 +1,7 @@
 """Streamlit 本地面板：streamlit run app/dashboard.py
 四页面：回测报告 / 个股K线 / 今日信号 / 任务控制台。
-前三页只读 output/ 与 data/cache/；控制台页可在**本机**起三个入口脚本
+前三页展示 output/ 与 data/cache/ 里的产物，顶部各有一条精简控制条（开始/停止，§4.2）；
+控制台页可在**本机**起三个入口脚本并看进度、日志与结果
 （进程管理与解析全在 src/quant/runner/，本文件只负责渲染）。
 面板能执行本机命令，只许 localhost，切勿 --server.address 0.0.0.0 暴露到局域网。"""
 from __future__ import annotations
@@ -72,6 +73,7 @@ def list_runs() -> list[Path]:
 
 
 def page_backtest() -> None:
+    _control_bar("backtest")   # §4.2 控制条；下面的只读逻辑一行未动
     runs = list_runs()
     if not runs:
         st.info("暂无回测结果。先运行: python scripts/run_backtest.py")
@@ -105,6 +107,7 @@ def page_backtest() -> None:
 
 
 def page_kline() -> None:
+    _control_bar("backtest")   # K 线图也是回测产物（kline_*.html + trades.csv）
     runs = list_runs()
     if not runs:
         st.info("暂无回测结果。先运行: python scripts/run_backtest.py")
@@ -156,6 +159,8 @@ def scan_section() -> None:
 
 
 def page_signals() -> None:
+    # 本页同屏展示两类产物：固定池每日信号 + 页尾的全市场扫描区块，故控制条有两条
+    _control_bar("daily_signal", "market_scan")
     sig_dir = OUTPUT / "signals"
     files = sorted(sig_dir.glob("*.csv"), reverse=True) if sig_dir.exists() else []
     # 无信号记录不能 return 早退：全市场扫描区块在页尾，早退会把它一并吞掉
@@ -228,6 +233,13 @@ def _start(job_name: str, params: dict) -> None:
     st.rerun()
 
 
+def _stop(state: process.RunState) -> None:
+    """停止唯一的落点。信号一律由 process.stop 发（SIGTERM 进程组 → 10s → SIGKILL），
+    面板自己绝不碰 os.kill。"""
+    process.stop(state, RUNS_DIR)
+    st.rerun()   # 同 _start：解禁另外两个"开始"并摘掉轮询
+
+
 def _rerun(job_name: str, state: process.RunState) -> None:
     """沿用上次 argv 重跑。状态文件是手工改得动的普通 JSON，所以先 parse_argv
     反解、再由 _start 重新 build_argv，让它整个过一遍白名单闸门。"""
@@ -237,6 +249,49 @@ def _rerun(job_name: str, state: process.RunState) -> None:
         st.error(f"无法重跑: {e}")
         return
     _start(job_name, params)
+
+
+CONSOLE_HINT = ("进度、实时日志与完整结果见侧边栏「任务控制台」页；"
+                "这里按默认参数运行（要指定 --limit / --date / 策略请去控制台）。")
+
+
+def _control_bar(*job_names: str) -> None:
+    """既有三页顶部的精简控制条（设计 §4.2）：当前状态 + 开始/停止 + 去控制台看详情。
+
+    只放这三样：进度条、实时日志、结果全在控制台页，这条越薄越好。
+    必须排在各页只读逻辑的**最前面**：三页在无产物时都会 st.info 之后早退，
+    控制条排在早退后面，恰好在"最需要点开始"的那一刻看不见。
+    每页只给这一页看得见产物的任务（回测页不出扫描按钮：误点一下就是 0.5-2 小时）。
+    """
+    try:
+        busy = process.any_running(RUNS_DIR)
+        states = {name: process.read_state(name, RUNS_DIR) for name in job_names}
+    except RuntimeError as e:
+        # 与控制台页同口径：互斥状态不可知就一个"开始"都不给（fail-safe），
+        # 否则真有扫描在跑也照样能点，两个 baostock 会话互踢下线。
+        # 只读内容照常渲染——一个坏了的 runs/*.json 不该把回测报告一起藏起来。
+        st.error(str(e))
+        st.divider()
+        return
+    notices: list[str] = []
+    for name in job_names:
+        job = jobs.JOBS[name]
+        state = states[name]
+        running = state is not None and state.status == process.RUNNING
+        disabled, notice = view.start_button_state(busy, name)
+        head, start_col, stop_col = st.columns([6, 1, 1], vertical_alignment="center")
+        head.markdown(f"**{job.label}** {view.status_badge(state)}")
+        if start_col.button("▶ 开始", key=f"bar_start_{name}", disabled=disabled):
+            _start(name, {})              # 精简条无参数控件：一律默认参数
+        if stop_col.button("⏹ 停止", key=f"bar_stop_{name}", disabled=not running):
+            _stop(state)
+        if notice:
+            notices.append(notice)        # 点名是谁在跑，否则灰按钮无从解释
+    # 互斥是全局的，两条控制条拿到的是同一句提示——去重后只说一次，别刷屏
+    for text in dict.fromkeys(notices):
+        st.caption(text)
+    st.caption(CONSOLE_HINT)
+    st.divider()
 
 
 def _result_table(path_str: str) -> None:
@@ -291,8 +346,7 @@ def _render_card(job_name: str) -> str | None:
     if left.button("▶ 开始", key=f"start_{job_name}", disabled=disabled):
         _start(job_name, params)
     if mid.button("⏹ 停止", key=f"stop_{job_name}", disabled=not running):
-        process.stop(state, RUNS_DIR)     # SIGTERM 进程组 → 10s → SIGKILL
-        st.rerun()                        # 同 _start：解禁另外两个"开始"并摘掉轮询
+        _stop(state)                      # SIGTERM 进程组 → 10s → SIGKILL，然后整页重跑
     if right.button("↻ 重跑", key=f"rerun_{job_name}", disabled=disabled or state is None):
         _rerun(job_name, state)
     if notice:
@@ -356,9 +410,17 @@ def page_console() -> None:
         card(name, busy or "")
 
 
-st.set_page_config(page_title="quant_demo v0.1.1", layout="wide")
+st.set_page_config(page_title="quant_demo v0.2.0", layout="wide")
 st.sidebar.title("quant_demo")
 page = st.sidebar.radio("页面", ["回测报告", "个股K线", "今日信号", "任务控制台"])
-st.sidebar.caption("本面板纯只读；回测与信号请用命令行运行。策略仅用于学习，不构成投资建议。")
+# 面板自 v0.2.0 起能在本机起进程，"纯只读"从此是假话（设计 §4.3）。
+st.sidebar.caption("本面板可在**本机**启动三个任务（全市场扫描 / 每日信号 / 回测），"
+                   "同时只允许一个任务；进度、日志与结果见「任务控制台」页。"
+                   "命令行入口全部保留，两种方式等价。")
+# 必须是侧边栏里看得见的一句，不能只写在模块 docstring 里：面板能执行本机命令，
+# 暴露到网络就等同于把远程命令执行接口挂到局域网上（设计 §5.3）。
+st.sidebar.warning("安全提示：本面板可在本机执行脚本，仅限 localhost 使用，"
+                   "请勿通过 `--server.address 0.0.0.0` 暴露到局域网。")
+st.sidebar.caption("策略仅用于学习，不构成投资建议。")
 {"回测报告": page_backtest, "个股K线": page_kline, "今日信号": page_signals,
  "任务控制台": page_console}[page]()
