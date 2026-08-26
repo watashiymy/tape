@@ -168,6 +168,25 @@ CSS = f"""@import url("{FONT_IMPORT}");
   font-size: 0.76rem;
   color: var(--qd-muted);
 }}
+.qd-flow {{
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0.2rem 0 0.9rem;
+}}
+.qd-flow-step {{
+  font-family: var(--qd-sans);
+  font-size: 0.78rem;
+  color: var(--qd-text);
+  background: {MUTED_DIM};
+  border-left: 2px solid var(--qd-primary);
+  padding: 0.2rem 0.55rem;
+}}
+.qd-flow-arrow {{
+  font-family: var(--qd-mono);
+  color: var(--qd-primary);
+}}
 """
 
 
@@ -221,6 +240,21 @@ def metric(label: str, value: str, color: str | None = None) -> str:
         style = f' style="color: {color}"'
     return (f'<div class="qd-metric"><div class="qd-metric-label">{_esc(label)}</div>'
             f'<div class="qd-metric-value"{style}>{_esc(value)}</div></div>')
+
+
+def flow(steps) -> str:
+    """闭环图（设计 §3.1 第 1 节）：一行步骤 + 琥珀箭头，讲"扫描发现 → 加入
+    universe → 每日信号跟踪卖出"这个闭环。
+
+    用 flex 而不是画 SVG：步数会变（文案改动比图形改动频繁得多），
+    而且 flex-wrap 让它在窄屏上自己折行，SVG 做不到。
+    空列表返回空串——`st.html("")` 也会占一个元素位，不能留个空盒子把版面顶开。
+    """
+    parts = [f'<span class="qd-flow-step">{_esc(s)}</span>' for s in steps]
+    if not parts:
+        return ""
+    arrow = '<span class="qd-flow-arrow">→</span>'
+    return f'<div class="qd-flow">{arrow.join(parts)}</div>'
 
 
 def inject() -> None:

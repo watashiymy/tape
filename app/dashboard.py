@@ -1,9 +1,14 @@
 """Streamlit 本地面板：streamlit run app/dashboard.py
-四页面：回测报告 / 个股K线 / 今日信号 / 任务控制台。
-前三页展示 output/ 与 data/cache/ 里的产物，顶部各有一条精简控制条（开始/停止，§4.2）；
+五页面：使用说明 / 回测报告 / 个股K线 / 今日信号 / 任务控制台。
+使用说明是**默认落地页**，纯文档（文案全在 app/guide.py，本文件只做组装）；
+中间三页展示 output/ 与 data/cache/ 里的产物，顶部各有一条精简控制条（开始/停止，§4.2）；
 控制台页可在**本机**起三个入口脚本并看进度、日志与结果
 （进程管理与解析全在 src/quant/runner/，本文件只负责渲染）。
-面板能执行本机命令，只许 localhost，切勿 --server.address 0.0.0.0 暴露到局域网。"""
+
+面板能执行本机命令，所以启动时**必须**显式绑回环地址：
+    streamlit run app/dashboard.py --server.address 127.0.0.1
+不加这个参数时 streamlit 监听 *:8501（所有网卡，v0.2.1 M3 实测），
+切勿再用 --server.address 0.0.0.0 主动暴露到局域网。"""
 from __future__ import annotations
 
 import json
@@ -20,6 +25,7 @@ sys.path.insert(0, str(ROOT / "src"))
 # 加载本文件（测试就是这么干的）不会，那时 `import theme` 直接 ModuleNotFoundError。
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import guide  # noqa: E402  说明页与就地帮助的全部文案（app/guide.py，纯数据）
 import theme  # noqa: E402  视觉基座，与本文件同目录（app/theme.py）
 from quant.backtest.portfolio import Trade  # noqa: E402
 from quant.data.cache import BarCache       # noqa: E402
@@ -40,7 +46,9 @@ NAME_LOOKBACK_FILES = 30
 
 # 每页顶部那句话（§2.4 通用页头）。只讲"这页给你看什么、什么时候看"，
 # 数字必须与实测一致（baostock 约 17:30 后才有当日数据 —— README/spec §11）。
+# 键的顺序就是侧栏五页的顺序（PAGES 按它取值），少一页会让页头 KeyError 崩页。
 PAGE_INTRO = {
+    "使用说明": guide.PAGE_INTRO,
     "回测报告": "历史检验的结果：绩效指标、净值报告与逐笔成交，读自 output/ 里已完成的回测。",
     "个股K线": "单只标的的日线走势，叠加本次回测在它身上的买卖点。",
     "今日信号": "固定池的每日买卖信号，页尾是全市场扫描当日新 BUY；"
@@ -84,9 +92,13 @@ def _metric_grid(metrics: dict, per_row: int = 4) -> None:
                                   fmt.metric_color(key, value)))
 
 
-def _data_table(df: pd.DataFrame, config: dict, empty_text: str,
-                color_columns: tuple[str, ...] = ()) -> None:
+def _data_table(df: pd.DataFrame, config: dict, empty_text: str, *,
+                hint: str = "", color_columns: tuple[str, ...] = ()) -> None:
     """信号/扫描/交易表的统一渲染口。
+
+    `hint` 是表格上方那行灰字（§3.2 就地帮助），只解释关键列——逐列说明在
+    「使用说明」页里。**表格为空时不出**：对着一张空表解释列只是噪声，
+    而且会把"当日无新信号"这句真正要看的话往下挤。
 
     `color_columns` 走 pandas Styler：`column_config` 里没有条件着色能力
     （NumberColumn 无 color 参数），红绿只能这么给；而 column_config 的格式串
@@ -96,6 +108,8 @@ def _data_table(df: pd.DataFrame, config: dict, empty_text: str,
     if not len(df):
         st.write(empty_text)
         return
+    if hint:
+        st.caption(hint)
     data = fmt.direction_styler(df, color_columns) if color_columns else df
     st.dataframe(data, width="stretch", column_config=config, hide_index=True)
 
@@ -137,12 +151,30 @@ def list_runs() -> list[Path]:
                   key=_run_key, reverse=True)
 
 
+def page_guide() -> None:
+    """「使用说明」页（设计 §3.1）：侧栏第一位、默认落地页，纯文档。
+
+    八节正文与那张闭环图全在 app/guide.py（可单测的纯字符串），本函数只做组装。
+    **刻意不放控制条**：这页没有任何产物可看，也不该让人在读说明时误点一次
+    十几分钟的全量扫描。
+    """
+    _page_head("使用说明")
+    for sec in guide.SECTIONS:
+        st.html(theme.section(sec.title))
+        if sec.flow:
+            st.html(theme.flow(sec.flow))          # 闭环图：扫描 → universe → 每日信号
+        if sec.emphasis:
+            st.warning(sec.body)                   # 安全提示单独成块（§3.1 第 7 条）
+        else:
+            st.markdown(sec.body)
+
+
 def page_backtest() -> None:
     _page_head("回测报告")
     _control_bar("backtest")   # §4.2 控制条；下面的只读逻辑一行未动
     runs = list_runs()
     if not runs:
-        st.info("暂无回测结果。先运行: python scripts/run_backtest.py")
+        st.info(guide.EMPTY_STATES["backtest"])
         return
     run = st.selectbox("选择回测", runs, format_func=lambda p: p.name)
     # 所有文件读取集中在 try 里：即便三件套都在，metrics.json 仍可能只写了一半
@@ -167,13 +199,13 @@ def page_backtest() -> None:
     # 不能换成 st.html：那个不套 iframe 且默认忽略 JavaScript，plotly 报告会是空白页。
     st.iframe(run / "report.html", height=650)
     st.html(theme.section("交易明细"))
-    st.caption("金额与股数已加千分位、数字列右对齐；盈亏只在**平仓**那一笔上有值，"
-               "买入行与仍持仓的标的是空值。")
-    _data_table(trades, fmt.trades_column_config(), "本次回测没有任何成交")
+    _data_table(trades, fmt.trades_column_config(), "本次回测没有任何成交",
+                hint=guide.TABLE_HINTS["trades"])
     if skipped is not None:
         st.html(theme.section("被跳过的订单（涨跌停/资金不足等）"))
         # 这张表只有 date/symbol/reason，列配置得各用各的（成交表那套会漏掉 reason）
-        _data_table(skipped, fmt.skipped_column_config(), "无被跳过的订单")
+        _data_table(skipped, fmt.skipped_column_config(), "无被跳过的订单",
+                    hint=guide.TABLE_HINTS["skipped"])
 
 
 def page_kline() -> None:
@@ -181,7 +213,7 @@ def page_kline() -> None:
     _control_bar("backtest")   # K 线图也是回测产物（kline_*.html + trades.csv）
     runs = list_runs()
     if not runs:
-        st.info("暂无回测结果。先运行: python scripts/run_backtest.py")
+        st.info(guide.EMPTY_STATES["backtest"])   # 与回测报告页同一句：读的是同一批产物
         return
     run = st.selectbox("选择回测", runs, format_func=lambda p: p.name)
     try:
@@ -234,7 +266,7 @@ def scan_section() -> None:
     # 文件名是 YYYY-MM-DD.csv，ISO 日期字典序即时间序，reverse 后 [0] 就是最新
     files = sorted(scan_dir.glob("*.csv"), reverse=True) if scan_dir.exists() else []
     if not files:
-        st.info("暂无全市场扫描结果。收盘后运行: python scripts/run_market_scan.py")
+        st.info(guide.EMPTY_STATES["scan"])
         return
     latest = files[0]
     # 标题必须带扫描日期（文件名 stem）：停牌日/忘跑的日子，别让人把旧扫描当今天的
@@ -247,9 +279,8 @@ def scan_section() -> None:
         st.error(f"扫描文件 {latest.name} 读取失败（{type(e).__name__}），"
                  f"多半是扫描中途被打断；请删除该文件后重新运行扫描。")
         return
-    st.caption("放量倍数（当日成交额 / 前 20 日均额）是判断信号质量最该看的一列——"
-               "没有量的突破多半是假突破；涨跌幅的参考价值反而低。")
-    _data_table(df, fmt.scan_column_config(), "当日无新信号", SCAN_COLOR_COLUMNS)
+    _data_table(df, fmt.scan_column_config(), "当日无新信号",
+                hint=guide.TABLE_HINTS["scan"], color_columns=SCAN_COLOR_COLUMNS)
 
 
 def page_signals() -> None:
@@ -260,7 +291,7 @@ def page_signals() -> None:
     files = sorted(sig_dir.glob("*.csv"), reverse=True) if sig_dir.exists() else []
     # 无信号记录不能 return 早退：全市场扫描区块在页尾，早退会把它一并吞掉
     if not files:
-        st.info("暂无信号记录。收盘后运行: python scripts/run_daily_signal.py")
+        st.info(guide.EMPTY_STATES["signal"])
     else:
         latest = files[0]
         st.html(theme.section(f"最新信号（{latest.stem}）"))
@@ -268,11 +299,13 @@ def page_signals() -> None:
         # 表格渲染统一走 _data_table：空表时那句提示必须是 if/else **语句**，
         # streamlit 的 magic 会把裸三元（ast.IfExp）整条包进 st.write()，
         # 于是 st.dataframe 的返回值被当对象内省，把整份 API 手册糊在信号表下面。
-        _data_table(df, fmt.signal_column_config(), "当日无新信号")
+        _data_table(df, fmt.signal_column_config(), "当日无新信号",
+                    hint=guide.TABLE_HINTS["signal"])
         if len(files) > 1:
             st.html(theme.section("历史信号"))
             hist = pd.concat([pd.read_csv(f, dtype={"symbol": str}) for f in files[1:]],
                              ignore_index=True)
+            # 历史表不再重复那行灰字：同一页里连着出现两遍等于噪声
             _data_table(hist, fmt.signal_column_config(), "无")
     scan_section()
 
@@ -288,21 +321,31 @@ def _resolve(path_str: str) -> Path:
 
 def _param_widgets(job: jobs.Job) -> dict:
     """按 schema 生成控件。控件本身就是第一道白名单（策略是下拉、日期是日历、
-    limit 有上下界），值再交给 build_argv 复核一遍。"""
+    limit 有上下界），值再交给 build_argv 复核一遍。
+
+    每个控件都挂 `help=`（§3.2 就地帮助）：四个控件的值都能留空，而留空的语义
+    各不相同（全量 / 最近交易日 / 全部策略）。不说清楚，用户第一次点开始就可能
+    误跑一次十几分钟的全量扫描。文案在 app/guide.py，键漏了会 KeyError——
+    宁可当场炸，也不要静默渲染一个没有解释的输入框。
+    """
     values: dict = {}
     for spec in job.params:
         key = f"{job.name}_{spec.name}"
+        tip = guide.PARAM_HELP[(job.name, spec.name)]
         if spec.kind == "int":
             values[spec.name] = st.number_input(
                 spec.label, min_value=1, max_value=spec.max_value, value=None,
-                step=1, key=key)
+                step=1, key=key, help=tip)
         elif spec.kind == "date":
-            values[spec.name] = st.date_input(spec.label, value=None, key=key)
+            values[spec.name] = st.date_input(spec.label, value=None, key=key,
+                                              help=tip)
         elif spec.kind == "choice":
-            picked = st.selectbox(spec.label, ("全部", *spec.choices), key=key)
+            picked = st.selectbox(spec.label, ("全部", *spec.choices), key=key,
+                                  help=tip)
             values[spec.name] = None if picked == "全部" else picked
         elif spec.kind == "flag":
-            values[spec.name] = st.checkbox(spec.label, value=False, key=key)
+            values[spec.name] = st.checkbox(spec.label, value=False, key=key,
+                                            help=tip)
     return values
 
 
@@ -382,24 +425,27 @@ def _control_bar(*job_names: str) -> None:
     st.divider()
 
 
-def _result_table(path_str: str, config: dict, color_columns: tuple[str, ...]) -> None:
+def _result_table(path_str: str, config: dict, hint: str,
+                  color_columns: tuple[str, ...]) -> None:
     """扫描/信号的产物 CSV。symbol 必须按字符串读，否则 000333 变成 333。"""
     try:
         df = pd.read_csv(_resolve(path_str), dtype={"symbol": str})
     except (ValueError, OSError) as e:
         st.warning(f"产物 {path_str} 读取失败（{type(e).__name__}），可能已被删除或仍在写。")
         return
-    _data_table(df, config, "当次无新信号", color_columns)
+    _data_table(df, config, "当次无新信号", hint=hint, color_columns=color_columns)
 
 
 def _result_scan(path_str: str) -> None:
-    _result_table(path_str, fmt.scan_column_config(), SCAN_COLOR_COLUMNS)
+    _result_table(path_str, fmt.scan_column_config(), guide.TABLE_HINTS["scan"],
+                  SCAN_COLOR_COLUMNS)
 
 
 def _result_signal(path_str: str) -> None:
     """每日信号 CSV 的列与扫描**不是**同一套（没有 name/成交额/放量倍数），
     列配置也得各用各的，否则 action / close 连中文标签都没有。"""
-    _result_table(path_str, fmt.signal_column_config(), ())
+    _result_table(path_str, fmt.signal_column_config(),
+                  guide.TABLE_HINTS["signal"], ())
 
 
 def _result_metrics(dir_str: str) -> None:
@@ -418,6 +464,19 @@ _RESULT_RENDERERS = {"scan_csv": _result_scan, "signal_csv": _result_signal,
                      "backtest_run": _result_metrics}
 
 
+def _card_head(job: jobs.Job, pill_html: str = "") -> None:
+    """卡片标题行：衬线小标题 + 状态 pill，**右上角**一个 `?` 就地帮助（§3.2）。
+
+    帮助必须与标题同一行才算"右上角"：塞到参数控件下面就排在按钮后面，
+    正好在"不知道这个按钮会干什么"的那一刻看不见。
+    状态文件损坏的那条分支也走这里——那时候人最需要知道这个任务是干什么的。
+    """
+    head, help_col = st.columns([5, 1], vertical_alignment="center")
+    head.html(theme.section(job.label, pill_html))
+    with help_col.popover("?"):
+        st.markdown(guide.JOB_HELP[job.name])
+
+
 def _render_card(job_name: str) -> str | None:
     """一张任务卡片。返回当前"谁在跑"（None=全空闲），外层据此决定要不要继续轮询。
 
@@ -429,10 +488,10 @@ def _render_card(job_name: str) -> str | None:
         busy = process.any_running(RUNS_DIR)
     except RuntimeError as e:
         # 状态文件损坏必须响亮失败：静默当"空闲"会放开互斥，两个 baostock 会话互踢。
-        st.html(theme.section(job.label))
+        _card_head(job)
         st.error(str(e))
         return None
-    st.html(theme.section(job.label, theme.pill(*view.status_pill(state))))
+    _card_head(job, theme.pill(*view.status_pill(state)))
     params = _param_widgets(job)
     disabled, notice = view.start_button_state(busy, job_name)
     running = state is not None and state.status == process.RUNNING
@@ -514,20 +573,33 @@ def page_console() -> None:
             card(name, busy or "")
 
 
-st.set_page_config(page_title="quant_demo v0.2.0", layout="wide")
+# 侧栏五页。「使用说明」排第一位，st.radio 默认选中第一项 → 它就是**默认落地页**
+# （设计 §3.1）：第一次打开面板的人先看说明，而不是先对着一句"暂无回测结果"发愁。
+# 「任务控制台」仍排最后：它是"要动手"的那页，不该抢在只读页前面。
+PAGES = {"使用说明": page_guide, "回测报告": page_backtest, "个股K线": page_kline,
+         "今日信号": page_signals, "任务控制台": page_console}
+
+st.set_page_config(page_title="quant_demo v0.2.1", layout="wide")
 # 字体与语义化 CSS（app/theme.py）。必须每轮都注入：Streamlit 每次 rerun 重画整棵
 # 元素树，上一轮的 <style> 不留下来。底色/主色不在这里——那些走 .streamlit/config.toml。
 theme.inject()
 st.sidebar.title("quant_demo")
-page = st.sidebar.radio("页面", ["回测报告", "个股K线", "今日信号", "任务控制台"])
+page = st.sidebar.radio("页面", list(PAGES))
+# 落地页会被切走，切走之后就没有说明页的入口提示了，所以侧栏常驻一句指路。
+st.sidebar.caption("第一次用先看「使用说明」页（侧栏第一项，也是默认落地页）："
+                   "三个任务怎么配合、输出怎么读、已知局限在哪。")
 # 面板自 v0.2.0 起能在本机起进程，"纯只读"从此是假话（设计 §4.3）。
 st.sidebar.caption("本面板可在**本机**启动三个任务（全市场扫描 / 每日信号 / 回测），"
                    "同时只允许一个任务；进度、日志与结果见「任务控制台」页。"
                    "命令行入口全部保留，两种方式等价。")
 # 必须是侧边栏里看得见的一句，不能只写在模块 docstring 里：面板能执行本机命令，
 # 暴露到网络就等同于把远程命令执行接口挂到局域网上（设计 §5.3）。
-st.sidebar.warning("安全提示：本面板可在本机执行脚本，仅限 localhost 使用，"
-                   "请勿通过 `--server.address 0.0.0.0` 暴露到局域网。")
+# 措辞在 v0.2.1 M3 纠正过：原先写"streamlit 默认只监听本机、保持默认即可"是**假话**
+# ——实测不带地址参数时监听 *:8501（所有网卡，日志里的 Network URL 就是证据）。
+# 安全建议只给可执行的那一条：显式绑回环地址。详情见「使用说明」页的安全提示块。
+st.sidebar.warning("安全提示：本面板可在本机执行脚本。启动时请显式绑定回环地址"
+                   f"（`{guide.FACTS['bind_flag']}`）；不加时 streamlit 监听所有网卡，"
+                   "同网段的人就能点这里的「开始」。"
+                   "切勿用 `--server.address 0.0.0.0` 暴露到局域网。")
 st.sidebar.caption("策略仅用于学习，不构成投资建议。")
-{"回测报告": page_backtest, "个股K线": page_kline, "今日信号": page_signals,
- "任务控制台": page_console}[page]()
+PAGES[page]()

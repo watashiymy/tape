@@ -43,6 +43,14 @@ def _make_apptest(tmp_path) -> AppTest:
     return AppTest.from_file(str(copy_app(tmp_path)), default_timeout=30)
 
 
+def _at_backtest_page(tmp_path) -> AppTest:
+    """渲染并**显式**切到回测报告页：默认落地页自 v0.2.1 起是「使用说明」，
+    靠默认选中取页的话，下面两条 iframe / 半截目录的断言就落到一页纯文档上了。"""
+    at = _make_apptest(tmp_path).run()
+    at.sidebar.radio[0].set_value("回测报告").run()
+    return at
+
+
 def _complete_run(out: Path, name: str) -> Path:
     run = out / name
     run.mkdir(parents=True)
@@ -83,7 +91,7 @@ def test_backtest_page_renders_report_through_iframe(tmp_path, monkeypatch):
 def test_report_page_does_not_crash_with_real_iframe(tmp_path):
     """不打桩的真渲染：st.iframe 拿到 Path 后自己读文件，路径/编码错了会在这里炸。"""
     _complete_run(tmp_path / "output", "ma_cross_20260817_121152")
-    at = _make_apptest(tmp_path).run()
+    at = _at_backtest_page(tmp_path)
     assert not at.exception, f"回测报告页崩了: {at.exception}"
 
 
@@ -94,7 +102,7 @@ def test_run_dir_without_report_html_is_still_excluded(tmp_path):
     run.mkdir(parents=True)
     (run / "metrics.json").write_text('{"n_trades": 1}', encoding="utf-8")
     (run / "trades.csv").write_text("symbol,action\n", encoding="utf-8")
-    at = _make_apptest(tmp_path).run()
+    at = _at_backtest_page(tmp_path)
     assert not at.exception, f"缺 report.html 的半截目录不该崩页: {at.exception}"
     assert at.info, "半截目录应被排除并显示'暂无回测结果'提示"
 

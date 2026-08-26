@@ -32,16 +32,19 @@ PAGES = ["回测报告", "个股K线", "今日信号", "任务控制台"]
 
 SCAN_HEADER = "date,symbol,name,strategy,close,pct_chg,amount,amount_ratio_20d\n"
 TRADES_HEADER = ("symbol,action,date,price,shares,commission,stamp,pnl,holding_days\n")
-# 实测值（README）：双均线总收益 116.1%、回撤 -35.12% 量级；文案与数字都不许现编
+# 这一组只是**构造用的** metrics 夹具（挑几个好认的值把格式化路径跑通），
+# 不是本项目的实测结论。真实实测数字在 README「① 回测」的表格与 app/guide.py
+# 的 FACTS 里，由 tests/test_guide.py 逐条对账。
 REAL_METRICS = {"total_return": 1.161, "cagr": 0.0789, "max_drawdown": -0.3512,
                 "sharpe": 0.9621, "n_trades": 243, "win_rate": 0.41975,
                 "profit_factor": 1.34, "avg_holding_days": 12.5}
 
 
 def _page(tmp_path: Path, page: str = "回测报告") -> AppTest:
+    """一律显式 set_value：默认落地页自 v0.2.1 起是「使用说明」，
+    省掉这一步会让本文件的断言全落到一页纯文档上（多数还会"通过"）。"""
     at = AppTest.from_file(str(copy_app(tmp_path)), default_timeout=30).run()
-    if page != "回测报告":
-        at.sidebar.radio[0].set_value(page).run()
+    at.sidebar.radio[0].set_value(page).run()
     return at
 
 

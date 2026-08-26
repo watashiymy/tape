@@ -117,6 +117,15 @@ def _make_apptest(tmp_path) -> AppTest:
     return AppTest.from_file(str(dashboard), default_timeout=15)
 
 
+def _at_page(tmp_path, page: str = "回测报告") -> AppTest:
+    """渲染并**显式**切到目标页。默认落地页自 v0.2.1 起是「使用说明」，
+    靠 .run() 的默认选中取页会静默测到说明页上去（那页什么产物都不读，
+    "不崩"这种断言照样通过，但测的完全不是同一件事）。"""
+    at = _make_apptest(tmp_path).run()
+    at.sidebar.radio[0].set_value(page).run()
+    return at
+
+
 def _complete_run(out: Path, name: str, metrics: dict) -> Path:
     """造一个完整的回测目录（与半截目录形成对照）。"""
     run = out / name
@@ -132,7 +141,7 @@ def _complete_run(out: Path, name: str, metrics: dict) -> Path:
 def test_metric_card_shows_n_trades_as_integer(tmp_path):
     """真渲染（AppTest）：交易次数卡必须是 '243'，不是 '243.00'。"""
     _complete_run(tmp_path / "output", "ma_cross_20260817_121152", {"n_trades": 243})
-    at = _make_apptest(tmp_path).run()
+    at = _at_page(tmp_path)
     assert not at.exception
     blob = "\n".join(e.proto.body for e in at.get("html"))
     assert '>交易次数</div><div class="qd-metric-value">243<' in blob, blob
@@ -150,7 +159,7 @@ def test_half_written_run_dir_is_excluded_not_crashing(tmp_path, files):
     for f in files:
         (run / f).write_text('{"n_trades": 1}' if f.endswith("json") else "<html></html>",
                              encoding="utf-8")
-    at = _make_apptest(tmp_path).run()
+    at = _at_page(tmp_path)
     assert not at.exception, f"半截目录（{files}）不该崩页: {at.exception}"
     assert at.info, "半截目录被排除后应显示'暂无回测结果'提示"
 
@@ -163,7 +172,7 @@ def test_truncated_metrics_json_shows_error_not_crash(tmp_path):
     (run / "metrics.json").write_text('{"total_return": 0.48', encoding="utf-8")  # 截断
     (run / "report.html").write_text("<html></html>", encoding="utf-8")
     (run / "trades.csv").write_text("symbol,action\n", encoding="utf-8")
-    at = _make_apptest(tmp_path).run()
+    at = _at_page(tmp_path)
     assert not at.exception, f"残缺 metrics.json 不该崩页: {at.exception}"
     assert any("删除" in e.value for e in at.error), "应出现提示删除残缺目录的 st.error"
 
@@ -175,7 +184,7 @@ def test_half_written_run_does_not_shadow_complete_run(tmp_path):
     broken = out / "ma_cross_20260824_151600"
     broken.mkdir(parents=True)
     (broken / "metrics.json").write_text('{"n_trades": 1}', encoding="utf-8")
-    at = _make_apptest(tmp_path).run()
+    at = _at_page(tmp_path)
     assert not at.exception
     assert at.selectbox[0].value.name == "ma_cross_20260817_121152"
 
@@ -187,7 +196,7 @@ SCAN_HEADER = "date,symbol,name,strategy,close,pct_chg,amount,amount_ratio_20d\n
 
 def _goto_signals(tmp_path) -> AppTest:
     """AppTest 渲染并切到"今日信号"页（radio 默认选中第一页"回测报告"）。"""
-    at = _make_apptest(tmp_path).run()
+    at = _at_page(tmp_path)
     at.sidebar.radio[0].set_value("今日信号").run()
     return at
 
@@ -283,8 +292,7 @@ def test_three_pages_render_without_exception(tmp_path, page, with_scan):
         (scan / "2026-08-21.csv").write_text(
             SCAN_HEADER + "2026-08-21,000020,深华发A,ma_cross,11.74,-5.09,2.9e8,4.22\n",
             encoding="utf-8")
-    at = _make_apptest(tmp_path).run()
-    at.sidebar.radio[0].set_value(page).run()
+    at = _at_page(tmp_path, page)
     assert not at.exception, f"页面 {page}（with_scan={with_scan}）抛异常: {at.exception}"
 
 

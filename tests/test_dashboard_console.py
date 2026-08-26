@@ -73,12 +73,14 @@ def _fake_run(root: Path, job: str, status: str, *, log: str = "", exit_code=Non
 
 # ---------------------------------------------------------------- 页面骨架
 def test_console_is_a_sidebar_page_and_not_the_default(tmp_path):
-    """控制台必须排在最后：排前面会顶掉默认页，既有三页的 AppTest 全线错位。"""
+    """控制台必须排在**最后**：它是"要动手"的那页，不该抢在只读页前面，
+    更不能顶掉默认落地页。默认页自 v0.2.1 M3 起是「使用说明」（设计 §3.1）。"""
     dashboard = copy_app(tmp_path)
     at = AppTest.from_file(str(dashboard), default_timeout=30).run()
     assert not at.exception
     assert list(at.sidebar.radio[0].options)[-1] == CONSOLE
-    assert at.sidebar.radio[0].value == "回测报告"
+    assert at.sidebar.radio[0].value == "使用说明"
+    assert at.sidebar.radio[0].value != CONSOLE
 
 
 def test_three_cards_render(tmp_path):
