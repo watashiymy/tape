@@ -151,6 +151,39 @@ def test_running_scan_shows_progress_bar_with_real_percent(tmp_path):
     assert "1800/3010" in bars[0].proto.text and "预计剩余" in bars[0].proto.text
 
 
+def test_stopped_midway_scan_shows_where_it_stopped_without_faking_eta(tmp_path):
+    """B1：用户点了停止、进程已经没了，日志最后一行还停在 [1800/3010]。
+
+    卡片必须闭嘴不许再外推：进程都不在了，"预计剩余 ~8分钟"是纯粹编出来的，
+    照着等就是白等；"扫描中"还会跟同屏徽标"⏹ 已停止"当面打架。
+    但"停在 1800/3010、已用多久、出了几条信号"是既成事实，要留着——
+    这是用户判断"要不要从这儿接着补跑"的唯一依据。"""
+    _fake_run(tmp_path, "market_scan", "stopped", exit_code=-15,
+              log="\n".join(SCAN_LOG.splitlines()[:20]))
+    at = _console(tmp_path)
+    assert not at.exception, at.exception
+    bars = at.get("progress")
+    assert len(bars) == 1, f"停在 60% 也该看得见停在哪儿，实际进度条 {len(bars)} 个"
+    text = bars[0].proto.text
+    assert "1800/3010" in text and "已用" in text, text
+    assert "预计剩余" not in text, f"任务已停止却还在报 ETA: {text}"
+    assert "扫描中" not in text, f"任务已停止却还在说「扫描中」: {text}"
+    assert "已停止" in text, text
+    assert at.get("status") == [], "已终止的任务不该再转圈"
+
+
+def test_crashed_scan_does_not_extrapolate_eta_either(tmp_path):
+    """崩溃路径同样中招：退出码 1 + 半截进度 + traceback，照样不许有 ETA。"""
+    _fake_run(tmp_path, "market_scan", "failed", exit_code=1,
+              log="\n".join(SCAN_LOG.splitlines()[:20])
+                  + "\nTraceback (most recent call last):\nValueError: boom\n")
+    at = _console(tmp_path)
+    assert not at.exception, at.exception
+    text = at.get("progress")[0].proto.text
+    assert text.startswith("异常退出，1800/3010"), text
+    assert "预计剩余" not in text, f"任务已崩溃却还在报 ETA: {text}"
+
+
 def test_running_job_without_parsable_progress_shows_spinner(tmp_path):
     """每日信号没有进度行：转圈 + 阶段 + 已用时长，绝不显示假百分比。"""
     _fake_run(tmp_path, "daily_signal", "running", log="login success!\n")
@@ -217,7 +250,38 @@ def test_missing_result_file_warns_instead_of_crashing(tmp_path):
     assert at.warning, "产物读不到时应有 st.warning"
 
 
+# ---------------------------------------------------------------- 参数控件的闸门
+def test_limit_widget_carries_the_whitelist_bounds(tmp_path):
+    """控件本身就是第一道白名单（设计 §4.1）：--limit 只能是 1..LIMIT_MAX。
+
+    build_argv 还会复核一遍，所以去掉上下界不会立刻酿成安全事故；但那样用户能在
+    控件里敲出 0 或 99999，点了开始只收到一句"启动失败"——闸门前移就是为了不让他敲得出来。
+    """
+    at = _console(tmp_path)
+    widget = at.number_input("market_scan_limit")
+    assert widget.min == 1, f"下界应为 1，实际 {widget.min}"
+    assert widget.max == jobs.LIMIT_MAX, f"上界应为 {jobs.LIMIT_MAX}，实际 {widget.max}"
+
+
 # ---------------------------------------------------------------- 按钮动作
+def test_start_failure_from_runner_is_shown_not_raised(tmp_path, monkeypatch):
+    """抢跑时 process.start 抛的是 RuntimeError（互斥），不是 ValueError。
+
+    按钮禁用只是 UI 层：状态在两次渲染之间变化（另一台标签页刚点了开始）时，
+    点下去照样能走到 start()。漏接 RuntimeError = 整页 traceback，
+    而不是那句"启动失败:「全市场扫描」正在运行"。
+    """
+    def boom(*a, **k):
+        raise RuntimeError("「全市场扫描」正在运行，同时只允许一个任务（baostock 单会话）")
+
+    monkeypatch.setattr(process, "start", boom)
+    at = _console(tmp_path)
+    at.button("start_backtest").click().run()
+    assert not at.exception, f"启动失败不该崩页: {at.exception}"
+    assert any("启动失败" in e.value and "正在运行" in e.value for e in at.error), \
+        [e.value for e in at.error]
+
+
 def test_start_button_builds_whitelisted_argv(tmp_path, monkeypatch):
     """点开始 = build_argv 的结果原样交给 process.start；参数走控件，不拼字符串。"""
     started: list[tuple] = []
@@ -345,6 +409,61 @@ def test_idle_cards_do_not_poll(tmp_path, monkeypatch):
     assert _run_every(mod._card_live) == mod.AUTO_REFRESH_S
     assert mod._card_for(None) is mod._card_idle
     assert mod._card_for("market_scan") is mod._card_live
+
+
+def test_card_requests_full_rerun_when_the_running_job_finishes(tmp_path, monkeypatch):
+    """任务在两次轮询之间跑完了：卡片必须请求**整页**重跑。
+
+    不请求的话页面还挂着 busy 那一轮选出来的 `_card_live`，三张卡片就永远每 2 秒
+    重跑一次（设计 §4.1 要求"无任务运行时不设 run_every，避免空转"），另外两个"开始"
+    按钮也一直禁用着，直到用户自己按 F5。
+    AppTest 不模拟 fragment 局部重跑，只能断言"重跑请求确实发出去了"这一机制本身。
+    """
+    import streamlit as st
+
+    reruns: list[int] = []
+    monkeypatch.setattr(st, "rerun", lambda *a, **k: reruns.append(1))
+    _fake_run(tmp_path, "market_scan", "success", exit_code=0, log=SCAN_LOG)
+    at = _console(tmp_path)
+    real_any_running = process.any_running
+    calls = {"n": 0}
+
+    def any_running_that_just_finished(runs_dir):
+        # 第 1 次 = page_console 拿的整页快照（那会儿还在跑）；之后 = 2 秒后 fragment 再问（已结束）
+        calls["n"] += 1
+        return "market_scan" if calls["n"] == 1 else real_any_running(runs_dir)
+
+    monkeypatch.setattr(process, "any_running", any_running_that_just_finished)
+    reruns.clear()
+    at.run()
+    assert reruns, "任务已经结束，卡片却没请求整页重跑——轮询会一直空转下去"
+
+
+def test_start_click_requests_full_rerun(tmp_path, monkeypatch):
+    """点开始后必须整页重跑：另外两张卡片的"开始"要被互斥禁用、本页要切到 2 秒轮询，
+    这些都在 fragment 之外，只重跑这张卡片是做不到的（用户看到的就是"点了没反应"）。
+    AppTest 的点击本来就整页重跑，渲染结果看不出差别，只能断言这次请求发出去了。"""
+    import streamlit as st
+
+    reruns: list[int] = []
+    monkeypatch.setattr(process, "start", lambda *a, **k: None)
+    at = _console(tmp_path)
+    monkeypatch.setattr(st, "rerun", lambda *a, **k: reruns.append(1))
+    at.button("start_daily_signal").click().run()
+    assert reruns, "点了开始却没请求整页重跑"
+
+
+def test_stop_click_requests_full_rerun(tmp_path, monkeypatch):
+    """停止同理：停完要立刻解禁另外两个"开始"并摘掉轮询，必须整页重跑。"""
+    import streamlit as st
+
+    reruns: list[int] = []
+    monkeypatch.setattr(process, "stop", lambda state, runs_dir: None)
+    _fake_run(tmp_path, "market_scan", "running", log=SCAN_LOG.split("已保存")[0])
+    at = _console(tmp_path)
+    monkeypatch.setattr(st, "rerun", lambda *a, **k: reruns.append(1))
+    at.button("stop_market_scan").click().run()
+    assert reruns, "点了停止却没请求整页重跑"
 
 
 @pytest.mark.parametrize("page", ["回测报告", "个股K线", "今日信号", CONSOLE])

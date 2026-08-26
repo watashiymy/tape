@@ -220,8 +220,11 @@ def _start(job_name: str, params: dict) -> None:
         argv = jobs.build_argv(job_name, params)
         process.start(job_name, argv, RUNS_DIR)
     except (ValueError, RuntimeError, OSError) as e:
+        # RuntimeError 是抢跑（start() 的互斥）抛的，漏接就是整页 traceback 而不是这句提示。
         st.error(f"启动失败: {e}")
         return
+    # 整页重跑：另外两张卡片的"开始"要被互斥禁用、三张卡片要切到 2 秒轮询，都在 fragment 之外。
+    # AppTest 只能证明"请求发出去了"（它不模拟 fragment 局部重跑），真效果靠人工验收。
     st.rerun()
 
 
@@ -289,7 +292,7 @@ def _render_card(job_name: str) -> str | None:
         _start(job_name, params)
     if mid.button("⏹ 停止", key=f"stop_{job_name}", disabled=not running):
         process.stop(state, RUNS_DIR)     # SIGTERM 进程组 → 10s → SIGKILL
-        st.rerun()
+        st.rerun()                        # 同 _start：解禁另外两个"开始"并摘掉轮询
     if right.button("↻ 重跑", key=f"rerun_{job_name}", disabled=disabled or state is None):
         _rerun(job_name, state)
     if notice:
@@ -300,9 +303,13 @@ def _render_card(job_name: str) -> str | None:
         return busy
     log = process.read_log(state)
     prog = job.parser(log)
-    caption = view.progress_caption(prog, view.elapsed_seconds(state))
+    # status 必须一路带到文案里：解析器只看得见日志，看不见进程死活——被停掉的扫描
+    # 日志最后一行仍是 [1800/3010]，不告诉它状态就会继续喊"扫描中，预计剩余 ~8分钟"。
+    caption = view.progress_caption(prog, view.elapsed_seconds(state), status=state.status)
     ratio = view.progress_ratio(prog)
     if ratio is not None:
+        # 已终止也照画：进度条这时是"停在哪儿"的存档（文案已由 view 换成终态词、不带 ETA），
+        # 用户据此判断要不要从这儿接着补跑。
         st.progress(ratio, text=caption)
     elif running:
         st.status(caption, state="running")   # 不确定态：转圈 + 阶段 + 已用时长

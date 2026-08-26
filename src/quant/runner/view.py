@@ -10,10 +10,16 @@ from datetime import datetime
 
 from quant.runner.jobs import JOBS
 from quant.runner.process import FAILED, RUNNING, STOPPED, SUCCESS, RunState
-from quant.runner.progress import Progress
+from quant.runner.progress import CRASHED, DONE, Progress
 
 IDLE_BADGE = "⚪ 空闲"
 _BADGES = {RUNNING: "🔵 运行中", SUCCESS: "✅ 成功", FAILED: "❌ 失败", STOPPED: "⏹ 已停止"}
+
+# 任务已终止时用来顶掉日志相位的终态词。日志解析器只看得见日志，看不见进程死活：
+# 被 SIGTERM 停掉的扫描，日志最后一行仍是 `[1800/3010]`，相位就一直卡在"扫描中"。
+_END_PHASES = {SUCCESS: DONE, FAILED: "失败", STOPPED: "已停止"}
+# 日志自己交代了终局的两种相位，比状态词更具体（"异常退出"带 traceback 尾行），保留不顶掉。
+_LOG_TERMINAL = (DONE, CRASHED)
 
 
 def status_badge(state: RunState | None) -> str:
@@ -69,20 +75,35 @@ def progress_ratio(p: Progress) -> float | None:
     return min(1.0, max(0.0, p.current / p.total))
 
 
-def progress_caption(p: Progress, elapsed_s: float | None = None) -> str:
+def _phase(p: Progress, status: str) -> str:
+    """相位。任务一旦终止，日志里那个进行时（"扫描中"/"取数中"）就是假的：
+    进程都没了，同屏徽标写着"⏹ 已停止"，两句话当面打架。此时以状态为准换成终态词，
+    除非日志自己已经交代了终局（"完成"/"异常退出"——后者还带着 traceback 尾行）。"""
+    if status == RUNNING or p.phase in _LOG_TERMINAL:
+        return p.phase
+    return _END_PHASES.get(status, p.phase)
+
+
+def progress_caption(p: Progress, elapsed_s: float | None = None, *, status: str) -> str:
     """一行进度文案：阶段、百分比、已用、预计剩余、计数。
 
     阶段永远排第一且不被百分比顶掉——扫描跑到一半崩了的时候，"异常退出"比 "60%" 重要。
     `elapsed_s` 是**墙钟**耗时（由调用方按状态文件算），不能拿日志里的"耗时 673s"冒充：
     那一项不含 get_all_symbols 的 2-4 分钟固定开销，是给 ETA 外推用的每票速率口径。
+
+    `status` 是必填的关键字参数（不给默认值：默认成 running 就等于默认说谎，
+    而这正是漏掉它时会犯的错）。**ETA 只在 running 时给**：线性外推的前提是"还在按
+    这个速率往下跑"，进程已经被停掉/崩掉之后，那句"预计剩余 ~8分钟"是纯粹编出来的，
+    用户照着等就是白等（设计 §3.2"宁可不显示，不显示假数字"）。
+    停在 1800/3010、已用多久、出了几条信号都是既成事实，照常留着。
     """
-    parts = [p.phase]
+    parts = [_phase(p, status)]
     ratio = progress_ratio(p)
     if ratio is not None:
         parts.append(f"{p.current}/{p.total}（{ratio:.0%}）")
     if elapsed_s is not None:
         parts.append(f"已用 {human_duration(elapsed_s)}")
-    eta = human_eta(p.eta_s)
+    eta = human_eta(p.eta_s) if status == RUNNING else ""
     if eta:
         parts.append(f"预计剩余 {eta}")
     parts += [f"{k} {v}" for k, v in p.extras.items()]

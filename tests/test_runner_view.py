@@ -43,6 +43,13 @@ def test_failed_badge_carries_exit_code():
     assert "退出码 3" in view.status_badge(_state(status="failed", exit_code=3))
 
 
+def test_unknown_status_badge_does_not_crash():
+    """状态文件是普通 JSON，手工改成任何字符串都可能（status: "paused"）。
+    _BADGES 用下标取值会 KeyError 直接崩页——整个控制台连"删掉这个文件"的提示都给不出。"""
+    badge = view.status_badge(_state(status="paused"))
+    assert "paused" in badge
+
+
 def test_failed_badge_says_unknown_when_exit_code_lost():
     """僵尸清理（进程不是面板的孩子）拿不到退出码，如实写"未知"，不能显示"退出码 None"。"""
     badge = view.status_badge(_state(status="failed", exit_code=None))
@@ -99,33 +106,72 @@ def test_caption_of_running_scan_uses_real_log():
     ETA = 673s/1800 × 1210 只 ≈ 452s ≈ 8 分钟；"已用"取墙钟（含 get_all_symbols
     那 2-4 分钟固定开销），不能拿日志里的"耗时 673s"冒充。"""
     running = "\n".join(SCAN_LOG.splitlines()[:20])
-    caption = view.progress_caption(parse_market_scan(running), elapsed_s=900)
+    caption = view.progress_caption(parse_market_scan(running), elapsed_s=900, status="running")
     assert caption == "扫描中，1800/3010（60%），已用 15分0秒，预计剩余 ~8分钟，信号 58 条，失败 0 只"
 
 
 def test_caption_without_progress_falls_back_to_phase_and_elapsed():
     """每日信号没有可解析的进度行：只能给阶段 + 已用时长，不许出现百分比或 ETA。"""
-    caption = view.progress_caption(Progress(phase="取数中"), elapsed_s=12)
+    caption = view.progress_caption(Progress(phase="取数中"), elapsed_s=12, status="running")
     assert caption == "取数中，已用 12秒"
 
 
 def test_caption_keeps_phase_when_progress_known():
     """扫描到一半崩了：百分比还在，但"异常退出"绝不能被百分比顶掉。"""
     crashed = "\n".join(SCAN_LOG.splitlines()[:20]) + "\nTraceback (most recent call last):\nValueError: boom"
-    caption = view.progress_caption(parse_market_scan(crashed), elapsed_s=900)
+    caption = view.progress_caption(parse_market_scan(crashed), elapsed_s=900, status="running")
     assert caption.startswith("异常退出，1800/3010（60%）")
 
 
 def test_caption_of_finished_backtest_lists_every_strategy():
     """默认配置两个策略，两个报告目录都要出现（只留第一个 = donchian 的产物人间蒸发）。"""
-    caption = view.progress_caption(parse_backtest(BACKTEST_LOG), elapsed_s=243)
+    caption = view.progress_caption(parse_backtest(BACKTEST_LOG), elapsed_s=243, status="success")
     assert caption.startswith("完成，已用 4分3秒")
     assert "output/ma_cross_20260826_112606" in caption
     assert "output/donchian_20260826_112606" in caption
 
 
 def test_caption_never_shows_elapsed_when_unknown():
-    assert view.progress_caption(Progress(phase="启动中")) == "启动中"
+    assert view.progress_caption(Progress(phase="启动中"), status="running") == "启动中"
+
+
+# ------------------------------------------------ 终止态的文案（B1：进程都没了还在报 ETA）
+def test_caption_of_stopped_run_drops_eta_and_running_phase():
+    """用户按了停止、进程已死，日志最后一行仍是 [1800/3010]。此时：
+    1) 绝不能再说"扫描中"——同屏徽标写着"⏹ 已停止"，两句话互相打架；
+    2) 更不能拿死掉的速率外推"预计剩余 ~8分钟"，照着等就是白等（设计 §3.2
+       "宁可不显示，不显示假数字"）。
+    停在哪儿（1800/3010、已用时长、信号条数）都是既成事实，必须留着。"""
+    stopped = "\n".join(SCAN_LOG.splitlines()[:20])
+    caption = view.progress_caption(parse_market_scan(stopped), elapsed_s=900, status="stopped")
+    assert caption == "已停止，1800/3010（60%），已用 15分0秒，信号 58 条，失败 0 只"
+
+
+def test_caption_of_failed_run_without_traceback_says_failed():
+    """崩在 argparse（退出码 2，日志里只有 usage 没有 traceback）：解析器只能看出"扫描中"，
+    状态却是 failed。文案得跟徽标一致，且照样不许有 ETA。"""
+    failed = "\n".join(SCAN_LOG.splitlines()[:20])
+    caption = view.progress_caption(parse_market_scan(failed), elapsed_s=900, status="failed")
+    assert caption.startswith("失败，1800/3010（60%）")
+    assert "预计剩余" not in caption and "扫描中" not in caption
+
+
+def test_caption_keeps_crashed_phase_from_log_but_still_no_eta():
+    """日志里有 traceback：解析出的"异常退出"比状态词"失败"更具体，保留它；ETA 仍然不给。"""
+    crashed = ("\n".join(SCAN_LOG.splitlines()[:20])
+               + "\nTraceback (most recent call last):\nValueError: boom")
+    caption = view.progress_caption(parse_market_scan(crashed), elapsed_s=900, status="failed")
+    assert caption.startswith("异常退出，1800/3010（60%）")
+    assert "预计剩余" not in caption
+
+
+def test_caption_of_success_whose_log_is_gone_still_says_done():
+    """日志被手工删了/只剩半截（read_log 读不到就是空串），status 却是 success：
+    以状态为准说"完成"，不能因为日志里最后一行是进度行就继续喊"扫描中"。"""
+    partial = "\n".join(SCAN_LOG.splitlines()[:20])
+    caption = view.progress_caption(parse_market_scan(partial), elapsed_s=1500, status="success")
+    assert caption.startswith("完成，1800/3010（60%）")
+    assert "预计剩余" not in caption
 
 
 # ---------------------------------------------------------------- 墙钟耗时
