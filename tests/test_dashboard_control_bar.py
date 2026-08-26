@@ -6,7 +6,6 @@
 import ast
 import json
 import os
-import shutil
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -15,6 +14,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from quant.runner import jobs, process
+from tests.conftest import copy_app
 
 ROOT = Path(__file__).resolve().parent.parent
 DASHBOARD = ROOT / "app" / "dashboard.py"
@@ -33,12 +33,10 @@ ALL_PAGES = [*READONLY_PAGES, "任务控制台"]
 
 
 def _page(tmp_path: Path, page: str) -> AppTest:
-    """dashboard.py 复制进 tmp_path/app 再交给 AppTest：ROOT/OUTPUT/RUNS_DIR 全落在
+    """app/ 整目录复制进 tmp_path 再交给 AppTest：ROOT/OUTPUT/RUNS_DIR 全落在
     tmp_path，与仓库真实 output/runs/ 完全隔离（否则测试会读到、甚至停掉真任务）。"""
-    app_dir = tmp_path / "app"
-    app_dir.mkdir(exist_ok=True)
-    shutil.copy(DASHBOARD, app_dir / "dashboard.py")
-    at = AppTest.from_file(str(app_dir / "dashboard.py"), default_timeout=30).run()
+    dashboard = copy_app(tmp_path)
+    at = AppTest.from_file(str(dashboard), default_timeout=30).run()
     at.sidebar.radio[0].set_value(page).run()
     return at
 

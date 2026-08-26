@@ -1,13 +1,14 @@
 import ast
 import importlib.util
 import json
-import shutil
 from pathlib import Path
 
 import pandas as pd
 import pytest
 import streamlit as st
 from streamlit.testing.v1 import AppTest
+
+from tests.conftest import copy_app
 
 # 必须从 __file__ 推导仓库根：Path("app/dashboard.py") 依赖 cwd，
 # 从任何非仓库根目录跑 pytest（IDE、CI 的绝对路径调用）整个文件全挂。
@@ -46,18 +47,16 @@ def test_no_statement_is_wrapped_by_streamlit_magic():
 
 
 def _load_dashboard(tmp_path, monkeypatch, page):
-    """把 dashboard.py 复制到临时根目录再加载，使 ROOT/OUTPUT 落在 tmp_path，
+    """把 app/ 复制到临时根目录再加载 dashboard.py，使 ROOT/OUTPUT 落在 tmp_path，
     与仓库真实 output/ 完全隔离（quant 是 editable 安装，import 不受 sys.path 影响）。
     返回 (模块, 该页渲染时喂给 st.dataframe 的 DataFrame 列表)。"""
-    app_dir = tmp_path / "app"
-    app_dir.mkdir()
-    shutil.copy(DASHBOARD, app_dir / "dashboard.py")
+    dashboard = copy_app(tmp_path)
     frames: list[pd.DataFrame] = []
     # 顶层代码在 exec_module 时就会渲染选中页，所以桩必须先装好
     monkeypatch.setattr(st.sidebar, "radio", lambda *a, **k: page)
     monkeypatch.setattr(st, "dataframe", lambda df, *a, **k: frames.append(df))
     spec = importlib.util.spec_from_file_location(
-        f"dashboard_under_test_{page}", app_dir / "dashboard.py")
+        f"dashboard_under_test_{page}", dashboard)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod, frames
@@ -108,11 +107,9 @@ def test_fmt_metric_int_has_no_decimals(tmp_path, monkeypatch):
 
 
 def _make_apptest(tmp_path) -> AppTest:
-    """dashboard.py 复制进 tmp_path/app 再交给 AppTest，使 OUTPUT 指向 tmp_path/output。"""
-    app_dir = tmp_path / "app"
-    app_dir.mkdir(exist_ok=True)
-    shutil.copy(DASHBOARD, app_dir / "dashboard.py")
-    return AppTest.from_file(str(app_dir / "dashboard.py"), default_timeout=15)
+    """app/ 整目录复制进 tmp_path 再交给 AppTest，使 OUTPUT 指向 tmp_path/output。"""
+    dashboard = copy_app(tmp_path)
+    return AppTest.from_file(str(dashboard), default_timeout=15)
 
 
 def _complete_run(out: Path, name: str, metrics: dict) -> Path:

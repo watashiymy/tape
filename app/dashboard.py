@@ -13,11 +13,14 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components  # 显式导入：部分版本下 st.components 不自动可用
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
+# app/ 也得显式进 sys.path：`streamlit run` 会把脚本目录放进去，但用 importlib 直接
+# 加载本文件（测试就是这么干的）不会，那时 `import theme` 直接 ModuleNotFoundError。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import theme  # noqa: E402  视觉基座，与本文件同目录（app/theme.py）
 from quant.backtest.portfolio import Trade  # noqa: E402
 from quant.data.cache import BarCache       # noqa: E402
 from quant.data.pipeline import prepare_bars  # noqa: E402
@@ -84,7 +87,6 @@ def page_backtest() -> None:
     # FileNotFoundError 是 OSError 子类。崩页不如明说：提示删除残缺目录。
     try:
         metrics = json.loads((run / "metrics.json").read_text(encoding="utf-8"))
-        report_html = (run / "report.html").read_text(encoding="utf-8")
         # dtype 必须显式给：symbol 写出去是字符串 "000333"，pd.read_csv 会推断成 int64
         # 吃掉前导零，表里就显示成不存在的股票代码 333（所有深市 000xxx 都中招）
         trades = pd.read_csv(run / "trades.csv", dtype={"symbol": str})
@@ -98,12 +100,16 @@ def page_backtest() -> None:
     cols = st.columns(4)
     for i, (k, label) in enumerate(METRIC_LABELS.items()):
         cols[i % 4].metric(label, _fmt_metric(k, metrics.get(k)))
-    components.html(report_html, height=650, scrolling=True)
+    # src 直接给 Path：st.iframe 会自己读这个 HTML 文件并内嵌（report.html 约 5 MB，
+    # 自己 read_text 白读一遍）。st.iframe **没有** scrolling 参数（签名只有
+    # src/width/height/tab_index），iframe 自带滚动条，不需要它。
+    # 不能换成 st.html：那个不套 iframe 且默认忽略 JavaScript，plotly 报告会是空白页。
+    st.iframe(run / "report.html", height=650)
     st.subheader("交易明细")
-    st.dataframe(trades, use_container_width=True)
+    st.dataframe(trades, width="stretch")
     if skipped is not None:
         st.subheader("被跳过的订单（涨跌停/资金不足等）")
-        st.dataframe(skipped, use_container_width=True)
+        st.dataframe(skipped, width="stretch")
 
 
 def page_kline() -> None:
@@ -130,7 +136,7 @@ def page_kline() -> None:
         Trade(r.symbol, r.action, pd.Timestamp(r.date), r.price, r.shares, r.commission)
         for r in trades_df[trades_df["symbol"].astype(str).str.zfill(6) == sym].itertuples()
     ]
-    st.plotly_chart(kline_chart(df, sym_trades, sym), use_container_width=True)
+    st.plotly_chart(kline_chart(df, sym_trades, sym), width="stretch")
 
 
 def scan_section() -> None:
@@ -153,7 +159,7 @@ def scan_section() -> None:
                  f"多半是扫描中途被打断；请删除该文件后重新运行扫描。")
         return
     if len(df):
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(df, width="stretch")
     else:
         st.write("当日无新信号")
 
@@ -175,7 +181,7 @@ def page_signals() -> None:
         # 于是 st.dataframe() 的返回值 DeltaGenerator 被 st.write 当对象内省，
         # 把整份 Streamlit API 手册糊在信号表下面；无信号那天则渲染出一个 `None`。
         if len(df):
-            st.dataframe(df, use_container_width=True)
+            st.dataframe(df, width="stretch")
         else:
             st.write("当日无新信号")
         if len(files) > 1:
@@ -183,7 +189,7 @@ def page_signals() -> None:
             hist = pd.concat([pd.read_csv(f, dtype={"symbol": str}) for f in files[1:]],
                              ignore_index=True)
             if len(hist):
-                st.dataframe(hist, use_container_width=True)
+                st.dataframe(hist, width="stretch")
             else:
                 st.write("无")
     scan_section()
@@ -302,7 +308,7 @@ def _result_table(path_str: str) -> None:
         st.warning(f"产物 {path_str} 读取失败（{type(e).__name__}），可能已被删除或仍在写。")
         return
     if len(df):
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(df, width="stretch")
     else:
         st.write("当次无新信号")
 
@@ -411,6 +417,9 @@ def page_console() -> None:
 
 
 st.set_page_config(page_title="quant_demo v0.2.0", layout="wide")
+# 字体与语义化 CSS（app/theme.py）。必须每轮都注入：Streamlit 每次 rerun 重画整棵
+# 元素树，上一轮的 <style> 不留下来。底色/主色不在这里——那些走 .streamlit/config.toml。
+theme.inject()
 st.sidebar.title("quant_demo")
 page = st.sidebar.radio("页面", ["回测报告", "个股K线", "今日信号", "任务控制台"])
 # 面板自 v0.2.0 起能在本机起进程，"纯只读"从此是假话（设计 §4.3）。

@@ -5,7 +5,6 @@
 # 真实启停由 §6 的人工验收覆盖。
 import json
 import os
-import shutil
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -14,6 +13,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from quant.runner import jobs, process
+from tests.conftest import copy_app
 
 DASHBOARD = Path(__file__).resolve().parent.parent / "app" / "dashboard.py"
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -23,12 +23,10 @@ CONSOLE = "任务控制台"
 
 
 def _console(tmp_path: Path) -> AppTest:
-    """dashboard.py 复制进 tmp_path/app 再交给 AppTest：ROOT/OUTPUT/RUNS_DIR 全落在
+    """app/ 整目录复制进 tmp_path 再交给 AppTest：ROOT/OUTPUT/RUNS_DIR 全落在
     tmp_path，与仓库真实 output/runs/ 完全隔离（否则测试会读到、甚至停掉真任务）。"""
-    app_dir = tmp_path / "app"
-    app_dir.mkdir(exist_ok=True)
-    shutil.copy(DASHBOARD, app_dir / "dashboard.py")
-    at = AppTest.from_file(str(app_dir / "dashboard.py"), default_timeout=30).run()
+    dashboard = copy_app(tmp_path)
+    at = AppTest.from_file(str(dashboard), default_timeout=30).run()
     at.sidebar.radio[0].set_value(CONSOLE).run()
     return at
 
@@ -63,10 +61,8 @@ def _fake_run(root: Path, job: str, status: str, *, log: str = "", exit_code=Non
 # ---------------------------------------------------------------- 页面骨架
 def test_console_is_a_sidebar_page_and_not_the_default(tmp_path):
     """控制台必须排在最后：排前面会顶掉默认页，既有三页的 AppTest 全线错位。"""
-    app_dir = tmp_path / "app"
-    app_dir.mkdir()
-    shutil.copy(DASHBOARD, app_dir / "dashboard.py")
-    at = AppTest.from_file(str(app_dir / "dashboard.py"), default_timeout=30).run()
+    dashboard = copy_app(tmp_path)
+    at = AppTest.from_file(str(dashboard), default_timeout=30).run()
     assert not at.exception
     assert list(at.sidebar.radio[0].options)[-1] == CONSOLE
     assert at.sidebar.radio[0].value == "回测报告"
@@ -396,12 +392,10 @@ def test_idle_cards_do_not_poll(tmp_path, monkeypatch):
     import importlib.util
 
     import streamlit as st
-    app_dir = tmp_path / "app"
-    app_dir.mkdir()
-    shutil.copy(DASHBOARD, app_dir / "dashboard.py")
+    dashboard = copy_app(tmp_path)
     monkeypatch.setattr(st.sidebar, "radio", lambda *a, **k: CONSOLE)
     spec = importlib.util.spec_from_file_location("dashboard_console_probe",
-                                                  app_dir / "dashboard.py")
+                                                  dashboard)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
 
@@ -469,9 +463,7 @@ def test_stop_click_requests_full_rerun(tmp_path, monkeypatch):
 @pytest.mark.parametrize("page", ["回测报告", "个股K线", "今日信号", CONSOLE])
 def test_all_pages_still_render(tmp_path, page):
     """加了控制台页之后，四页任何一页都不得抛异常。"""
-    app_dir = tmp_path / "app"
-    app_dir.mkdir()
-    shutil.copy(DASHBOARD, app_dir / "dashboard.py")
-    at = AppTest.from_file(str(app_dir / "dashboard.py"), default_timeout=30).run()
+    dashboard = copy_app(tmp_path)
+    at = AppTest.from_file(str(dashboard), default_timeout=30).run()
     at.sidebar.radio[0].set_value(page).run()
     assert not at.exception, f"页面 {page} 抛异常: {at.exception}"

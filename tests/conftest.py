@@ -1,6 +1,26 @@
+import shutil
+from pathlib import Path
+
 import pandas as pd
 
 REQUIRED = ["open", "high", "low", "close", "volume", "amount"]
+
+APP_DIR = Path(__file__).resolve().parent.parent / "app"
+
+
+def copy_app(tmp_path: Path) -> Path:
+    """把整个 app/ 目录复制到 tmp_path/app，返回复制后的 dashboard.py 路径。
+
+    复制而不是直接跑仓库里那份：dashboard.py 的 ROOT 是从 __file__ 推出来的，
+    复制后 OUTPUT / RUNS_DIR 全落在 tmp_path，与仓库真实产物完全隔离
+    （否则测试会读到、甚至停掉真任务）。
+    必须**整目录**复制：dashboard.py 自 v0.2.1 起 `import theme`（同目录的
+    app/theme.py），只复制 dashboard.py 一个文件会 ModuleNotFoundError。
+    """
+    app_dir = tmp_path / "app"
+    shutil.copytree(APP_DIR, app_dir, dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    return app_dir / "dashboard.py"
 
 
 def make_bars(rows: list[dict]) -> pd.DataFrame:

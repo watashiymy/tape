@@ -1,0 +1,14 @@
+# quant_demo 面板主题（v0.2.1 设计 §2.1）——调性："金融电报"（旧交易所报价板）。
+#
+# 基础配色**必须**放在这里，不许改用 CSS 注入：Streamlit 的内部 class 名
+# （.st-emotion-cache-xxxx）每个版本都变，靠它做样式的面板下次 pip install -U 就静默失效。
+# config.toml 是官方支持面。CSS（app/theme.py）只补 config.toml 表达不了的排版层级，
+# 且只选我们自己包出来的 .qd-* 容器。
+#
+# 这四个色值与 app/theme.py 的常量由 tests/test_theme.py 钉住一致（此处不能 import Python）。
+[theme]
+base = "dark"
+primaryColor = "#C8963E"              # 琥珀金：主按钮、选中态、强调。只给可操作元素
+backgroundColor = "#12141A"           # 近黑石板，非纯黑（纯黑对比过硬伤眼）
+secondaryBackgroundColor = "#1A1D26"  # 卡片/侧栏，与底色只差一档
+textColor = "#E8E4DC"                 # 暖白，非纯白
