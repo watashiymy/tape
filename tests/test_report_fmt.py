@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 
 from quant.backtest.portfolio import Trade
-from quant.report import fmt
+from quant.report import fmt, palette
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -109,6 +109,15 @@ def test_fmt_pct_percent_points_are_not_ratios():
 
 
 # ---------------------------------------------------------------- direction_color
+
+def test_direction_colors_are_forwarded_from_the_shared_palette():
+    """方向色只在 quant.report.palette 定义一次（面板、图表、表格三处都取它）。
+    `is` 而不是 `==`：抄一份字面量照样 == 相等，但改一处就会漂移——
+    图表刚因为"两边各写一套色值"白底了一版。"""
+    assert fmt.UP is palette.UP
+    assert fmt.DOWN is palette.DOWN
+    assert fmt.NEUTRAL is palette.NEUTRAL
+
 
 def test_direction_color_follows_a_share_convention():
     """A 股红涨绿跌是全局铁律（与 K 线图一致），反过来就是给人反向信号。"""

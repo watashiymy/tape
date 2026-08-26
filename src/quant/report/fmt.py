@@ -14,11 +14,17 @@ import math
 import pandas as pd
 import streamlit.column_config as column_config
 
+from quant.report import palette
+
 # A 股惯例红涨绿跌，与 K 线图一致。**全局铁律**：收益率、涨跌幅、盈亏一律用这两个色，
 # 不许某处反过来（欧美习惯绿涨红跌，抄来的代码片段最容易在这里埋反向信号）。
-UP = "#D94A4A"
-DOWN = "#3E9E7A"
-NEUTRAL = "#8C8778"    # 平盘/无方向：暖灰，不上色（§2.3 第 4 条"色只用在有意义处"）
+#
+# 这里只是**转发**：色值的唯一定义处是 quant.report.palette（图表与面板也从它取）。
+# 保留 fmt.UP / fmt.DOWN / fmt.NEUTRAL 这三个名字是因为"方向色"在语义上属于本模块，
+# 调用方一直按 fmt.xxx 读（tests/test_report_fmt.py 用 `is` 钉住转发关系）。
+UP = palette.UP
+DOWN = palette.DOWN
+NEUTRAL = palette.NEUTRAL    # 平盘/无方向：暖灰，不上色（§2.3 第 4 条"色只用在有意义处"）
 
 MISSING = "—"          # 缺值占位符。宁可显示占位符，不显示 'nan' / 'None' / 编出来的 0
 

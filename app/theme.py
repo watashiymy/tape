@@ -9,31 +9,35 @@
 纪律由 tests/test_theme.py 钉住：CSS 里出现 Streamlit 内部标识、出现色板之外的
 裸十六进制、字体栈少了离线兜底，测试都会红。
 
-色值只在这里定义一次（方向色复用 quant.report.fmt，因为表格列配置也要用）。
+**色值一个都不在本文件定义**：唯一定义处是 `quant.report.palette`，这里只做转发。
+原因是图表（quant.report.charts）也要用同一套配色，而它属于 src/、不能反向
+import app/——色板必须下沉到 src/ 才能"改一处、两边同步"。曾经两边各写一套：
+面板改暗色后图表还是 plotly 默认浅色模板，内嵌进去中间开一块白。
 """
 from __future__ import annotations
 
 import html as _html
 
 import streamlit as st
-from quant.report import fmt
+from quant.report import fmt, palette
 
-# ---------------------------------------------------------------- 色板
-# 前四个必须与 .streamlit/config.toml 一致（测试会比对）
-PRIMARY = "#C8963E"      # 琥珀金：可操作元素与选中态
-BACKGROUND = "#12141A"   # 近黑石板
-SURFACE = "#1A1D26"      # 卡片/侧栏
-TEXT = "#E8E4DC"         # 暖白
+# ---------------------------------------------------------------- 色板（转发）
+# 名字保留在这里是为了让 CSS 那段 f-string 读得顺；值全部来自 palette。
+# 前四个必须与 .streamlit/config.toml 一致（测试会比对）。
+PRIMARY = palette.PRIMARY        # 琥珀金：可操作元素与选中态
+BACKGROUND = palette.BACKGROUND  # 近黑石板
+SURFACE = palette.SURFACE        # 卡片/侧栏
+TEXT = palette.TEXT              # 暖白
 
 MUTED = fmt.NEUTRAL      # 次级灰：标签、说明、无方向的数字（与"平盘不上色"同一个灰）
-HAIRLINE = "#2A2E38"     # 发丝线：§2.3 第 2 条——用 1px 低对比分隔线，不用四面描边
+HAIRLINE = palette.HAIRLINE   # 发丝线：§2.3 第 2 条——1px 低对比分隔线，不用四面描边
 UP = fmt.UP              # 红涨（A 股惯例，与 K 线图一致）
 DOWN = fmt.DOWN          # 绿跌
-# pill 的底色：不用透明度（8 位十六进制读起来像魔法数），直接给四个压暗到能当底的值
-UP_DIM = "#3A1F20"
-DOWN_DIM = "#16302A"
-PRIMARY_DIM = "#3A2E19"
-MUTED_DIM = "#23262E"
+# pill 的底色：压暗到能当底的四个值（不用透明度——8 位十六进制读起来像魔法数）
+UP_DIM = palette.UP_DIM
+DOWN_DIM = palette.DOWN_DIM
+PRIMARY_DIM = palette.PRIMARY_DIM
+MUTED_DIM = palette.MUTED_DIM
 
 PALETTE = {
     "PRIMARY": PRIMARY, "BACKGROUND": BACKGROUND, "SURFACE": SURFACE, "TEXT": TEXT,
@@ -43,17 +47,28 @@ PALETTE = {
 }
 
 # ---------------------------------------------------------------- 字体
-# fallback 链是硬要求：Google Fonts 离线/被墙时拿不到，没有兜底中文直接变豆腐块。
-# macOS 自带 Songti SC / PingFang SC / Menlo，最后再落到通用族。
+# 策略：**中文用系统字体，只有拉丁等宽走网络**。两条理由都是浏览器实测得出的：
+#
+#   ① 动态注入的 @import 加载不了 CJK 网络字体。Noto Serif/Sans SC 按 ~200 个
+#      unicode-range 分片，实测 `document.fonts.check('700 16px "Noto Serif SC"')`
+#      是 false、拉丁串宽度与"不存在的字体"逐像素相同（字形根本没被用上）、
+#      初始渲染时 202 个分片状态全是 unloaded。标题一直是 macOS 自带 Songti SC
+#      在撑——观感"看着对"是兜底救的场，不是策略成功。
+#   ② 本项目用户在中国大陆，Google Fonts 常不可达，把可用性押在 CDN 上不合理。
+#
+# 系统衬线中文（Songti SC）本就是想要的观感，那就把它写在首位：诚实、更快，
+# 还省掉 200+ 条永远用不上的 @font-face 声明。
+#
+# 等宽是唯一的例外：IBM Plex Mono 是纯拉丁小字体，实测宽度 806.4（既非 Menlo 的
+# 809.2、也非不存在字体的 733.4）——确实生效，所以保留网络加载。兜底照旧不许省：
+# 拿不到时数字会掉到比例字体，一列数就对不齐了。
 FONT_IMPORT = ("https://fonts.googleapis.com/css2"
-               "?family=Noto+Serif+SC:wght@500;700"
-               "&family=Noto+Sans+SC:wght@400;500"
-               "&family=IBM+Plex+Mono:wght@400;500"
+               "?family=IBM+Plex+Mono:wght@400;500"
                "&display=swap")
 
-SERIF = '"Noto Serif SC", "Songti SC", "STSong", serif'          # 标题：编辑感、权威感
-SANS = '"Noto Sans SC", "PingFang SC", "Hiragino Sans GB", sans-serif'   # 正文
-MONO = '"IBM Plex Mono", Menlo, "SF Mono", monospace'            # 数字/代码/日志
+SERIF = '"Songti SC", STSong, "Noto Serif SC", serif'            # 标题：编辑感、权威感
+SANS = '"PingFang SC", "Noto Sans SC", "Helvetica Neue", sans-serif'     # 正文
+MONO = palette.MONO                                              # 数字/代码/日志
 
 # ---------------------------------------------------------------- CSS
 # 每条规则的选择器单独一行（测试按行解析选择器做纪律检查）。

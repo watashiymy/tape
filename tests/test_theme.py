@@ -12,11 +12,12 @@ from pathlib import Path
 
 import pytest
 
-from quant.report import fmt
+from quant.report import fmt, palette
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG = ROOT / ".streamlit" / "config.toml"
 DASHBOARD = ROOT / "app" / "dashboard.py"
+THEME = ROOT / "app" / "theme.py"
 
 _SPEC = importlib.util.spec_from_file_location("qd_theme", ROOT / "app" / "theme.py")
 theme = importlib.util.module_from_spec(_SPEC)
@@ -58,10 +59,38 @@ def test_theme_constants_match_config_toml():
 # ---------------------------------------------------------------- 色值单一来源
 
 def test_direction_colors_come_from_fmt_not_redefined():
-    """红涨绿跌只在 quant.report.fmt 定义一次：theme 里再抄一遍，
+    """红涨绿跌只在一处定义：theme 里再抄一遍，
     改一处漏一处就会出现"表格绿、指标卡红"的对撞。"""
     assert theme.UP is fmt.UP
     assert theme.DOWN is fmt.DOWN
+
+
+@pytest.mark.parametrize("name", [
+    "PRIMARY", "BACKGROUND", "SURFACE", "TEXT", "HAIRLINE",
+    "UP", "DOWN", "UP_DIM", "DOWN_DIM", "PRIMARY_DIM", "MUTED_DIM",
+])
+def test_theme_colors_are_forwarded_from_the_shared_palette(name):
+    """色板下沉到 quant.report.palette：面板（app/theme.py）与图表
+    （quant.report.charts）从同一处取色，"改一处、两边同步"。
+
+    charts.py 属于 src/，不能反向 import app/theme.py——所以单一事实来源必须
+    在 src/ 里。曾经两边各写一套：面板改成暗色后，图表还是 plotly 默认浅色模板，
+    内嵌进去中间开一块白，两轮评审都没看出来。
+
+    `is` 而不是 `==`：抄一份字面量照样相等，但改一处就漂移。"""
+    assert getattr(theme, name) is getattr(palette, name)
+
+
+def test_theme_muted_is_the_palette_neutral():
+    """次级灰与"平盘不上色"的中性灰必须是同一个（同屏两种灰就是没有灰）。"""
+    assert theme.MUTED is palette.NEUTRAL
+
+
+def test_theme_module_writes_no_hex_color_of_its_own():
+    """theme.py 里一个十六进制都不许有：全部走 palette 常量。
+    留一个"就这一个"的裸色值，下次改色板时它就是漂移的那一处。"""
+    found = HEX.findall(THEME.read_text(encoding="utf-8"))
+    assert found == [], f"theme.py 里有裸写色值: {found}"
 
 
 def test_every_hex_in_css_comes_from_the_palette():
@@ -110,25 +139,50 @@ def test_css_has_no_animation():
 
 # ---------------------------------------------------------------- 字体
 
-def test_font_import_points_at_google_fonts_with_three_families():
-    families = ("Noto+Serif+SC", "Noto+Sans+SC", "IBM+Plex+Mono")
+# 字体策略：**中文用系统字体，只有拉丁等宽走网络**。两条实测理由：
+#   1. 浏览器实测 document.fonts.check('700 16px "Noto Serif SC"') === false，
+#      拉丁串宽度与"不存在的字体"逐像素相同（字形根本没被用上），初始渲染时
+#      202 个 Noto Serif 分片状态全是 unloaded——CJK 网络字体按 ~200 个
+#      unicode-range 分片，动态注入的 @import 不能在首屏可靠触发分片加载，
+#      标题实际一直是 macOS 自带 Songti SC 在撑（"看着对"是兜底救的场）；
+#   2. 本项目用户在中国大陆，Google Fonts 常不可达，把可用性押在 CDN 上不合理。
+# 系统衬线中文本就是想要的观感，直接写在首位：诚实、更快、少 200+ 条无用 font-face。
+# IBM Plex Mono 是例外——纯拉丁小字体，实测宽度 806.4（既非 Menlo 的 809.2、
+# 也非不存在字体的 733.4），确实生效，保留网络加载 + Menlo 兜底。
+
+def test_font_import_only_loads_the_latin_mono_family():
+    """@import 里只许剩 IBM Plex Mono。两个 CJK 家族留着是纯负担：
+    首屏加载不了（见上），却要让浏览器解析 200+ 条 font-face 声明。"""
     assert "fonts.googleapis.com" in theme.FONT_IMPORT
-    for fam in families:
-        assert fam in theme.FONT_IMPORT, f"@import 少了 {fam}"
+    assert "IBM+Plex+Mono" in theme.FONT_IMPORT
+    for cjk in ("Noto+Serif+SC", "Noto+Sans+SC"):
+        assert cjk not in theme.FONT_IMPORT, \
+            f"@import 还挂着加载不到的 CJK 网络字体 {cjk}"
 
 
-@pytest.mark.parametrize("stack,first,generic,fallback", [
-    ("SERIF", "Noto Serif SC", "serif", "Songti SC"),
-    ("SANS", "Noto Sans SC", "sans-serif", "PingFang SC"),
-    ("MONO", "IBM Plex Mono", "monospace", "Menlo"),
+@pytest.mark.parametrize("stack,first,generic", [
+    ("SERIF", "Songti SC", "serif"),
+    ("SANS", "PingFang SC", "sans-serif"),
 ])
-def test_font_stacks_have_offline_fallbacks(stack, first, generic, fallback):
-    """离线/被墙时 Google Fonts 拿不到，必须落到 macOS 自带字体再落到通用族，
-    否则中文直接变豆腐块。"""
+def test_cjk_stacks_lead_with_the_system_font(stack, first, generic):
+    """中文字体栈的**首位**必须是系统字体：网络 CJK 字体在首屏拿不到，
+    把它排在前面只是让浏览器多试一次、然后照样落兜底——写成实际生效的那个。"""
     value = getattr(theme, stack)
-    assert value.startswith(f'"{first}"'), f"{stack} 首选应是 {first}"
-    assert fallback in value, f"{stack} 缺系统兜底 {fallback}"
+    assert value.startswith(f'"{first}"'), f"{stack} 首选应是系统字体 {first}"
     assert value.rstrip().endswith(generic), f"{stack} 必须以通用族 {generic} 收尾"
+
+
+def test_mono_keeps_the_network_family_with_offline_fallback():
+    """等宽是唯一保留网络加载的：纯拉丁、实测生效。但兜底不许省——
+    离线/被墙时拿不到，数字列会掉到比例字体，一列数就对不齐了。"""
+    assert theme.MONO.startswith('"IBM Plex Mono"'), "MONO 首选应是 IBM Plex Mono"
+    assert "Menlo" in theme.MONO, "MONO 缺系统兜底 Menlo"
+    assert theme.MONO.rstrip().endswith("monospace"), "MONO 必须以通用族收尾"
+
+
+def test_mono_stack_is_forwarded_from_the_shared_palette():
+    """等宽栈也是面板与图表共用的（图表的轴标签用它对齐数字），同样只定义一次。"""
+    assert theme.MONO is palette.MONO
 
 
 def test_css_uses_the_font_stacks():
