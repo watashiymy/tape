@@ -1,5 +1,8 @@
 """Streamlit 本地面板：streamlit run app/dashboard.py
-三页面：回测报告 / 个股K线 / 今日信号。只读 output/ 与 data/cache/，不触发任何计算。"""
+四页面：回测报告 / 个股K线 / 今日信号 / 任务控制台。
+前三页只读 output/ 与 data/cache/；控制台页可在**本机**起三个入口脚本
+（进程管理与解析全在 src/quant/runner/，本文件只负责渲染）。
+面板能执行本机命令，只许 localhost，切勿 --server.address 0.0.0.0 暴露到局域网。"""
 from __future__ import annotations
 
 import json
@@ -18,8 +21,13 @@ from quant.backtest.portfolio import Trade  # noqa: E402
 from quant.data.cache import BarCache       # noqa: E402
 from quant.data.pipeline import prepare_bars  # noqa: E402
 from quant.report.charts import kline_chart   # noqa: E402
+from quant.runner import jobs, process, progress, view  # noqa: E402
 
 OUTPUT = ROOT / "output"
+RUNS_DIR = OUTPUT / "runs"
+
+AUTO_REFRESH_S = "2s"     # 运行中卡片的局部刷新间隔（空闲时不设，避免面板空转）
+LOG_TAIL_LINES = 30
 
 METRIC_LABELS = {
     "total_return": "总收益率", "cagr": "年化收益率", "max_drawdown": "最大回撤",
@@ -176,8 +184,174 @@ def page_signals() -> None:
     scan_section()
 
 
+# ---------------------------------------------------------------- 任务控制台（v0.2.0 §4.1）
+
+def _resolve(path_str: str) -> Path:
+    """脚本打进日志的产物路径是相对仓库根的（"output/scan/2026-08-24.csv"）。
+    面板的 cwd 未必是仓库根，一律按 ROOT 兜底，否则完成后的结果区永远是"读取失败"。"""
+    p = Path(path_str)
+    return p if p.is_absolute() else ROOT / p
+
+
+def _param_widgets(job: jobs.Job) -> dict:
+    """按 schema 生成控件。控件本身就是第一道白名单（策略是下拉、日期是日历、
+    limit 有上下界），值再交给 build_argv 复核一遍。"""
+    values: dict = {}
+    for spec in job.params:
+        key = f"{job.name}_{spec.name}"
+        if spec.kind == "int":
+            values[spec.name] = st.number_input(
+                spec.label, min_value=1, max_value=spec.max_value, value=None,
+                step=1, key=key)
+        elif spec.kind == "date":
+            values[spec.name] = st.date_input(spec.label, value=None, key=key)
+        elif spec.kind == "choice":
+            picked = st.selectbox(spec.label, ("全部", *spec.choices), key=key)
+            values[spec.name] = None if picked == "全部" else picked
+        elif spec.kind == "flag":
+            values[spec.name] = st.checkbox(spec.label, value=False, key=key)
+    return values
+
+
+def _start(job_name: str, params: dict) -> None:
+    """开始/重跑唯一的落点：argv 一律由 build_argv 现造（列表 + shell=False）。
+    start() 自己还会再查一次互斥——按钮禁用只是 UI 层，抢跑要在 runner 层挡死。"""
+    try:
+        argv = jobs.build_argv(job_name, params)
+        process.start(job_name, argv, RUNS_DIR)
+    except (ValueError, RuntimeError, OSError) as e:
+        st.error(f"启动失败: {e}")
+        return
+    st.rerun()
+
+
+def _rerun(job_name: str, state: process.RunState) -> None:
+    """沿用上次 argv 重跑。状态文件是手工改得动的普通 JSON，所以先 parse_argv
+    反解、再由 _start 重新 build_argv，让它整个过一遍白名单闸门。"""
+    try:
+        params = jobs.parse_argv(job_name, state.argv)
+    except ValueError as e:
+        st.error(f"无法重跑: {e}")
+        return
+    _start(job_name, params)
+
+
+def _result_table(path_str: str) -> None:
+    """扫描/信号的产物 CSV。symbol 必须按字符串读，否则 000333 变成 333。"""
+    try:
+        df = pd.read_csv(_resolve(path_str), dtype={"symbol": str})
+    except (ValueError, OSError) as e:
+        st.warning(f"产物 {path_str} 读取失败（{type(e).__name__}），可能已被删除或仍在写。")
+        return
+    if len(df):
+        st.dataframe(df, use_container_width=True)
+    else:
+        st.write("当次无新信号")
+
+
+def _result_metrics(dir_str: str) -> None:
+    """回测产物：每个策略一个报告目录，各出一组指标卡。"""
+    try:
+        metrics = json.loads((_resolve(dir_str) / "metrics.json").read_text(encoding="utf-8"))
+    except (ValueError, OSError) as e:
+        st.warning(f"产物 {dir_str} 读取失败（{type(e).__name__}），可能已被删除或仍在写。")
+        return
+    st.caption(dir_str)
+    cols = st.columns(4)
+    for i, (k, label) in enumerate(METRIC_LABELS.items()):
+        cols[i % 4].metric(label, _fmt_metric(k, metrics.get(k)))
+
+
+_RESULT_RENDERERS = {"scan_csv": _result_table, "signal_csv": _result_table,
+                     "backtest_run": _result_metrics}
+
+
+def _render_card(job_name: str) -> str | None:
+    """一张任务卡片。返回当前"谁在跑"（None=全空闲），外层据此决定要不要继续轮询。
+
+    判断与格式化全在 quant.runner.view（可单测），这里只把字符串塞进 st.*。
+    """
+    job = jobs.JOBS[job_name]
+    try:
+        state = process.read_state(job_name, RUNS_DIR)
+        busy = process.any_running(RUNS_DIR)
+    except RuntimeError as e:
+        # 状态文件损坏必须响亮失败：静默当"空闲"会放开互斥，两个 baostock 会话互踢。
+        st.subheader(job.label)
+        st.error(str(e))
+        return None
+    st.subheader(f"{job.label} {view.status_badge(state)}")
+    params = _param_widgets(job)
+    disabled, notice = view.start_button_state(busy, job_name)
+    running = state is not None and state.status == process.RUNNING
+    left, mid, right = st.columns(3)
+    if left.button("▶ 开始", key=f"start_{job_name}", disabled=disabled):
+        _start(job_name, params)
+    if mid.button("⏹ 停止", key=f"stop_{job_name}", disabled=not running):
+        process.stop(state, RUNS_DIR)     # SIGTERM 进程组 → 10s → SIGKILL
+        st.rerun()
+    if right.button("↻ 重跑", key=f"rerun_{job_name}", disabled=disabled or state is None):
+        _rerun(job_name, state)
+    if notice:
+        st.caption(notice)
+    if state is None:
+        st.caption("尚未运行过")
+        st.divider()
+        return busy
+    log = process.read_log(state)
+    prog = job.parser(log)
+    caption = view.progress_caption(prog, view.elapsed_seconds(state))
+    ratio = view.progress_ratio(prog)
+    if ratio is not None:
+        st.progress(ratio, text=caption)
+    elif running:
+        st.status(caption, state="running")   # 不确定态：转圈 + 阶段 + 已用时长
+    else:
+        st.caption(caption)
+    st.code(progress.tail(log, LOG_TAIL_LINES) or "（暂无输出）", language="text")
+    with st.expander("完整日志"):
+        st.code(log or "（暂无输出）", language="text")
+    if state.status == process.SUCCESS:
+        for out in prog.outputs:
+            _RESULT_RENDERERS[job.result_kind](out)
+    st.divider()
+    return busy
+
+
+@st.fragment(run_every=AUTO_REFRESH_S)
+def _card_live(job_name: str, was_busy: str) -> None:
+    """有任务在跑：每 2 秒只重跑这张卡片（整页重跑会把参数控件与滚动位置一起抖没）。"""
+    busy = _render_card(job_name)
+    if (busy or "") != was_busy:
+        st.rerun()   # 跑完了/被停了 → 整页重跑，摘掉轮询并解禁另外两个开始按钮
+
+
+@st.fragment
+def _card_idle(job_name: str, was_busy: str) -> None:
+    """全空闲：**不设** run_every，否则面板会每 2 秒无谓地重跑三张卡片。"""
+    _render_card(job_name)
+
+
+def _card_for(busy: str | None):
+    return _card_live if busy else _card_idle
+
+
+def page_console() -> None:
+    st.caption("任务在独立进程里运行：关掉浏览器、甚至停掉本面板都不会中断它。"
+               "同时只允许一个任务（baostock 单会话，并发会互踢下线）。")
+    try:
+        busy = process.any_running(RUNS_DIR)
+    except RuntimeError as e:
+        st.error(str(e))
+        busy = None
+    card = _card_for(busy)
+    for name in jobs.JOBS:
+        card(name, busy or "")
+
+
 st.set_page_config(page_title="quant_demo v0.1.1", layout="wide")
 st.sidebar.title("quant_demo")
-page = st.sidebar.radio("页面", ["回测报告", "个股K线", "今日信号"])
+page = st.sidebar.radio("页面", ["回测报告", "个股K线", "今日信号", "任务控制台"])
 st.sidebar.caption("本面板纯只读；回测与信号请用命令行运行。策略仅用于学习，不构成投资建议。")
-{"回测报告": page_backtest, "个股K线": page_kline, "今日信号": page_signals}[page]()
+{"回测报告": page_backtest, "个股K线": page_kline, "今日信号": page_signals,
+ "任务控制台": page_console}[page]()

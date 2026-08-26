@@ -113,7 +113,9 @@ def _probe(pid: int) -> tuple[str, int | None]:
     return "exited", os.waitstatus_to_exitcode(status)
 
 
-def _log_text(state: RunState) -> str:
+def read_log(state: RunState) -> str:
+    """日志全文。读不到（文件被手工删了/权限不对）一律空串：面板不该为一个日志文件崩页，
+    僵尸清理拿空串也只会保守地判 failed。"""
     try:
         return Path(state.log_path).read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -150,7 +152,7 @@ def _reap_zombie(state: RunState, runs_dir: str | Path) -> RunState:
     崩溃痕迹优先于收尾标记，且不比先后：stdout 重定向到文件是块缓冲、stderr 不缓冲，
     崩溃前 print 的"已保存:"完全可能被冲刷到 traceback 之后（与 progress.py 同一口径）。
     """
-    log = _log_text(state)
+    log = read_log(state)
     ok = any(marker in log for marker in DONE_MARKERS) and progress.TRACEBACK not in log
     return _finish(state, runs_dir, exit_code=None, status=SUCCESS if ok else FAILED)
 
@@ -199,7 +201,7 @@ def start(job_name: str, argv: list[str], runs_dir: str | Path) -> RunState:
     if busy:
         raise RuntimeError(f"「{busy}」正在运行，同时只允许一个任务（baostock 单会话）")
     # 绝对化：log_path 会被写进状态文件长期保存，存相对路径的话换个 cwd 就读不到日志，
-    # 而 _log_text 把 OSError 吞成 ""——僵尸清理判 failed、实时输出全空白，且不报错。
+    # 而 read_log 把 OSError 吞成 ""——僵尸清理判 failed、实时输出全空白，且不报错。
     logs = (Path(runs_dir) / "logs").resolve()
     logs.mkdir(parents=True, exist_ok=True)
     now = datetime.now()

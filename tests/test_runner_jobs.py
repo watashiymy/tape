@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from quant.runner import progress
-from quant.runner.jobs import JOBS, Job, build_argv
+from quant.runner.jobs import JOBS, Job, build_argv, parse_argv
 from quant.strategy import REGISTRY
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -168,3 +168,47 @@ def test_rejected_input_never_reaches_argv():
             build_argv("market_scan", params)
         assert payload not in " ".join(build_argv("market_scan", {}))
         assert str(e.value)
+
+
+# ------------------------------------------------------------------ 重跑闸门（parse_argv）
+# "↻ 重跑"沿用状态文件里的上次 argv。状态文件是 output/runs/*.json 普通文本，
+# 手工改得动——所以重跑不能把它直接喂给 Popen，必须反解成参数再走一遍 build_argv。
+def test_parse_argv_round_trips_through_the_same_gate():
+    for name, params in [("market_scan", {"limit": 30, "date": "2026-08-24"}),
+                         ("market_scan", {}),
+                         ("daily_signal", {}),
+                         ("backtest", {"strategy": next(iter(REGISTRY)), "refresh": True})]:
+        argv = build_argv(name, params)
+        assert build_argv(name, parse_argv(name, argv)) == argv
+
+
+def test_parse_argv_returns_typed_params():
+    assert parse_argv("market_scan", build_argv("market_scan", {"limit": 30})) == {"limit": 30}
+    assert parse_argv("backtest", build_argv("backtest", {"refresh": True})) == {"refresh": True}
+
+
+@pytest.mark.parametrize("argv", [
+    [sys.executable, "-u", "-c", "print('pwned')"],                   # 换成任意代码
+    [sys.executable, "-u", "/bin/sh", "-c", "rm -rf /"],              # 换成别的程序
+    ["/bin/sh", "-u", str(ROOT / "scripts" / "run_market_scan.py")],  # 换解释器
+    [sys.executable, str(ROOT / "scripts" / "run_market_scan.py")],   # 丢掉 -u
+    [sys.executable, "-u", str(ROOT / "scripts" / "run_market_scan.py"),
+     "--config", "/etc/passwd"],                                      # 塞不在白名单的开关
+    [sys.executable, "-u", str(ROOT / "scripts" / "run_market_scan.py"),
+     "--limit", "30; rm -rf /"],                                      # 注入取值
+    [sys.executable, "-u", str(ROOT / "scripts" / "run_market_scan.py"),
+     "--limit", "99999"],                                             # 超上限
+    [sys.executable, "-u", str(ROOT / "scripts" / "run_market_scan.py"), "--limit"],  # 缺值
+    [sys.executable, "-u", str(ROOT / "scripts" / "run_market_scan.py"),
+     "--date", "2026-13-45"],
+    [],
+])
+def test_parse_argv_rejects_tampered_argv(argv):
+    with pytest.raises(ValueError):
+        build_argv("market_scan", parse_argv("market_scan", argv))
+
+
+def test_parse_argv_rejects_another_jobs_script():
+    """把 backtest 的 argv 塞进 market_scan 的状态文件也必须被拒。"""
+    with pytest.raises(ValueError):
+        parse_argv("market_scan", build_argv("backtest", {}))

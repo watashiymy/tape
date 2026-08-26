@@ -140,7 +140,7 @@ def build_argv(job_name: str, params: dict | None = None) -> list[str]:
     # -u 不可省：stdout 重定向到日志文件时是块缓冲，实测起一次真实扫描 12 秒后
     # 日志文件仍然**一个字节都没有**（脚本正卡在 get_all_symbols，2-4 分钟），
     # 面板的"实时输出"会一直是空白；加 -u 后 login success! 立刻可见。
-    argv = [sys.executable, "-u", job.script]   # sys.executable = 当前 .venv 解释器
+    argv = _head(job)
     for spec in job.params:                 # 按 schema 顺序，argv 稳定可复现
         if spec.name not in given or given[spec.name] is None:
             continue
@@ -151,3 +151,51 @@ def build_argv(job_name: str, params: dict | None = None) -> list[str]:
             continue
         argv += [spec.flag, _VALIDATORS[spec.kind](spec, value)]
     return argv
+
+
+def _head(job: Job) -> list[str]:
+    """argv 的固定前缀。sys.executable = 当前 .venv 解释器。"""
+    return [sys.executable, "-u", job.script]
+
+
+def parse_argv(job_name: str, argv: list[str]) -> dict:
+    """把 argv 反解成参数字典，供"重跑"再走一遍 build_argv 这道闸门。
+
+    上次 argv 存在 `output/runs/<job>.json` 里——那是一个普通文本文件，手工改得动。
+    直接把文件里的列表喂给 Popen 等于把白名单绕过去了（`-c "任意代码"`、换个程序、
+    塞 `--config /etc/passwd` 都行）。故重跑一律 `build_argv(parse_argv(...))` 往返一趟：
+    头部三项必须逐字相符，开关必须在白名单内，取值仍由 build_argv 重新校验。
+    """
+    job = JOBS.get(job_name)
+    if job is None:
+        raise ValueError(f"未知任务: {job_name!r}，只能是 {list(JOBS)}")
+    argv = list(argv)
+    head = _head(job)
+    if argv[:3] != head:
+        raise ValueError(f"argv 头部与本任务不符（期望 {head}，实际 {argv[:3]}），拒绝重跑")
+    by_flag = {p.flag: p for p in job.params}
+    out: dict = {}
+    i = 3
+    while i < len(argv):
+        spec = by_flag.get(argv[i])
+        if spec is None:
+            raise ValueError(f"argv 里有不在白名单的开关: {argv[i]!r}，拒绝重跑")
+        if spec.kind == "flag":
+            out[spec.name] = True
+            i += 1
+            continue
+        if i + 1 >= len(argv):
+            raise ValueError(f"{spec.flag} 缺少取值，拒绝重跑")
+        raw = argv[i + 1]
+        # int 在这里就得转成真 int：_as_int 拒收字符串（"30" 与 "30; rm -rf /" 同类），
+        # 转不动的原样留着让 build_argv 去拒。
+        out[spec.name] = _to_int_or_raw(raw) if spec.kind == "int" else raw
+        i += 2
+    return out
+
+
+def _to_int_or_raw(raw: str):
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return raw
