@@ -150,7 +150,10 @@ def test_real_config_file():
     """两个 tmp_path 测试都自带 YAML，谁也管不到真正被脚本加载的那个文件。
     这里钉住 config/settings.yaml 本身，防止手改配置时打错字。"""
     s = load_settings(REAL_CONFIG)
-    assert len(s.universe) == 10
+    # 不再钉死"正好 10 只"：自 v0.2.2 起 universe 由面板增删（§3.3），
+    # 数量本就随用户操作变化，钉住它只会让每次正常改池子都红一条。
+    # 真正要守的是格式与"至少留 1 只"。
+    assert len(s.universe) >= 1
     # 全部 6 位数字：YAML 1.1 会把不加引号的 000333 当八进制解析成 219，
     # str() 之后变成 "219" —— 一个静默错误的股票代码。
     assert all(len(c) == 6 and c.isdigit() for c in s.universe)
