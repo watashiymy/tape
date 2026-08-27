@@ -1,5 +1,6 @@
-"""Streamlit 本地面板：streamlit run app/dashboard.py
-五页面：使用说明 / 回测报告 / 个股K线 / 今日信号 / 任务控制台。
+"""Streamlit 本地面板 TAPE：streamlit run app/dashboard.py
+五页面：使用说明 / 任务控制台 / 今日信号 / 回测报告 / 个股K线，
+自 v0.2.2 起走 st.navigation + st.Page 的原生导航（每页一个 URL，装配代码在文件末尾）。
 使用说明是**默认落地页**，纯文档（文案全在 app/guide.py，本文件只做组装）；
 中间三页展示 output/ 与 data/cache/ 里的产物，顶部各有一条精简控制条（开始/停止，§4.2）；
 控制台页可在**本机**起三个入口脚本并看进度、日志与结果
@@ -46,15 +47,16 @@ NAME_LOOKBACK_FILES = 30
 
 # 每页顶部那句话（§2.4 通用页头）。只讲"这页给你看什么、什么时候看"，
 # 数字必须与实测一致（baostock 约 17:30 后才有当日数据 —— README/spec §11）。
-# 键的顺序就是侧栏五页的顺序（PAGES 按它取值），少一页会让页头 KeyError 崩页。
+# 键就是页名（_page_head 按页名取值），顺序与文件末尾的 PAGES 一致；
+# 少一页会让那一页的页头 KeyError 崩页（tests/test_dashboard_nav.py 钉住两边一致）。
 PAGE_INTRO = {
     "使用说明": guide.PAGE_INTRO,
-    "回测报告": "历史检验的结果：绩效指标、净值报告与逐笔成交，读自 output/ 里已完成的回测。",
-    "个股K线": "单只标的的日线走势，叠加本次回测在它身上的买卖点。",
-    "今日信号": "固定池的每日买卖信号，页尾是全市场扫描当日新 BUY；"
-            "收盘后 17:30 之后跑才有当日数据。",
     "任务控制台": "在本机启动三个任务并盯进度、日志与结果；"
              "同时只允许一个任务（baostock 单会话）。",
+    "今日信号": "固定池的每日买卖信号，页尾是全市场扫描当日新 BUY；"
+            "收盘后 17:30 之后跑才有当日数据。",
+    "回测报告": "历史检验的结果：绩效指标、净值报告与逐笔成交，读自 output/ 里已完成的回测。",
+    "个股K线": "单只标的的日线走势，叠加本次回测在它身上的买卖点。",
 }
 
 RUN_STAMP = re.compile(r"_(\d{8}_\d{6})$")   # run_backtest.py 的 {策略}_{YYYYMMDD}_{HHMMSS}
@@ -573,18 +575,37 @@ def page_console() -> None:
             card(name, busy or "")
 
 
-# 侧栏五页。「使用说明」排第一位，st.radio 默认选中第一项 → 它就是**默认落地页**
-# （设计 §3.1）：第一次打开面板的人先看说明，而不是先对着一句"暂无回测结果"发愁。
-# 「任务控制台」仍排最后：它是"要动手"的那页，不该抢在只读页前面。
-PAGES = {"使用说明": page_guide, "回测报告": page_backtest, "个股K线": page_kline,
-         "今日信号": page_signals, "任务控制台": page_console}
-
-st.set_page_config(page_title="quant_demo v0.2.1", layout="wide")
-# 字体与语义化 CSS（app/theme.py）。必须每轮都注入：Streamlit 每次 rerun 重画整棵
-# 元素树，上一轮的 <style> 不留下来。底色/主色不在这里——那些走 .streamlit/config.toml。
+st.set_page_config(page_title=theme.PAGE_TITLE, layout="wide")
+# 字体、语义化 CSS 与 Cmd+C 热键修复（app/theme.py）。必须每轮都注入：Streamlit
+# 每次 rerun 重画整棵元素树，上一轮的 <style>/<script> 不留下来。
+# 底色/主色不在这里——那些走 .streamlit/config.toml。
 theme.inject()
-st.sidebar.title("quant_demo")
-page = st.sidebar.radio("页面", list(PAGES))
+# 品牌块 TAPE（v0.2.2 §2.1）。走 st.logo 而不是 st.sidebar.html：侧栏里
+# **导航之上**只有这一个官方位置，普通侧栏元素一律排在导航链接下面（实测）。
+st.logo(theme.BRAND_LOGO, size=theme.BRAND_LOGO_SIZE)
+
+# 侧栏五页（v0.2.2 §2.2）：st.navigation + st.Page 取代 v0.1 的 st.sidebar.radio
+# ——渲染成带图标的导航**链接**而非单选圆点，每页有独立 URL（可收藏、可分享，
+# 浏览器前进/后退可用），而且是官方支持面，比自制导航抗升级。
+# 页面函数一行没改，这里只做包装：重构风险压到最小。
+#
+# 顺序（设计 §2.2 的表）：
+#   -「使用说明」第一位且 default=True → **默认落地页**（v0.2.1 的决定不变）：
+#     第一次打开面板的人先看说明，而不是先对着一句"暂无回测结果"发愁；
+#   -「任务控制台」从末位提到**第二位**：它是最常用的操作入口。
+# url_path 显式给短英文：不给的话会取函数名，地址栏出现 /page_backtest 这种内部名。
+PAGES = [
+    st.Page(page_guide, title="使用说明", icon=":material/menu_book:",
+            url_path="guide", default=True),
+    st.Page(page_console, title="任务控制台", icon=":material/play_circle:",
+            url_path="console"),
+    st.Page(page_signals, title="今日信号", icon=":material/notifications:",
+            url_path="signals"),
+    st.Page(page_backtest, title="回测报告", icon=":material/assessment:",
+            url_path="backtest"),
+    st.Page(page_kline, title="个股K线", icon=":material/candlestick_chart:",
+            url_path="kline"),
+]
 # 落地页会被切走，切走之后就没有说明页的入口提示了，所以侧栏常驻一句指路。
 st.sidebar.caption("第一次用先看「使用说明」页（侧栏第一项，也是默认落地页）："
                    "三个任务怎么配合、输出怎么读、已知局限在哪。")
@@ -602,4 +623,4 @@ st.sidebar.warning("安全提示：本面板可在本机执行脚本。启动时
                    "同网段的人就能点这里的「开始」。"
                    "切勿用 `--server.address 0.0.0.0` 暴露到局域网。")
 st.sidebar.caption("策略仅用于学习，不构成投资建议。")
-PAGES[page]()
+st.navigation(PAGES).run()

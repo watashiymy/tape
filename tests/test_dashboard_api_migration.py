@@ -11,7 +11,7 @@ import pytest
 import streamlit as st
 from streamlit.testing.v1 import AppTest
 
-from tests.conftest import copy_app
+from tests.conftest import copy_app, goto_page, stub_navigation
 
 ROOT = Path(__file__).resolve().parent.parent
 APP_FILES = sorted(ROOT.glob("app/*.py"))
@@ -45,10 +45,8 @@ def _make_apptest(tmp_path) -> AppTest:
 
 def _at_backtest_page(tmp_path) -> AppTest:
     """渲染并**显式**切到回测报告页：默认落地页自 v0.2.1 起是「使用说明」，
-    靠默认选中取页的话，下面两条 iframe / 半截目录的断言就落到一页纯文档上了。"""
-    at = _make_apptest(tmp_path).run()
-    at.sidebar.radio[0].set_value("回测报告").run()
-    return at
+    靠默认落地页取页的话，下面两条 iframe / 半截目录的断言就落到一页纯文档上了。"""
+    return goto_page(_make_apptest(tmp_path).run(), "回测报告")
 
 
 def _complete_run(out: Path, name: str) -> Path:
@@ -76,7 +74,7 @@ def test_backtest_page_renders_report_through_iframe(tmp_path, monkeypatch):
     # 缓存，"import theme 能不能解析"这件事就永远测不到（曾经因此漏过一次）。
     monkeypatch.delitem(sys.modules, "theme", raising=False)
     srcs: list[object] = []
-    monkeypatch.setattr(st.sidebar, "radio", lambda *a, **k: "回测报告")
+    stub_navigation(monkeypatch, "回测报告")   # bare 模式：真 st.Page 什么都不画
     monkeypatch.setattr(st, "iframe", lambda src, **k: srcs.append(src))
     monkeypatch.setattr(st, "dataframe", lambda *a, **k: None)
     spec = importlib.util.spec_from_file_location("dashboard_iframe_probe", dashboard)

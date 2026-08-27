@@ -13,7 +13,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from quant.runner import jobs, process
-from tests.conftest import copy_app
+from tests.conftest import copy_app, goto_page, stub_navigation
 
 DASHBOARD = Path(__file__).resolve().parent.parent / "app" / "dashboard.py"
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -39,9 +39,8 @@ def _console(tmp_path: Path) -> AppTest:
     """app/ 整目录复制进 tmp_path 再交给 AppTest：ROOT/OUTPUT/RUNS_DIR 全落在
     tmp_path，与仓库真实 output/runs/ 完全隔离（否则测试会读到、甚至停掉真任务）。"""
     dashboard = copy_app(tmp_path)
-    at = AppTest.from_file(str(dashboard), default_timeout=30).run()
-    at.sidebar.radio[0].set_value(CONSOLE).run()
-    return at
+    return goto_page(AppTest.from_file(str(dashboard), default_timeout=30).run(),
+                     CONSOLE)
 
 
 def _fake_run(root: Path, job: str, status: str, *, log: str = "", exit_code=None,
@@ -73,14 +72,18 @@ def _fake_run(root: Path, job: str, status: str, *, log: str = "", exit_code=Non
 
 # ---------------------------------------------------------------- 页面骨架
 def test_console_is_a_sidebar_page_and_not_the_default(tmp_path):
-    """控制台必须排在**最后**：它是"要动手"的那页，不该抢在只读页前面，
-    更不能顶掉默认落地页。默认页自 v0.2.1 M3 起是「使用说明」（设计 §3.1）。"""
+    """控制台是侧栏的一页，但**不是**默认落地页——默认页自 v0.2.1 M3 起是
+    「使用说明」（设计 §3.1）。位次自 v0.2.2 起从末位提到第二位（设计 §2.2），
+    页表本身由 tests/test_dashboard_nav.py 逐项对账，这里只守"没顶掉落地页"。"""
     dashboard = copy_app(tmp_path)
     at = AppTest.from_file(str(dashboard), default_timeout=30).run()
     assert not at.exception
-    assert list(at.sidebar.radio[0].options)[-1] == CONSOLE
-    assert at.sidebar.radio[0].value == "使用说明"
-    assert at.sidebar.radio[0].value != CONSOLE
+    heads = [e.proto.body for e in at.get("html") if 'class="qd-head"' in e.proto.body]
+    assert heads and 'class="qd-title">使用说明<' in heads[0], heads
+    at = goto_page(at, CONSOLE)
+    assert not at.exception
+    heads = [e.proto.body for e in at.get("html") if 'class="qd-head"' in e.proto.body]
+    assert heads and f'class="qd-title">{CONSOLE}<' in heads[0], heads
 
 
 def test_three_cards_render(tmp_path):
@@ -423,7 +426,7 @@ def test_idle_cards_do_not_poll(tmp_path, monkeypatch):
 
     import streamlit as st
     dashboard = copy_app(tmp_path)
-    monkeypatch.setattr(st.sidebar, "radio", lambda *a, **k: CONSOLE)
+    stub_navigation(monkeypatch, CONSOLE)
     spec = importlib.util.spec_from_file_location("dashboard_console_probe",
                                                   dashboard)
     mod = importlib.util.module_from_spec(spec)
@@ -505,6 +508,5 @@ def test_stop_click_requests_full_rerun(tmp_path, monkeypatch):
 def test_all_pages_still_render(tmp_path, page):
     """加了控制台页之后，四页任何一页都不得抛异常。"""
     dashboard = copy_app(tmp_path)
-    at = AppTest.from_file(str(dashboard), default_timeout=30).run()
-    at.sidebar.radio[0].set_value(page).run()
+    at = goto_page(AppTest.from_file(str(dashboard), default_timeout=30).run(), page)
     assert not at.exception, f"页面 {page} 抛异常: {at.exception}"

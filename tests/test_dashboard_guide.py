@@ -20,14 +20,16 @@ import streamlit as st
 from streamlit.testing.v1 import AppTest
 
 from quant.runner import jobs
-from tests.conftest import copy_app
+from tests.conftest import copy_app, goto_page
 
 ROOT = Path(__file__).resolve().parent.parent
 DASHBOARD = ROOT / "app" / "dashboard.py"
 SOURCE = DASHBOARD.read_text(encoding="utf-8")
 
 GUIDE = "使用说明"
-PAGES = [GUIDE, "回测报告", "个股K线", "今日信号", "任务控制台"]
+# 侧栏顺序自 v0.2.2 §2.2 起：控制台提到第二位。页表本身（顺序/图标/URL）
+# 由 tests/test_dashboard_nav.py 对账，这里只借它来遍历"每页都要成立"的断言。
+PAGES = [GUIDE, "任务控制台", "今日信号", "回测报告", "个股K线"]
 
 # 先塞 sys.modules 再 exec：guide.py 用了 @dataclass，而 dataclasses 会回查
 # sys.modules[cls.__module__] 解析注解，没注册会 AttributeError。
@@ -42,11 +44,9 @@ TRADES_HEADER = "symbol,action,date,price,shares,commission,stamp,pnl,holding_da
 
 def _page(tmp_path: Path, page: str = GUIDE) -> AppTest:
     """app/ 整目录复制进 tmp_path 再交给 AppTest（ROOT/OUTPUT 全落在 tmp_path）。
-    一律显式 set_value：默认落地页自本里程碑起是「使用说明」，靠默认值取页
-    会静默测错页面。"""
-    at = AppTest.from_file(str(copy_app(tmp_path)), default_timeout=30).run()
-    at.sidebar.radio[0].set_value(page).run()
-    return at
+    一律显式切页：默认落地页是「使用说明」，靠默认值取页会静默测错页面。"""
+    return goto_page(
+        AppTest.from_file(str(copy_app(tmp_path)), default_timeout=30).run(), page)
 
 
 def _htmls(at: AppTest) -> list[str]:
@@ -110,29 +110,18 @@ def _fake_run(root: Path, job: str, status: str, *, log: str = "",
 
 # ================================================================ 侧栏与落地页
 
-def test_guide_is_the_first_sidebar_page(tmp_path):
-    """§3.1：放侧栏**第一位**。排在后面的说明页，需要它的人根本翻不到。"""
+def test_guide_is_the_default_landing_page(tmp_path):
+    """§3.1：默认落地页（也排侧栏第一位）。第一次打开面板的人先看说明，
+    而不是先对着一个"暂无回测结果"发愁。
+
+    v0.2.2 起导航是 st.navigation，侧栏里没有可读值的控件了，所以改成断言
+    "不切页时渲染出来的是说明页"——比读控件的选中值更接近用户看到的东西。
+    页表顺序在 tests/test_dashboard_nav.py 里对账。"""
     at = AppTest.from_file(str(copy_app(tmp_path)), default_timeout=30).run()
     assert not at.exception, at.exception
-    assert list(at.sidebar.radio[0].options)[0] == GUIDE
-
-
-def test_guide_is_the_default_landing_page(tmp_path):
-    """§3.1：默认落地页。第一次打开面板的人先看说明，而不是先对着一个
-    "暂无回测结果"发愁。"""
-    at = AppTest.from_file(str(copy_app(tmp_path)), default_timeout=30).run()
-    assert at.sidebar.radio[0].value == GUIDE
-
-
-def test_the_sidebar_still_lists_all_five_pages(tmp_path):
-    at = AppTest.from_file(str(copy_app(tmp_path)), default_timeout=30).run()
-    assert list(at.sidebar.radio[0].options) == PAGES
-
-
-def test_console_is_still_the_last_page(tmp_path):
-    """控制台仍排最后：它是"要动手"的那页，不该抢在只读页前面。"""
-    at = AppTest.from_file(str(copy_app(tmp_path)), default_timeout=30).run()
-    assert list(at.sidebar.radio[0].options)[-1] == "任务控制台"
+    heads = [h for h in _htmls(at) if 'class="qd-head"' in h]
+    assert len(heads) == 1, heads
+    assert f'class="qd-title">{GUIDE}<' in heads[0], heads[0]
 
 
 def test_sidebar_points_new_users_at_the_guide(tmp_path):

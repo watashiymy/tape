@@ -8,7 +8,7 @@ import pytest
 import streamlit as st
 from streamlit.testing.v1 import AppTest
 
-from tests.conftest import copy_app
+from tests.conftest import copy_app, goto_page, stub_navigation
 
 # 必须从 __file__ 推导仓库根：Path("app/dashboard.py") 依赖 cwd，
 # 从任何非仓库根目录跑 pytest（IDE、CI 的绝对路径调用）整个文件全挂。
@@ -52,8 +52,10 @@ def _load_dashboard(tmp_path, monkeypatch, page):
     返回 (模块, 该页渲染时喂给 st.dataframe 的 DataFrame 列表)。"""
     dashboard = copy_app(tmp_path)
     frames: list[pd.DataFrame] = []
-    # 顶层代码在 exec_module 时就会渲染选中页，所以桩必须先装好
-    monkeypatch.setattr(st.sidebar, "radio", lambda *a, **k: page)
+    # 顶层代码在 exec_module 时就会渲染选中页，所以桩必须先装好。
+    # 导航自 v0.2.2 起是 st.navigation + st.Page：bare 模式（这里就是）下真 Page
+    # 拿不到 ScriptRunContext，run() 什么都不画，所以换成替身（见 conftest）。
+    stub_navigation(monkeypatch, page)
     # 扫描表喂给 st.dataframe 的是 pandas Styler（column_config 没有条件着色能力，
     # 红绿只能走 Styler）。这里取回底层 DataFrame——本文件关心的是"数据对不对"。
     monkeypatch.setattr(st, "dataframe",
@@ -119,11 +121,9 @@ def _make_apptest(tmp_path) -> AppTest:
 
 def _at_page(tmp_path, page: str = "回测报告") -> AppTest:
     """渲染并**显式**切到目标页。默认落地页自 v0.2.1 起是「使用说明」，
-    靠 .run() 的默认选中取页会静默测到说明页上去（那页什么产物都不读，
+    靠 .run() 的默认落地页取页会静默测到说明页上去（那页什么产物都不读，
     "不崩"这种断言照样通过，但测的完全不是同一件事）。"""
-    at = _make_apptest(tmp_path).run()
-    at.sidebar.radio[0].set_value(page).run()
-    return at
+    return goto_page(_make_apptest(tmp_path).run(), page)
 
 
 def _complete_run(out: Path, name: str, metrics: dict) -> Path:
@@ -195,10 +195,8 @@ SCAN_HEADER = "date,symbol,name,strategy,close,pct_chg,amount,amount_ratio_20d\n
 
 
 def _goto_signals(tmp_path) -> AppTest:
-    """AppTest 渲染并切到"今日信号"页（radio 默认选中第一页"回测报告"）。"""
-    at = _at_page(tmp_path)
-    at.sidebar.radio[0].set_value("今日信号").run()
-    return at
+    """AppTest 渲染并切到"今日信号"页。"""
+    return _at_page(tmp_path, "今日信号")
 
 
 def test_scan_block_prompts_command_when_no_csv(tmp_path):

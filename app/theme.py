@@ -9,6 +9,10 @@
 纪律由 tests/test_theme.py 钉住：CSS 里出现 Streamlit 内部标识、出现色板之外的
 裸十六进制、字体栈少了离线兜底，测试都会红。
 
+本文件另外管两件"每页都要有"的注入物（都在 `inject()` 里，面板只调那一个入口）：
+品牌块 TAPE（v0.2.2 §2.1，画成 SVG 交给 st.logo）与 Cmd+C 热键修复
+（v0.2.2 §1.2，一小段 JS，见 HOTKEY_JS 上方的注释）。
+
 **色值一个都不在本文件定义**：唯一定义处是 `quant.report.palette`，这里只做转发。
 原因是图表（quant.report.charts）也要用同一套配色，而它属于 src/、不能反向
 import app/——色板必须下沉到 src/ 才能"改一处、两边同步"。曾经两边各写一套：
@@ -16,6 +20,7 @@ import app/——色板必须下沉到 src/ 才能"改一处、两边同步"。�
 """
 from __future__ import annotations
 
+import base64
 import html as _html
 
 import streamlit as st
@@ -69,6 +74,36 @@ FONT_IMPORT = ("https://fonts.googleapis.com/css2"
 SERIF = '"Songti SC", STSong, "Noto Serif SC", serif'            # 标题：编辑感、权威感
 SANS = '"PingFang SC", "Noto Sans SC", "Helvetica Neue", sans-serif'     # 正文
 MONO = palette.MONO                                              # 数字/代码/日志
+
+# ---------------------------------------------------------------- 品牌（v0.2.2 §2.1）
+# TAPE 取自 "reading the tape"（看盘）——交易所报价纸带上滚动的价与量，
+# 正是本系统唯一的输入。短、英文、衬线大写好看，且与"金融电报"的视觉调性同源。
+BRAND = "TAPE"
+BRAND_SUB = "A股日线信号"
+PAGE_TITLE = f"{BRAND} · {BRAND_SUB}"      # 浏览器标签页；与侧栏品牌同一个来源
+BRAND_LOGO_SIZE = "large"                  # st.logo 的三档里最大的那档（实测高 32px）
+
+# 品牌块必须走 `st.logo`：那是侧栏里**导航之上**唯一的官方位置。普通 st.sidebar.*
+# 元素一律排在 st.navigation 渲染的链接**下面**（实测），品牌落到链接列表中间就不
+# 成体统了。st.logo 只收图片，所以把这行字画成 SVG 并内联成 data URI——不读文件、
+# 不请求网络，色值与字体栈仍取自本模块的单一来源。
+#
+# 属性值一律用单引号：字体栈本身带双引号（"Songti SC"），双引号属性会当场把
+# SVG 撕成非法 XML。SVG 里只有拉丁的 TAPE 走衬线网络字体拿不到也无妨——
+# 首选 Songti SC 是 macOS 自带的（与 CSS 那套字体策略同一条理由）。
+# 尺寸按实测调过：st.logo 把图等比缩到高 32px，viewBox 高 36 时副标约 11.6px 可读；
+# 图再高一点副标就会被压到 9px 以下，糊成一条灰线。
+BRAND_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="180" height="36" '
+    'viewBox="0 0 180 36">'
+    f"<text x='1' y='20' font-family='{SERIF}' font-size='24' font-weight='700' "
+    f"letter-spacing='6' fill='{TEXT}'>{BRAND}</text>"
+    f"<text x='2' y='34' font-family='{SANS}' font-size='13' "
+    f"letter-spacing='1' fill='{MUTED}'>{BRAND_SUB}</text>"
+    "</svg>"
+)
+BRAND_LOGO = ("data:image/svg+xml;base64,"
+              + base64.b64encode(BRAND_SVG.encode("utf-8")).decode("ascii"))
 
 # ---------------------------------------------------------------- CSS
 # 每条规则的选择器单独一行（测试按行解析选择器做纪律检查）。
@@ -204,6 +239,44 @@ CSS = f"""@import url("{FONT_IMPORT}");
 }}
 """
 
+# ---------------------------------------------------------------- 热键修复（v0.2.2 §1.2）
+# 症状：在表格/正文里选中文字按 **Cmd+C**，面板弹出 "Clear caches?"。
+# 根因（读 Streamlit 前端 bundle + 浏览器实测确认，是上游行为不是本项目的 bug）：
+# Streamlit 用 hotkeys-js 绑**单键**快捷键（`r` 重跑、`c` 清缓存），它的过滤器只排除
+# 输入类元素（INPUT / SELECT / TEXTAREA / contentEditable），**完全不看修饰键**；
+# 选中正文时事件目标是普通元素（实测 document.activeElement 为 SECTION）→ 放行 →
+# 触发 CLEAR_CACHE。
+#
+# 修法是**与库协作而非对抗**：不拦键盘事件，只包一层 `hotkeys.filter`，
+# 让带 Cmd/Ctrl/Alt 的组合根本不进热键系统；裸按 c / r 照旧交回原过滤器判断
+# （否则就成了"为修一个键把整套快捷键废掉"）。
+#
+# 关键难点：Streamlit 在 useEffect 里**重新赋值** hotkeys.filter（依赖一变就重跑），
+# 直接赋值会被覆盖。用 Object.defineProperty 装 setter，后续每次赋值都自动裹上。
+#
+# 两道守卫：window.hotkeys 不存在时（将来不再暴露）静默跳过，绝不让面板崩；
+# 幂等标志防重复安装——每次 rerun 都会重新注入这段脚本，装两次就是包装套娃。
+HOTKEY_FLAG = "__qdHotkeyFilterWrapped"
+
+HOTKEY_JS = f"""(function () {{
+  if (window.{HOTKEY_FLAG}) return;
+  var hk = window.hotkeys;
+  if (!hk) return;
+  var wrap = function (orig) {{
+    return function (e) {{
+      if (e && (e.metaKey || e.ctrlKey || e.altKey)) return false;
+      return orig ? orig.apply(this, arguments) : true;
+    }};
+  }};
+  var current = wrap(hk.filter);
+  Object.defineProperty(hk, 'filter', {{
+    configurable: true,
+    get: function () {{ return current; }},
+    set: function (v) {{ current = wrap(v); }}
+  }});
+  window.{HOTKEY_FLAG} = true;
+}})();"""
+
 
 # ---------------------------------------------------------------- HTML 组件
 # 面板里只剩 st.html(theme.xxx(...))，这些构造函数是纯字符串函数（可单测）。
@@ -273,10 +346,18 @@ def flow(steps) -> str:
 
 
 def inject() -> None:
-    """把字体与语义化 CSS 注入当前页。**每次 rerun 都要调**：Streamlit 每轮重画整棵
-    元素树，上一轮的 <style> 不会留下来。
+    """把字体、语义化 CSS 与热键修复注入当前页。**每次 rerun 都要调**：
+    Streamlit 每轮重画整棵元素树，上一轮的 <style> 不会留下来。
 
     用 `st.html` 而不是 `st.markdown(..., unsafe_allow_html=True)`：st.html 就是为
     插样式/静态 HTML 加的，也不必为了一段固定 CSS 给整页开 HTML 逃逸口子。
+
+    两发分开，各有各的理由：
+    - 纯 `<style>` 的那发被 Streamlit 送进 event 容器，**不占版面**；夹了 <script>
+      就走主容器了，会在每页顶上留一个空元素位。
+    - `<script>` 那发必须显式 `unsafe_allow_javascript=True`，否则 JS 被静默忽略
+      ——"注入了"和"没注入"长得一模一样。st.html 不套 iframe，脚本落在主文档里，
+      正好够得着 `window.hotkeys`（换成 st.iframe 就在沙箱里，碰不到）。
     """
     st.html(f"<style>{CSS}</style>")
+    st.html(f"<script>{HOTKEY_JS}</script>", unsafe_allow_javascript=True)

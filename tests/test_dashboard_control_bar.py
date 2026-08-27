@@ -14,7 +14,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from quant.runner import jobs, process, view
-from tests.conftest import copy_app
+from tests.conftest import copy_app, goto_page
 
 ROOT = Path(__file__).resolve().parent.parent
 DASHBOARD = ROOT / "app" / "dashboard.py"
@@ -36,9 +36,7 @@ def _page(tmp_path: Path, page: str) -> AppTest:
     """app/ 整目录复制进 tmp_path 再交给 AppTest：ROOT/OUTPUT/RUNS_DIR 全落在
     tmp_path，与仓库真实 output/runs/ 完全隔离（否则测试会读到、甚至停掉真任务）。"""
     dashboard = copy_app(tmp_path)
-    at = AppTest.from_file(str(dashboard), default_timeout=30).run()
-    at.sidebar.radio[0].set_value(page).run()
-    return at
+    return goto_page(AppTest.from_file(str(dashboard), default_timeout=30).run(), page)
 
 
 def _fake_run(root: Path, job: str, status: str, *, log: str = "", exit_code=None,
@@ -104,14 +102,18 @@ def test_sidebar_warning_shows_on_every_page(tmp_path):
 
 
 def test_page_title_is_not_stale():
-    """page_title 停在 v0.1.1 也是同一句假话的一部分（设计 §7）。"""
+    """page_title 停在 v0.1.1 也是同一句假话的一部分（设计 §7）。
+
+    自 v0.2.2 起它不再是写死的字面量，而是 theme.PAGE_TITLE（与侧栏品牌
+    TAPE 同一个来源，版本号从此不进标签页，也就没有"过期"这回事了）。
+    标签页名的具体内容由 tests/test_dashboard_nav.py 对账。"""
     tree = ast.parse(SOURCE)
-    titles = [kw.value.value for node in ast.walk(tree)
+    titles = [ast.unparse(kw.value) for node in ast.walk(tree)
               if isinstance(node, ast.Call)
               and getattr(node.func, "attr", "") == "set_page_config"
               for kw in node.keywords if kw.arg == "page_title"]
-    assert titles, "找不到 st.set_page_config(page_title=...)"
-    assert "v0.1.1" not in titles[0], f"page_title 仍停在旧版本: {titles[0]}"
+    assert titles == ["theme.PAGE_TITLE"], \
+        f"page_title 应取自 theme（别再写死版本号）: {titles}"
 
 
 # ------------------------------------------------------------------ §4.2 控制条

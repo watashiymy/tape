@@ -22,7 +22,7 @@ from streamlit.testing.v1 import AppTest
 
 from quant.report import fmt
 from quant.runner import jobs
-from tests.conftest import copy_app, make_bars
+from tests.conftest import copy_app, goto_page, stub_navigation, make_bars
 
 ROOT = Path(__file__).resolve().parent.parent
 DASHBOARD = ROOT / "app" / "dashboard.py"
@@ -41,11 +41,10 @@ REAL_METRICS = {"total_return": 1.161, "cagr": 0.0789, "max_drawdown": -0.3512,
 
 
 def _page(tmp_path: Path, page: str = "回测报告") -> AppTest:
-    """一律显式 set_value：默认落地页自 v0.2.1 起是「使用说明」，
+    """一律显式切页：默认落地页自 v0.2.1 起是「使用说明」，
     省掉这一步会让本文件的断言全落到一页纯文档上（多数还会"通过"）。"""
-    at = AppTest.from_file(str(copy_app(tmp_path)), default_timeout=30).run()
-    at.sidebar.radio[0].set_value(page).run()
-    return at
+    return goto_page(
+        AppTest.from_file(str(copy_app(tmp_path)), default_timeout=30).run(), page)
 
 
 def _htmls(at: AppTest) -> list[str]:
@@ -243,7 +242,7 @@ def _captured_tables(tmp_path, page, monkeypatch) -> list[tuple]:
 
     calls: list[tuple] = []
     monkeypatch.delitem(sys.modules, "theme", raising=False)
-    monkeypatch.setattr(st.sidebar, "radio", lambda *a, **k: page)
+    stub_navigation(monkeypatch, page)   # bare 模式下真 st.Page 什么都不画（见 conftest）
     monkeypatch.setattr(st, "dataframe", lambda data, *a, **k: calls.append((data, k)))
     monkeypatch.setattr(st, "plotly_chart", lambda *a, **k: None)
     spec = importlib.util.spec_from_file_location(

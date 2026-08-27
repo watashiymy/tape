@@ -200,13 +200,20 @@ def test_numbers_use_tabular_figures():
 
 def test_inject_is_the_single_entry_and_uses_st_html(monkeypatch):
     """注入必须走 st.html：st.markdown(unsafe_allow_html=True) 会给整页开
-    HTML 逃逸口子，而 st.html 就是为插样式加的。"""
+    HTML 逃逸口子，而 st.html 就是为插样式加的。
+
+    自 v0.2.2 起 inject() 还发第二件东西（Cmd+C 热键修复的那段 JS，见
+    tests/test_dashboard_nav.py）——**样式仍必须单独一发**：纯 <style> 会被
+    Streamlit 送进不占版面的 event 容器，夹了 <script> 就落到主容器，
+    每页顶上多一个空元素位。"""
     calls: list[str] = []
-    monkeypatch.setattr(theme.st, "html", lambda body: calls.append(body))
+    monkeypatch.setattr(theme.st, "html",
+                        lambda body, **kwargs: calls.append(body))
     theme.inject()
-    assert len(calls) == 1
-    assert calls[0].startswith("<style>") and calls[0].endswith("</style>")
-    assert theme.FONT_IMPORT in calls[0]
+    styles = [c for c in calls if c.startswith("<style>")]
+    assert len(styles) == 1, f"样式应恰好注入一次: {len(styles)}"
+    assert styles[0].endswith("</style>")
+    assert theme.FONT_IMPORT in styles[0]
 
 
 def test_dashboard_injects_the_theme():
