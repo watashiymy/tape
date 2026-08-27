@@ -13,7 +13,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from quant.runner import jobs, process
-from tests.conftest import copy_app, goto_page, stub_navigation
+from tests.conftest import app_module, copy_app, goto_page, stub_navigation
 
 DASHBOARD = Path(__file__).resolve().parent.parent / "app" / "dashboard.py"
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -424,18 +424,19 @@ def test_idle_cards_do_not_poll(tmp_path, monkeypatch):
     """无任务运行时不设 run_every：否则面板一直空转（每 2 秒重跑三张卡片）。"""
     import importlib.util
 
-    import streamlit as st
     dashboard = copy_app(tmp_path)
     stub_navigation(monkeypatch, CONSOLE)
     spec = importlib.util.spec_from_file_location("dashboard_console_probe",
                                                   dashboard)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    # 卡片自 v0.2.2 M3 起在 app/pages_console.py，刷新档位常量在共享件 app/ui.py。
+    console, ui = app_module("pages_console"), app_module("ui")
 
-    assert _run_every(mod._card_idle) is None
-    assert _run_every(mod._card_live) == mod.AUTO_REFRESH_S
-    assert mod._card_for(None) is mod._card_idle
-    assert mod._card_for("market_scan") is mod._card_live
+    assert _run_every(console._card_idle) is None
+    assert _run_every(console._card_live) == ui.AUTO_REFRESH_S
+    assert console._card_for(None) is console._card_idle
+    assert console._card_for("market_scan") is console._card_live
 
 
 def test_card_requests_full_rerun_when_the_running_job_finishes(tmp_path, monkeypatch):

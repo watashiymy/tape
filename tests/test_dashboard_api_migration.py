@@ -11,10 +11,9 @@ import pytest
 import streamlit as st
 from streamlit.testing.v1 import AppTest
 
-from tests.conftest import copy_app, goto_page, stub_navigation
+from tests.conftest import APP_FILES, copy_app, goto_page, stub_navigation
 
 ROOT = Path(__file__).resolve().parent.parent
-APP_FILES = sorted(ROOT.glob("app/*.py"))
 
 DEPRECATED = [
     ("use_container_width", 'width="stretch"（True）/ width="content"（False）'),
@@ -106,6 +105,8 @@ def test_run_dir_without_report_html_is_still_excluded(tmp_path):
 
 
 def test_width_stretch_is_used_for_tables_and_charts(tmp_path):
-    """等价替换要真的替上去：至少有一处 width="stretch"，否则表格会缩成窄窄一条。"""
-    src = (ROOT / "app" / "dashboard.py").read_text(encoding="utf-8")
-    assert 'width="stretch"' in src
+    """等价替换要真的替上去：至少有一处 width="stretch"，否则表格会缩成窄窄一条。
+    自 v0.2.2 M3 起表格与图表的调用点在 app/ui.py / app/pages_*.py（设计 §4）。"""
+    hits = [p.name for p in APP_FILES
+            if 'width="stretch"' in p.read_text(encoding="utf-8")]
+    assert hits, "app/ 下没有任何 width=\"stretch\"：表格/图表会缩成窄窄一条"

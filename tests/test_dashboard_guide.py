@@ -20,16 +20,17 @@ import streamlit as st
 from streamlit.testing.v1 import AppTest
 
 from quant.runner import jobs
-from tests.conftest import copy_app, goto_page
+from tests.conftest import APP_FILES, copy_app, goto_page
 
 ROOT = Path(__file__).resolve().parent.parent
 DASHBOARD = ROOT / "app" / "dashboard.py"
 SOURCE = DASHBOARD.read_text(encoding="utf-8")
+UI_SOURCE = (ROOT / "app" / "ui.py").read_text(encoding="utf-8")
 
 GUIDE = "使用说明"
 # 侧栏顺序自 v0.2.2 §2.2 起：控制台提到第二位。页表本身（顺序/图标/URL）
 # 由 tests/test_dashboard_nav.py 对账，这里只借它来遍历"每页都要成立"的断言。
-PAGES = [GUIDE, "任务控制台", "今日信号", "回测报告", "个股K线"]
+PAGES = [GUIDE, "任务控制台", "今日信号", "信号池", "回测报告", "个股K线"]
 
 # 先塞 sys.modules 再 exec：guide.py 用了 @dataclass，而 dataclasses 会回查
 # sys.modules[cls.__module__] 解析注解，没注册会 AttributeError。
@@ -139,7 +140,7 @@ def test_guide_page_renders_without_exception(tmp_path):
 
 
 def test_guide_page_has_a_page_head_like_every_other_page(tmp_path):
-    """§2.4 通用页头对说明页同样适用（否则五页里有一页开局长得不一样）。"""
+    """§2.4 通用页头对说明页同样适用（否则六页里有一页开局长得不一样）。"""
     at = _page(tmp_path)
     heads = [h for h in _htmls(at) if 'class="qd-head"' in h]
     assert len(heads) == 1, heads
@@ -224,22 +225,22 @@ def test_the_guide_page_needs_no_output_at_all(tmp_path):
 
 
 @pytest.mark.parametrize("page", PAGES)
-def test_all_five_pages_render_without_exception(tmp_path, page):
-    """M3 验收：五页全绿。"""
+def test_all_six_pages_render_without_exception(tmp_path, page):
+    """v0.2.2 M3 验收（设计 §5）：六页全绿（「信号池」是新的第四页）。"""
     at = _page(tmp_path, page)
     assert not at.exception, f"页面 {page} 抛异常: {at.exception}"
 
 
 @pytest.mark.parametrize("page", PAGES)
-def test_all_five_pages_render_while_a_job_is_running(tmp_path, page):
+def test_all_six_pages_render_while_a_job_is_running(tmp_path, page):
     _fake_run(tmp_path, "market_scan", "running", log="[1800/3010] 信号 58 条\n")
     at = _page(tmp_path, page)
     assert not at.exception, f"页面 {page} 在有任务运行时抛异常: {at.exception}"
 
 
 @pytest.mark.parametrize("page", PAGES)
-def test_all_five_pages_survive_a_corrupt_state_file(tmp_path, page):
-    """状态文件坏掉时五页都要活着（说明页也读它——页头的全局 pill）。"""
+def test_all_six_pages_survive_a_corrupt_state_file(tmp_path, page):
+    """状态文件坏掉时六页都要活着（说明页也读它——页头的全局 pill）。"""
     runs = tmp_path / "output" / "runs"
     runs.mkdir(parents=True)
     (runs / "backtest.json").write_text('{"script": "backtest", "pid":',
@@ -249,14 +250,16 @@ def test_all_five_pages_survive_a_corrupt_state_file(tmp_path, page):
 
 
 def test_page_intro_covers_every_page(tmp_path):
-    """PAGE_INTRO 缺一页就是 KeyError 崩页（页头直接下标取值）。"""
-    mod_src = SOURCE
-    tree = ast.parse(mod_src)
+    """PAGE_INTRO 缺一页就是 KeyError 崩页（页头直接下标取值）。
+
+    自 v0.2.2 M3 起 PAGE_INTRO 与页头一起在共享件 app/ui.py（设计 §4 的拆分）。
+    """
+    tree = ast.parse(UI_SOURCE)
     intro = next(n for n in ast.walk(tree)
                  if isinstance(n, ast.Assign)
                  and any(getattr(t, "id", "") == "PAGE_INTRO" for t in n.targets))
     keys = [k.value for k in intro.value.keys]
-    assert keys == PAGES, f"PAGE_INTRO 的键必须与侧栏五页一致: {keys}"
+    assert keys == PAGES, f"PAGE_INTRO 的键必须与侧栏六页一致: {keys}"
 
 
 # ================================================================ 就地帮助：卡片 popover
@@ -421,8 +424,12 @@ def test_empty_states_are_not_hardcoded_in_the_dashboard(tmp_path):
 
     只查**字符串字面量**（走 AST），不查整份源码：注释里引用一句文案来解释
     为什么这么排版是正当的，用裸文本搜索会把它一起误判。
+    整个 app/ 一起查（M3 起页面代码在 pages_*.py，只查 dashboard.py 等于空跑），
+    但 app/guide.py 本身要排除——文案的**唯一定义处**就在那里。
     """
-    literals = [n.value for n in ast.walk(ast.parse(SOURCE))
+    literals = [n.value
+                for p in APP_FILES if p.name != "guide.py"
+                for n in ast.walk(ast.parse(p.read_text(encoding="utf-8")))
                 if isinstance(n, ast.Constant) and isinstance(n.value, str)]
     for phrase in ("暂无回测结果", "暂无信号记录", "暂无全市场扫描结果"):
         hits = [s for s in literals if phrase in s]

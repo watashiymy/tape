@@ -8,20 +8,23 @@ import pytest
 import streamlit as st
 from streamlit.testing.v1 import AppTest
 
-from tests.conftest import copy_app, goto_page, stub_navigation
+from tests.conftest import (APP_FILES, app_module, copy_app, goto_page,
+                            stub_navigation)
 
 # 必须从 __file__ 推导仓库根：Path("app/dashboard.py") 依赖 cwd，
 # 从任何非仓库根目录跑 pytest（IDE、CI 的绝对路径调用）整个文件全挂。
 DASHBOARD = Path(__file__).resolve().parent.parent / "app" / "dashboard.py"
 
 
-def test_dashboard_syntax_ok():
-    """streamlit 脚本无法直接 import 测试（顶层执行 UI 代码），至少保证语法正确。"""
-    src = DASHBOARD.read_text(encoding="utf-8")
-    ast.parse(src)
+@pytest.mark.parametrize("path", APP_FILES, ids=[p.name for p in APP_FILES])
+def test_dashboard_syntax_ok(path):
+    """streamlit 脚本无法直接 import 测试（顶层执行 UI 代码），至少保证语法正确。
+    自 v0.2.2 M3 起面板拆成多个文件（§4），每个都要过这一关。"""
+    ast.parse(path.read_text(encoding="utf-8"))
 
 
-def test_no_statement_is_wrapped_by_streamlit_magic():
+@pytest.mark.parametrize("path", APP_FILES, ids=[p.name for p in APP_FILES])
+def test_no_statement_is_wrapped_by_streamlit_magic(path):
     """streamlit 的 magic 会把函数体里**裸的表达式语句**包进
     __streamlitmagic__.transparent_write()（= st.write）。它只豁免 ast.Call /
     docstring / yield / await，裸三元 ast.IfExp 不在名单里：
@@ -29,10 +32,13 @@ def test_no_statement_is_wrapped_by_streamlit_magic():
     于是 st.dataframe() 返回的 DeltaGenerator 被 st.write 走对象内省分支，
     把约 90 行 Streamlit API 方法表糊在信号表下面；走 else 分支那天则渲染出一个 `None`。
     只在 `streamlit run` 下发作，普通 import 察觉不到，所以这里直接跑它的 AST 改写。
+
+    magic 只改写**主脚本**，不改写 import 进来的模块——但页面代码搬进 pages_*.py
+    之前就是主脚本的一部分，随时可能搬回来/被复制回去，所以整个 app/ 一起守。
     """
     from streamlit.runtime.scriptrunner import magic
 
-    tree = magic.add_magic(DASHBOARD.read_text(encoding="utf-8"), str(DASHBOARD))
+    tree = magic.add_magic(path.read_text(encoding="utf-8"), str(path))
     wrapped = [
         f"L{n.lineno}: {ast.unparse(n)}"
         for n in ast.walk(tree)
@@ -302,10 +308,50 @@ def test_list_runs_puts_newest_first_regardless_of_strategy_name(tmp_path, monke
                  "ma_cross_20200101_000000"):
         _complete_run(out, name, {})   # 必须造完整目录：半截目录会被 list_runs 排除
 
-    mod, _ = _load_dashboard(tmp_path, monkeypatch, "今日信号")  # 信号页不读 run 目录
+    _load_dashboard(tmp_path, monkeypatch, "今日信号")  # 信号页不读 run 目录
+    # list_runs 自 v0.2.2 M3 起在 app/ui.py（共享件；回测报告页与 K 线页都用它）。
+    # 仍取 dashboard.py exec 之后的那份：路径由它调 ui.bind(ROOT) 钉到 tmp_path。
+    mod = app_module("ui")
 
     assert [p.name for p in mod.list_runs()] == [
         "donchian_20260817_123313",      # 最新
         "ma_cross_20260817_121152",
         "ma_cross_20200101_000000",      # 最旧
     ]
+
+
+# ================================================================ 拆分之后的路径纪律
+# （v0.2.2 M3 §4：dashboard.py 只做装配，共享件在 app/ui.py，页面在 app/pages_*.py）
+
+def test_shared_paths_follow_the_dashboard_that_loaded_them(tmp_path, monkeypatch):
+    """app/ui.py 的 ROOT/OUTPUT 必须跟着**当前这份** dashboard.py 走。
+
+    sys.modules 是进程级的：第二次 exec 面板时 `import ui` 拿回的是第一次那个模块
+    对象，它的 __file__ 指向上一个 tmp 目录。少了 dashboard.py 里每轮的
+    `ui.bind(ROOT)`，第二个测试就会去读第一个测试的产物目录，而断言照样"通过"
+    ——本项目最忌讳的那类静默失败。这条测试就是那个陷阱的守卫。
+    """
+    roots = [tmp_path / "one", tmp_path / "two"]
+    seen = []
+    for i, root in enumerate(roots):
+        (root / "output").mkdir(parents=True)
+        stub_navigation(monkeypatch, "使用说明")
+        spec = importlib.util.spec_from_file_location(f"dashboard_bind_{i}",
+                                                     copy_app(root))
+        spec.loader.exec_module(importlib.util.module_from_spec(spec))
+        ui = app_module("ui")
+        seen.append((ui.ROOT, ui.OUTPUT, ui.RUNS_DIR, ui.CONFIG_PATH, ui.CACHE_DIR))
+
+    assert seen == [(r, r / "output", r / "output" / "runs",
+                     r / "config" / "settings.yaml", r / "data" / "cache")
+                    for r in roots]
+
+
+def test_no_app_module_copies_the_shared_paths_at_import_time():
+    """`from ui import OUTPUT` 会在 import 那一刻把路径**绑死**，之后 ui.bind()
+    再也改不到它。一律写成 `ui.OUTPUT`（调用时才取属性）——理由同上一条。"""
+    hits = [f"{p.name}:{i}"
+            for p in APP_FILES
+            for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1)
+            if line.startswith("from ui import")]
+    assert hits == [], f"这些地方把 ui 的路径常量在 import 时绑死了: {hits}"

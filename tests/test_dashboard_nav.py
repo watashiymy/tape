@@ -20,7 +20,8 @@ import pytest
 import streamlit as st
 from streamlit.testing.v1 import AppTest
 
-from tests.conftest import PAGE_URL_PATHS, copy_app, goto_page, stub_navigation
+from tests.conftest import (PAGE_URL_PATHS, app_module, copy_app, goto_page,
+                            stub_navigation)
 
 ROOT = Path(__file__).resolve().parent.parent
 DASHBOARD = ROOT / "app" / "dashboard.py"
@@ -33,11 +34,12 @@ _SPEC.loader.exec_module(theme)
 
 # 设计文档 §2.2 的页表：顺序、图标、URL 路径。
 # 「任务控制台」从末位提到**第二位**——它是最常用的操作入口。
-# 「信号池」是 M3 的活（那时才有内容），本里程碑不放占位页。
+# 「信号池」自 M3 起有内容（§3.4）：紧跟「今日信号」——看到信号 → 加进池子。
 EXPECTED_PAGES = [
     ("使用说明", ":material/menu_book:", "guide"),
     ("任务控制台", ":material/play_circle:", "console"),
     ("今日信号", ":material/notifications:", "signals"),
+    ("信号池", ":material/list:", "universe"),
     ("回测报告", ":material/assessment:", "backtest"),
     ("个股K线", ":material/candlestick_chart:", "kline"),
 ]
@@ -240,9 +242,10 @@ def test_navigation_uses_the_native_api_not_a_radio():
 
 
 def test_page_intro_covers_every_page(tmp_path, monkeypatch):
-    """每页页头那句话来自 PAGE_INTRO，键漏了就是 KeyError 崩页。"""
-    mod, pages = _declared_pages(tmp_path, monkeypatch)
-    assert set(mod.PAGE_INTRO) == {p.title for p in pages}
+    """每页页头那句话来自 PAGE_INTRO，键漏了就是 KeyError 崩页。
+    自 v0.2.2 M3 起它与页头一起住在共享件 app/ui.py（页面模块都要用）。"""
+    _, pages = _declared_pages(tmp_path, monkeypatch)
+    assert set(app_module("ui").PAGE_INTRO) == {p.title for p in pages}
 
 
 def test_the_sidebar_has_no_radio_widget_left(tmp_path):
@@ -262,7 +265,7 @@ def test_the_guide_is_the_landing_page(tmp_path):
 
 @pytest.mark.parametrize("title", [p[0] for p in EXPECTED_PAGES])
 def test_every_page_renders_without_exception(tmp_path, title):
-    """五页 × 空 output/：导航改版之后任何一页都不得抛异常。"""
+    """六页 × 空 output/：导航改版之后任何一页都不得抛异常。"""
     at = goto_page(AppTest.from_file(str(copy_app(tmp_path)), default_timeout=30).run(),
                    title)
     assert not at.exception, f"页面 {title} 抛异常: {at.exception}"

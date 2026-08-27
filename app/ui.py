@@ -1,0 +1,250 @@
+"""面板的共享工具（v0.2.2 §4 拆分）：页头、指标网格、数据表、控制条与路径。
+
+**为什么这些不留在 dashboard.py**：设计 §4 要求 dashboard.py 只做导航装配
+（六页 × st.Page + 侧栏），页面函数拆到 app/pages_*.py。而页面函数要用页头、
+表格渲染这些共享件——若共享件仍留在 dashboard.py，页面模块就得 `import dashboard`，
+那会把主脚本**再执行一遍**（streamlit 下主脚本是 __main__，`import dashboard`
+会得到另一个模块对象）：注入两次样式、装配两次导航。所以共享件下沉到本模块，
+dashboard.py 与 pages_*.py 都只依赖它，单向、无环。
+
+**路径为什么要 bind()**：ROOT 从 __file__ 推出来，本模块在生产里只有一份，
+按 __file__ 推是对的。但测试会把整个 app/ 复制到 tmp_path 再跑（conftest.copy_app），
+而 sys.modules 是进程级的：第二个测试 `import ui` 拿到的是**第一个测试**加载的模块
+对象，它的 __file__ 指向上一个 tmp 目录。那样第二个测试会去读第一个测试的产物目录，
+断言还照样"通过"——正是本项目最忌讳的静默失败。dashboard.py 每轮都调一次
+`ui.bind(ROOT)`（主脚本每次 rerun 都重新 exec，ROOT 一定是当前那份），
+把路径重新钉一遍。
+"""
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import pandas as pd
+import streamlit as st
+
+import guide
+import theme
+from quant.report import fmt
+from quant.runner import jobs, process, view
+
+# 生产里的默认值（app/ui.py 的上一级就是仓库根）。测试会用 bind() 覆盖。
+ROOT = Path(__file__).resolve().parent.parent
+OUTPUT = ROOT / "output"
+RUNS_DIR = OUTPUT / "runs"
+CONFIG_PATH = ROOT / "config" / "settings.yaml"
+CACHE_DIR = ROOT / "data" / "cache"
+
+
+def bind(root: Path) -> None:
+    """把全部路径钉到 root（见模块 docstring 里"为什么要 bind"）。"""
+    global ROOT, OUTPUT, RUNS_DIR, CONFIG_PATH, CACHE_DIR
+    ROOT = root
+    OUTPUT = root / "output"
+    RUNS_DIR = OUTPUT / "runs"
+    CONFIG_PATH = root / "config" / "settings.yaml"
+    CACHE_DIR = root / "data" / "cache"
+
+
+AUTO_REFRESH_S = "2s"     # 运行中卡片的局部刷新间隔（空闲时不设，避免面板空转）
+LOG_TAIL_LINES = 30
+LOG_BOX_HEIGHT = 220      # 日志区固定高度滚动（§2.4）：几十行日志不许把版面顶飞
+# 标的名称取自最近这么多份扫描 CSV。名称几乎不变，30 份够用，同时把每次渲染的
+# 文件读取量兜住（一天一份，长期跑下来 output/scan/ 会攒到几百份）。
+NAME_LOOKBACK_FILES = 30
+
+# 每页顶部那句话（§2.4 通用页头）。只讲"这页给你看什么、什么时候看"，
+# 数字必须与实测一致（baostock 约 17:30 后才有当日数据 —— README/spec §11）。
+# 键就是页名（page_head 按页名取值），顺序与 dashboard.py 的 PAGES 一致；
+# 少一页会让那一页的页头 KeyError 崩页（tests/test_dashboard_nav.py 钉住两边一致）。
+PAGE_INTRO = {
+    "使用说明": guide.PAGE_INTRO,
+    "任务控制台": "在本机启动三个任务并盯进度、日志与结果；"
+             "同时只允许一个任务（baostock 单会话）。",
+    "今日信号": "固定池的每日买卖信号，页尾是全市场扫描当日新 BUY；"
+            "收盘后 17:30 之后跑才有当日数据。",
+    "信号池": "增删「每日信号」跟踪的固定池；改动直接写进 config/settings.yaml，"
+           "命令行运行同样生效。",
+    "回测报告": "历史检验的结果：绩效指标、净值报告与逐笔成交，读自 output/ 里已完成的回测。",
+    "个股K线": "单只标的的日线走势，叠加本次回测在它身上的买卖点。",
+}
+
+RUN_STAMP = re.compile(r"_(\d{8}_\d{6})$")   # run_backtest.py 的 {策略}_{YYYYMMDD}_{HHMMSS}
+
+# 一次可展示的回测最少要有这三件；缺任何一件都是被 Ctrl-C 打断留下的半截目录。
+# run_backtest.py 已把 metrics.json 挪到最后写作为完成标记，但老目录仍可能残缺。
+_REQUIRED_FILES = ("metrics.json", "report.html", "trades.csv")
+
+SCAN_COLOR_COLUMNS = ("pct_chg",)   # 扫描表里唯一有方向的列（红涨绿跌）
+
+CONSOLE_HINT = ("进度、实时日志与完整结果见侧边栏「任务控制台」页；"
+                "这里按默认参数运行（要指定 --limit / --date / 策略请去控制台）。")
+
+
+def page_head(page: str) -> None:
+    """通用页头（§2.4）：页名衬线大字 + 一句话说明 + 右侧全局任务状态 pill。
+
+    这里**不**报 st.error：状态文件损坏时下面的控制条/卡片会报，页头再喊一遍只是噪声；
+    但 pill 必须如实说"未知"，不能退回"空闲"（那是猜的，而且正是 fail-safe 要挡的误导）。
+    """
+    try:
+        text, kind = view.busy_pill(process.any_running(RUNS_DIR))
+    except RuntimeError:
+        text, kind = view.UNKNOWN_TEXT, view.PILL_IDLE
+    st.html(theme.page_head(page, PAGE_INTRO[page], theme.pill(text, kind)))
+
+
+def metric_grid(metrics: dict, per_row: int = 4) -> None:
+    """指标卡网格。默认 2 行 × 4 列（§2.4）；控制台卡片只有三分之一宽，传 per_row=2。
+
+    老写法 `st.columns(4)` 配 `cols[i % 4]` 是**一行 4 列、每列纵向摞两张**：
+    右半边版面空着，两排数字还错位。这里按行现开列。
+    """
+    items = list(fmt.METRIC_LABELS.items())
+    for start in range(0, len(items), per_row):
+        row = items[start:start + per_row]
+        for col, (key, label) in zip(st.columns(per_row), row):
+            value = metrics.get(key)
+            col.html(theme.metric(label, fmt.fmt_metric(key, value),
+                                  fmt.metric_color(key, value)))
+
+
+def data_table(df: pd.DataFrame, config: dict, empty_text: str, *,
+               hint: str = "", color_columns: tuple[str, ...] = ()) -> None:
+    """信号/扫描/交易表的统一渲染口。
+
+    `hint` 是表格上方那行灰字（§3.2 就地帮助），只解释关键列——逐列说明在
+    「使用说明」页里。**表格为空时不出**：对着一张空表解释列只是噪声，
+    而且会把"当日无新信号"这句真正要看的话往下挤。
+
+    `color_columns` 走 pandas Styler：`column_config` 里没有条件着色能力
+    （NumberColumn 无 color 参数），红绿只能这么给；而 column_config 的格式串
+    优先级高于 Styler，所以千分位、百分号不会被顶掉。
+    必须写成 if/return 语句：裸三元会被 streamlit magic 整条包进 st.write。
+    """
+    if not len(df):
+        st.write(empty_text)
+        return
+    if hint:
+        st.caption(hint)
+    data = fmt.direction_styler(df, color_columns) if color_columns else df
+    st.dataframe(data, width="stretch", column_config=config, hide_index=True)
+
+
+def symbol_names() -> dict[str, str]:
+    """symbol → 名称。唯一的离线来源是扫描 CSV，而扫描只记录**出信号**的标的，
+    所以多数标的（含 universe 里那十只蓝筹）查不到名字——缺名是常态，不是异常。
+
+    坏掉的扫描文件一律跳过：K 线页不该因为一份半截 CSV 就打不开。
+    """
+    scan_dir = OUTPUT / "scan"
+    files = sorted(scan_dir.glob("*.csv"), reverse=True) if scan_dir.exists() else []
+    names: dict[str, str] = {}
+    for path in files[:NAME_LOOKBACK_FILES]:   # 新的排前面，先到者胜（改过名的取最近）
+        try:
+            df = pd.read_csv(path, dtype={"symbol": str})
+        except (ValueError, OSError):
+            continue
+        if "symbol" not in df.columns or "name" not in df.columns:
+            continue
+        for sym, name in zip(df["symbol"], df["name"]):
+            names.setdefault(str(sym), name)
+    return names
+
+
+def _run_key(p: Path) -> tuple[str, str]:
+    """按目录名尾部的时间戳排序。直接 sorted(paths, reverse=True) 比的是整条路径字符串，
+    策略名会压过时间戳（"ma_cross_" > "donchian_"），默认选中的就不是最新那次回测。
+    没有时间戳的目录归到最后（reverse=True 下空串最小）。"""
+    m = RUN_STAMP.search(p.name)
+    return (m.group(1) if m else "", p.name)
+
+
+def list_runs() -> list[Path]:
+    if not OUTPUT.exists():
+        return []
+    return sorted((p for p in OUTPUT.iterdir()
+                   if p.is_dir() and all((p / f).exists() for f in _REQUIRED_FILES)),
+                  key=_run_key, reverse=True)
+
+
+def resolve(path_str: str) -> Path:
+    """脚本打进日志的产物路径是相对仓库根的（"output/scan/2026-08-24.csv"）。
+    面板的 cwd 未必是仓库根，一律按 ROOT 兜底，否则完成后的结果区永远是"读取失败"。"""
+    p = Path(path_str)
+    return p if p.is_absolute() else ROOT / p
+
+
+# ---------------------------------------------------------------- 任务启停（v0.2.0 §4.1）
+# 三个落点集中在这里：控制条（本模块）与控制台卡片（app/pages_console.py）共用。
+
+def start_job(job_name: str, params: dict) -> None:
+    """开始/重跑唯一的落点：argv 一律由 build_argv 现造（列表 + shell=False）。
+    start() 自己还会再查一次互斥——按钮禁用只是 UI 层，抢跑要在 runner 层挡死。"""
+    try:
+        argv = jobs.build_argv(job_name, params)
+        process.start(job_name, argv, RUNS_DIR)
+    except (ValueError, RuntimeError, OSError) as e:
+        # RuntimeError 是抢跑（start() 的互斥）抛的，漏接就是整页 traceback 而不是这句提示。
+        st.error(f"启动失败: {e}")
+        return
+    # 整页重跑：另外两张卡片的"开始"要被互斥禁用、三张卡片要切到 2 秒轮询，都在 fragment 之外。
+    # AppTest 只能证明"请求发出去了"（它不模拟 fragment 局部重跑），真效果靠人工验收。
+    st.rerun()
+
+
+def stop_job(state: process.RunState) -> None:
+    """停止唯一的落点。信号一律由 process.stop 发（SIGTERM 进程组 → 10s → SIGKILL），
+    面板自己绝不碰 os.kill。"""
+    process.stop(state, RUNS_DIR)
+    st.rerun()   # 同 start_job：解禁另外两个"开始"并摘掉轮询
+
+
+def rerun_job(job_name: str, state: process.RunState) -> None:
+    """沿用上次 argv 重跑。状态文件是手工改得动的普通 JSON，所以先 parse_argv
+    反解、再由 start_job 重新 build_argv，让它整个过一遍白名单闸门。"""
+    try:
+        params = jobs.parse_argv(job_name, state.argv)
+    except ValueError as e:
+        st.error(f"无法重跑: {e}")
+        return
+    start_job(job_name, params)
+
+
+def control_bar(*job_names: str) -> None:
+    """既有三页顶部的精简控制条（设计 §4.2）：当前状态 + 开始/停止 + 去控制台看详情。
+
+    只放这三样：进度条、实时日志、结果全在控制台页，这条越薄越好。
+    必须排在各页只读逻辑的**最前面**：三页在无产物时都会 st.info 之后早退，
+    控制条排在早退后面，恰好在"最需要点开始"的那一刻看不见。
+    每页只给这一页看得见产物的任务（回测页不出扫描按钮：误点一下就是 0.5-2 小时）。
+    """
+    try:
+        busy = process.any_running(RUNS_DIR)
+        states = {name: process.read_state(name, RUNS_DIR) for name in job_names}
+    except RuntimeError as e:
+        # 与控制台页同口径：互斥状态不可知就一个"开始"都不给（fail-safe），
+        # 否则真有扫描在跑也照样能点，两个 baostock 会话互踢下线。
+        # 只读内容照常渲染——一个坏了的 runs/*.json 不该把回测报告一起藏起来。
+        st.error(str(e))
+        st.divider()
+        return
+    notices: list[str] = []
+    for name in job_names:
+        job = jobs.JOBS[name]
+        state = states[name]
+        running = state is not None and state.status == process.RUNNING
+        disabled, notice = view.start_button_state(busy, name)
+        head, start_col, stop_col = st.columns([6, 1, 1], vertical_alignment="center")
+        head.html(theme.section(job.label, theme.pill(*view.status_pill(state))))
+        if start_col.button("▶ 开始", key=f"bar_start_{name}", disabled=disabled):
+            start_job(name, {})           # 精简条无参数控件：一律默认参数
+        if stop_col.button("⏹ 停止", key=f"bar_stop_{name}", disabled=not running):
+            stop_job(state)
+        if notice:
+            notices.append(notice)        # 点名是谁在跑，否则灰按钮无从解释
+    # 互斥是全局的，两条控制条拿到的是同一句提示——去重后只说一次，别刷屏
+    for text in dict.fromkeys(notices):
+        st.caption(text)
+    st.caption(CONSOLE_HINT)
+    st.divider()

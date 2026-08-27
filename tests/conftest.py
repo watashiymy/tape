@@ -1,14 +1,21 @@
+import json
 import shutil
+import sys
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+from streamlit.proto.WidgetStates_pb2 import WidgetState
 from streamlit.testing.v1 import AppTest
 from streamlit.util import calc_hash
 
 REQUIRED = ["open", "high", "low", "close", "volume", "amount"]
 
 APP_DIR = Path(__file__).resolve().parent.parent / "app"
+# 面板自 v0.2.2 M3 起拆成"装配 + 共享件 + 每页一个模块"（设计 §4）。
+# 源码级断言（废弃 API、st.code 的 height、magic 裸三元、写死文案）必须扫**全部**
+# 这些文件：只扫 dashboard.py 的话，页面代码搬走之后那些断言全部变成空跑。
+APP_FILES = sorted(APP_DIR.glob("*.py"))
 
 
 def copy_app(tmp_path: Path) -> Path:
@@ -38,6 +45,7 @@ PAGE_URL_PATHS = {
     "使用说明": "guide",
     "任务控制台": "console",
     "今日信号": "signals",
+    "信号池": "universe",
     "回测报告": "backtest",
     "个股K线": "kline",
 }
@@ -92,6 +100,40 @@ def stub_navigation(monkeypatch, title: str) -> list[FakePage]:
     monkeypatch.setattr(st, "Page", _page)
     monkeypatch.setattr(st, "navigation", _navigation)
     return pages
+
+
+def app_module(name: str):
+    """取 bare 模式下 dashboard.py 连带 import 进来的某个 app 模块（如 "ui"）。
+
+    必须**先** exec 过 dashboard.py（stub_navigation + importlib）：面板自 v0.2.2 M3
+    起把页面拆到 app/pages_*.py、共享件拆到 app/ui.py，而路径（ROOT/OUTPUT/RUNS_DIR）
+    由 dashboard.py 每轮调 `ui.bind(ROOT)` 钉住——绕过 dashboard.py 直接 import ui
+    会拿到上一个测试留在 sys.modules 里的那份（它的 __file__ 指向别的 tmp 目录），
+    于是断言悄悄读错目录。理由详见 app/ui.py 的模块 docstring。
+    """
+    mod = sys.modules.get(name)
+    assert mod is not None, f"app 模块 {name!r} 还没被加载：先 exec 一遍 dashboard.py"
+    return mod
+
+
+def click_row_button(at: AppTest, column: str, row: int, label: str,
+                     *, dataframe: int = 0) -> AppTest:
+    """点表格里 `st.column_config.ButtonColumn` 的某一行按钮（v0.2.2 M3）。
+
+    AppTest 没给这种按钮公开的 `.click()`：它注册的是 `string_trigger_value` 类型的
+    widget，widget id 挂在 dataframe 元素的 `proto.button_click_widgets[列名]` 上。
+    这里照前端的格式塞一条 WidgetState（`{"row": int, "label": str}`，格式由
+    streamlit 的 ButtonClickSerde.deserialize 校验），于是 on_click 回调真的被调用
+    ——只有这样才能端到端验证"点 − 真的改了 settings.yaml"。
+    """
+    proto = at.get("dataframe")[dataframe].proto
+    assert column in proto.button_click_widgets, \
+        f"第 {dataframe} 张表没有按钮列 {column!r}：{dict(proto.button_click_widgets)}"
+    states = at._tree.get_widget_states()
+    state: WidgetState = states.widgets.add()
+    state.id = proto.button_click_widgets[column]
+    state.string_trigger_value.data = json.dumps({"row": row, "label": label})
+    return at._run(widget_state=states)
 
 
 def make_bars(rows: list[dict]) -> pd.DataFrame:

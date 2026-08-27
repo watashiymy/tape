@@ -22,7 +22,8 @@ from streamlit.testing.v1 import AppTest
 
 from quant.report import fmt
 from quant.runner import jobs
-from tests.conftest import copy_app, goto_page, stub_navigation, make_bars
+from tests.conftest import (APP_FILES, copy_app, goto_page, stub_navigation,
+                            make_bars)
 
 ROOT = Path(__file__).resolve().parent.parent
 DASHBOARD = ROOT / "app" / "dashboard.py"
@@ -335,7 +336,12 @@ def test_kline_page_still_reports_a_missing_cache_clearly(tmp_path):
 
 def test_scan_table_gets_column_config_and_direction_colors(tmp_path, monkeypatch):
     """§2.4：amount 千分位、pct_chg 百分号 + 红绿、amount_ratio_20d 进度条。
-    红绿只能走 Styler（NumberColumn 没有 color 参数），所以两样都得传下去。"""
+    红绿只能走 Styler（NumberColumn 没有 color 参数），所以两样都得传下去。
+
+    注意 tmp_path 里**没有** config/settings.yaml，所以这里走的是 v0.2.2 M3 的
+    降级路径：读不到信号池 → 扫描表不加 ＋ 列，列配置恰好只有 fmt 那一套。
+    带 ＋ 列的那套（多一个 pool.ADD_COLUMN）在 tests/test_dashboard_universe.py 里
+    验；给这个测试补一份配置的话，下面那条相等断言会（正确地）红。"""
     scan = tmp_path / "output" / "scan"
     scan.mkdir(parents=True)
     (scan / "2026-08-25.csv").write_text(
@@ -465,8 +471,13 @@ def test_stopped_run_shows_no_eta_in_any_line(tmp_path):
 
 def test_log_boxes_have_a_fixed_height(tmp_path):
     """§2.4：日志区固定高度滚动。高度不进 proto（AppTest 看不见），
-    只能在源码层钉住每个 st.code 都带 height——漏了就是几十行日志把版面顶飞。"""
-    calls = [node for node in ast.walk(ast.parse(DASHBOARD.read_text(encoding="utf-8")))
+    只能在源码层钉住每个 st.code 都带 height——漏了就是几十行日志把版面顶飞。
+
+    扫整个 app/：日志区自 v0.2.2 M3 起在 app/pages_console.py（设计 §4 的拆分），
+    只扫 dashboard.py 会得到空列表，这条断言就变成空跑。"""
+    calls = [node
+             for p in APP_FILES
+             for node in ast.walk(ast.parse(p.read_text(encoding="utf-8")))
              if isinstance(node, ast.Call)
              and getattr(node.func, "attr", "") == "code"]
     assert calls, "面板里没有 st.code 调用？日志区没了"

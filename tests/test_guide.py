@@ -60,6 +60,8 @@ def _all_text() -> str:
     parts += list(guide.PARAM_HELP.values())
     parts += list(guide.TABLE_HINTS.values())
     parts += list(guide.EMPTY_STATES.values())
+    # 信号池页那两段（v0.2.2 M3 §3.4）：底部"改动写到哪里"的说明与候选清单的代价。
+    parts += [guide.POOL_NOTE, guide.POOL_LOAD_HINT]
     parts.append(guide.PAGE_INTRO)
     return "\n".join(parts)
 
@@ -369,7 +371,8 @@ def test_refresh_tooltip_warns_it_costs_a_full_redownload():
     assert "缓存" in text and "重拉" in text, text
 
 
-TABLE_KINDS = ("trades", "skipped", "scan", "signal")
+# 五张表：三张产物表 + 每日信号 + 信号池（v0.2.2 M3 新增）
+TABLE_KINDS = ("trades", "skipped", "scan", "signal", "universe")
 
 
 @pytest.mark.parametrize("kind", TABLE_KINDS)
@@ -379,7 +382,7 @@ def test_every_table_has_a_one_line_column_hint(kind):
     assert 10 < len(hint) < 200, f"{kind} 的表格说明长度不合理: {hint!r}"
 
 
-def test_table_hints_cover_exactly_the_four_tables():
+def test_table_hints_cover_exactly_the_five_tables():
     assert set(guide.TABLE_HINTS) == set(TABLE_KINDS)
 
 
