@@ -30,7 +30,7 @@ UI_SOURCE = (ROOT / "app" / "ui.py").read_text(encoding="utf-8")
 GUIDE = "使用说明"
 # 侧栏顺序自 v0.2.2 §2.2 起：控制台提到第二位。页表本身（顺序/图标/URL）
 # 由 tests/test_dashboard_nav.py 对账，这里只借它来遍历"每页都要成立"的断言。
-PAGES = [GUIDE, "任务控制台", "今日信号", "信号池", "回测报告", "个股K线"]
+PAGES = [GUIDE, "任务控制台", "今日信号", "交易日志", "信号池", "回测报告", "个股K线"]
 
 # 先塞 sys.modules 再 exec：guide.py 用了 @dataclass，而 dataclasses 会回查
 # sys.modules[cls.__module__] 解析注解，没注册会 AttributeError。

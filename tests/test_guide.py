@@ -371,8 +371,10 @@ def test_refresh_tooltip_warns_it_costs_a_full_redownload():
     assert "缓存" in text and "重拉" in text, text
 
 
-# 五张表：三张产物表 + 每日信号 + 信号池（v0.2.2 M3 新增）
-TABLE_KINDS = ("trades", "skipped", "scan", "signal", "universe")
+# 九张表：三张回测产物表 + 每日信号 + 信号池（v0.2.2 M3）
+# + 交易日志的四张（v0.3.0 M3：日志本身 / 持仓 / 逐笔平仓 / 按来源分组）
+TABLE_KINDS = ("trades", "skipped", "scan", "signal", "universe",
+               "journal", "positions", "closings", "by_source")
 
 
 @pytest.mark.parametrize("kind", TABLE_KINDS)
@@ -382,7 +384,8 @@ def test_every_table_has_a_one_line_column_hint(kind):
     assert 10 < len(hint) < 200, f"{kind} 的表格说明长度不合理: {hint!r}"
 
 
-def test_table_hints_cover_exactly_the_five_tables():
+def test_table_hints_cover_exactly_the_known_tables():
+    """双向相等：漏写说明会漏，多写了（表删了说明没删）也会漏。"""
     assert set(guide.TABLE_HINTS) == set(TABLE_KINDS)
 
 

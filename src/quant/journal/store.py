@@ -18,7 +18,7 @@ from __future__ import annotations
 import itertools
 import os
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from datetime import date, datetime
 from pathlib import Path
 
@@ -90,8 +90,7 @@ def save_trades(df: pd.DataFrame, path: str | Path = TRADES_PATH) -> None:
     if missing or extra:
         raise ValueError(f"交易日志列不匹配，拒绝落盘：缺少 {missing}，多出 {extra}")
 
-    out = _coerce(df)
-    out[schema.DATE_COLUMN] = out[schema.DATE_COLUMN].dt.strftime("%Y-%m-%d")
+    out = serialize(df)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
@@ -126,6 +125,86 @@ def append_trade(row: Mapping, path: str | Path = TRADES_PATH, *,
     merged = pd.concat([df, pd.DataFrame([record])], ignore_index=True)
     save_trades(merged, path)
     return trade_id
+
+
+def apply_edits(trades: pd.DataFrame, edited: pd.DataFrame, *,
+                delete_ids: Iterable[str] = ()) -> pd.DataFrame:
+    """把编辑区交回来的改动与删除合进整本日志，返回**新表**（入参不动）。
+
+    这是页面「保存修改」那条路的唯一落点，三条铁律都在这里：
+
+    - **一律按 `trade_id` 定位，绝不按行号**（设计 §2.3）。编辑区显示的是**筛选后**
+      的表，行号与整本日志对不上；按行号写盘的话，用户在筛出的第 2 行改一个字，
+      改掉的是整本日志的第 2 行——而且不会报错。
+    - **认不出的主键一律拒绝**（改与删都是）。静默 append 会凭空多出一笔交易，
+      "删了但其实没删"则让用户以为那笔不算了而盈亏还在算它。这份文件不可再生，
+      两种都是没法事后判断真假的错。
+    - **行序原样保留**。日志纳入版本控制（设计 §2.1），git 历史就是审计轨迹；
+      每次保存都重排行序的话，改一个字的 diff 是整个文件，审计轨迹形同虚设。
+
+    `edited` 只需带 `trade_id` + 想覆盖的那几列（编辑区会禁用一部分列，
+    交回来的就是子集）。同一个 id 同时出现在 `edited` 与 `delete_ids` 里时删除生效
+    ——改一行又把它删掉，改动本来就没有意义。
+    """
+    out = _coerce(trades)
+    ids = list(out["trade_id"])
+
+    if not edited.empty:
+        unknown_cols = [c for c in edited.columns if c not in schema.COLUMNS]
+        if unknown_cols:
+            raise ValueError(f"未知字段 {unknown_cols}，可用字段：{list(schema.COLUMNS)}")
+        if "trade_id" not in edited.columns:
+            raise ValueError("编辑的表必须带 trade_id 列：改动只能按主键定位，不能按行号")
+
+        keys = [str(v or "").strip() for v in edited["trade_id"]]
+        if "" in keys:
+            raise ValueError("编辑的表里有空 trade_id：定位不到任何一行，拒绝写盘")
+        if len(set(keys)) != len(keys):
+            raise ValueError(f"编辑的表里 trade_id 重复：{sorted(_dups(keys))}"
+                             "——同一笔给了两套值，取哪个都是猜的")
+        missing = [k for k in keys if k not in ids]
+        if missing:
+            raise ValueError(f"日志里没有这些 trade_id：{missing}，拒绝写盘"
+                             "（凭空多出一笔交易，以后没人能判断真假）")
+
+        position = {tid: i for i, tid in enumerate(ids)}
+        for column in (c for c in edited.columns if c != "trade_id"):
+            # 必须先把整列摘成 object 再逐格写：pandas 3.0 往 float64 列里塞
+            # 用户手打的 "1200" 会当场 TypeError，而 `shares` 恰好是最常被手改的一列。
+            # 值的归一交给末尾那一次 _coerce（认不出来才响亮抛错）。
+            values = out[column].astype(object)
+            for key, value in zip(keys, edited[column]):
+                values.iat[position[key]] = value
+            out[column] = values
+
+    wanted = [str(v or "").strip() for v in delete_ids]
+    if wanted:
+        missing = [k for k in wanted if k not in ids]
+        if missing:
+            raise ValueError(f"日志里没有这些 trade_id：{missing}，拒绝删除"
+                             "（删掉了但其实没删，会让盈亏继续算那一笔）")
+        out = out[~out["trade_id"].isin(wanted)]
+
+    # 再过一遍 _coerce：编辑区交回来的值是 object（用户手打的 "1200" / "2026-08-04"），
+    # 不归一的话 shares 列会变成 object，而后续算术照样不报错。
+    return _coerce(out.reset_index(drop=True))
+
+
+def serialize(df: pd.DataFrame) -> pd.DataFrame:
+    """归一 dtype，并把 date 列变成 ISO 文本——**落盘与导出共用的那一份表**。
+
+    共用而不是各写一份：导出的 CSV 与 `journal/trades.csv` 因此逐字节同构，
+    用户误删一段记录时可以把导出的那份直接放回去。两处各写一份的话，
+    某一天只有一边改了日期写法，那条自救路径就悄悄变成假的。
+    """
+    out = _coerce(df)
+    out[schema.DATE_COLUMN] = out[schema.DATE_COLUMN].dt.strftime("%Y-%m-%d")
+    return out
+
+
+def _dups(keys: list[str]) -> set[str]:
+    seen: set[str] = set()
+    return {k for k in keys if k in seen or seen.add(k)}
 
 
 def next_trade_id(existing, now: datetime) -> str:

@@ -22,8 +22,8 @@ from streamlit.testing.v1 import AppTest
 
 from quant.report import fmt
 from quant.runner import jobs
-from tests.conftest import (APP_FILES, copy_app, goto_page, stub_navigation,
-                            make_bars)
+from tests.conftest import (APP_FILES, app_module, copy_app, goto_page,
+                            make_bars, stub_navigation)
 
 ROOT = Path(__file__).resolve().parent.parent
 DASHBOARD = ROOT / "app" / "dashboard.py"
@@ -339,16 +339,20 @@ def test_scan_table_gets_column_config_and_direction_colors(tmp_path, monkeypatc
     红绿只能走 Styler（NumberColumn 没有 color 参数），所以两样都得传下去。
 
     注意 tmp_path 里**没有** config/settings.yaml，所以这里走的是 v0.2.2 M3 的
-    降级路径：读不到信号池 → 扫描表不加 ＋ 列，列配置恰好只有 fmt 那一套。
-    带 ＋ 列的那套（多一个 pool.ADD_COLUMN）在 tests/test_dashboard_universe.py 里
-    验；给这个测试补一份配置的话，下面那条相等断言会（正确地）红。"""
+    降级路径：读不到信号池 → 扫描表不加 ＋ 列。
+    带 ＋ 列的那套（多一个 pool.ADD_COLUMN）在 tests/test_dashboard_universe.py 里验。
+
+    数据列取自 fmt（src/ 的纯函数），UI 层再叠一个「记账」动作列——它带 on_click
+    回调（切页 + 写 session state），是 UI 职责，不能下沉到 fmt。这一列不依赖信号池
+    配置，所以降级路径下也在。"""
     scan = tmp_path / "output" / "scan"
     scan.mkdir(parents=True)
     (scan / "2026-08-25.csv").write_text(
         SCAN_HEADER + "2026-08-25,000020,深华发A,ma_cross,11.74,-5.09,2.9e8,4.22\n",
         encoding="utf-8")
     (data, kwargs), = _captured_tables(tmp_path, "今日信号", monkeypatch)
-    assert set(kwargs["column_config"]) == set(fmt.scan_column_config())
+    assert set(kwargs["column_config"]) == (
+        set(fmt.scan_column_config()) | {app_module("journal_ui").RECORD_COLUMN})
     data._compute()
     assert dict(data.ctx[(0, 5)]) == {"color": fmt.DOWN}, "跌 -5.09% 应是绿的"
     assert data.data["symbol"].tolist() == ["000020"], "前导零仍不许被吃掉"
@@ -363,7 +367,9 @@ def test_signal_table_gets_the_signal_column_config(tmp_path, monkeypatch):
         "date,symbol,strategy,action,close\n2026-08-25,000333,ma_cross,buy,10.0\n",
         encoding="utf-8")
     (data, kwargs), = _captured_tables(tmp_path, "今日信号", monkeypatch)
-    assert set(kwargs["column_config"]) == set(fmt.signal_column_config())
+    # 同扫描表：数据列来自 fmt，UI 再叠「记账」动作列（v0.3.0 §5.1 的一键记账）
+    assert set(kwargs["column_config"]) == (
+        set(fmt.signal_column_config()) | {app_module("journal_ui").RECORD_COLUMN})
     assert data["symbol"].tolist() == ["000333"]
 
 

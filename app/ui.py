@@ -26,6 +26,7 @@ import streamlit as st
 import guide
 import theme
 from quant.data import symbols
+from quant.journal import store
 from quant.report import fmt
 from quant.runner import jobs, process, view
 from quant.signal import scan_meta
@@ -37,17 +38,21 @@ RUNS_DIR = OUTPUT / "runs"
 CONFIG_PATH = ROOT / "config" / "settings.yaml"
 CACHE_DIR = ROOT / "data" / "cache"
 SYMBOLS_PATH = ROOT / "data" / "symbols.parquet"
+# 交易日志（v0.3.0）。刻意不在 data/ 下：那里混着 cache/ 与 symbols.parquet
+# （都已 gitignore），而这份是**用户数据，要留住**（store.TRADES_PATH 的同一个约定）。
+JOURNAL_PATH = ROOT / store.TRADES_PATH
 
 
 def bind(root: Path) -> None:
     """把全部路径钉到 root（见模块 docstring 里"为什么要 bind"）。"""
-    global ROOT, OUTPUT, RUNS_DIR, CONFIG_PATH, CACHE_DIR, SYMBOLS_PATH
+    global ROOT, OUTPUT, RUNS_DIR, CONFIG_PATH, CACHE_DIR, SYMBOLS_PATH, JOURNAL_PATH
     ROOT = root
     OUTPUT = root / "output"
     RUNS_DIR = OUTPUT / "runs"
     CONFIG_PATH = root / "config" / "settings.yaml"
     CACHE_DIR = root / "data" / "cache"
     SYMBOLS_PATH = root / "data" / "symbols.parquet"
+    JOURNAL_PATH = root / store.TRADES_PATH
 
 
 AUTO_REFRESH_S = "2s"     # 运行中卡片的局部刷新间隔（空闲时不设，避免面板空转）
@@ -67,6 +72,8 @@ PAGE_INTRO = {
              "同时只允许一个任务（baostock 单会话）。",
     "今日信号": "固定池的每日买卖信号，页尾是全市场扫描当日新 BUY；"
             "收盘后 17:30 之后跑才有当日数据。",
+    "交易日志": "记你**真实成交**的每一笔，据此算当前持仓与已实现盈亏；"
+            "可筛选、可改删、可导出（CSV / Excel）。",
     "信号池": "增删「每日信号」跟踪的固定池；改动直接写进 config/settings.yaml，"
            "命令行运行同样生效。",
     "回测报告": "历史检验的结果：绩效指标、净值报告与逐笔成交，读自 output/ 里已完成的回测。",

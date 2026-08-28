@@ -45,6 +45,7 @@ PAGE_URL_PATHS = {
     "使用说明": "guide",
     "任务控制台": "console",
     "今日信号": "signals",
+    "交易日志": "journal",
     "信号池": "universe",
     "回测报告": "backtest",
     "个股K线": "kline",
@@ -79,22 +80,26 @@ class FakePage:
 
 
 def stub_navigation(monkeypatch, title: str) -> list[FakePage]:
-    """让 bare 模式 exec 的 dashboard.py 渲染指定页，并返回它声明的全部页面。
+    """让 bare 模式 exec 的 dashboard.py 渲染指定页，并返回**侧栏顺序**的页表。
 
-    返回的列表顺序就是侧栏顺序，元素带 title/icon/url_path/default，
-    可直接对账导航表（见 tests/test_dashboard_nav.py）。
+    元素带 title/icon/url_path/default，可直接对账导航表（见 tests/test_dashboard_nav.py）。
+
+    顺序取自传给 `st.navigation` 的列表，**不是** `st.Page` 的调用顺序——两者不等价：
+    dashboard.py 会把需要 `st.switch_page` 跳转的页（如「交易日志」）提前声明成变量
+    再插进 PAGES，于是它的构造调用排在最前，而侧栏位置在中间。v0.3.0 加交易日志时
+    这条差异让两个顺序断言假失败过一次；侧栏顺序的唯一事实来源是 st.navigation 收到的列表。
     """
     pages: list[FakePage] = []
 
     def _page(*args, **kwargs) -> FakePage:
-        pages.append(FakePage(*args, **kwargs))
-        return pages[-1]
+        return FakePage(*args, **kwargs)
 
     def _navigation(items, **_kwargs) -> FakePage:
-        picked = [p for p in items if p.title == title]
+        pages[:] = list(items)          # 就地替换：调用方拿到的是同一个列表对象
+        picked = [p for p in pages if p.title == title]
         if not picked:
             raise AssertionError(
-                f"面板里没有标题为 {title!r} 的页：{[p.title for p in items]}")
+                f"面板里没有标题为 {title!r} 的页：{[p.title for p in pages]}")
         return picked[0]
 
     monkeypatch.setattr(st, "Page", _page)
@@ -133,6 +138,36 @@ def click_row_button(at: AppTest, column: str, row: int, label: str,
     state: WidgetState = states.widgets.add()
     state.id = proto.button_click_widgets[column]
     state.string_trigger_value.data = json.dumps({"row": row, "label": label})
+    return at._run(widget_state=states)
+
+
+def edit_table(at: AppTest, edits: dict[int, dict], *, dataframe: int = 0,
+               click: str | None = None) -> AppTest:
+    """改 `st.data_editor` 里的几格（v0.3.0 M3），可顺带按下一个按钮。
+
+    AppTest 没给 data_editor 公开入口：它在元素树里就是个普通 Dataframe，只是
+    `proto.id` 非空（那就是 widget id）。这里照前端的格式塞一条 WidgetState
+    （`{"edited_rows": {行号: {列: 值}}, ...}`），于是"改一格 + 点保存 → 文件真的
+    变了"是端到端验证的，不是只验了一个纯函数。
+
+    **`click` 必须与编辑在同一次注入里**：AppTest 不认识 data_editor 这个 widget，
+    因此下一次 `run()` 不会把它的状态带过去（实测：编辑会在点按钮那一轮丢失，
+    而断言"文件没变"照样通过——一个静默失败的测试）。
+    """
+    element = at.get("dataframe")[dataframe]
+    assert element.proto.id, \
+        f"第 {dataframe} 张表不是 st.data_editor（proto.id 为空），改不动"
+    states = at._tree.get_widget_states()
+    state: WidgetState = states.widgets.add()
+    state.id = element.proto.id
+    state.string_value = json.dumps({
+        "edited_rows": {str(row): values for row, values in edits.items()},
+        "added_rows": [], "deleted_rows": [],
+    })
+    if click is not None:
+        pressed: WidgetState = states.widgets.add()
+        pressed.id = at.button(key=click).id
+        pressed.trigger_value = True
     return at._run(widget_state=states)
 
 

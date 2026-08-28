@@ -34,11 +34,13 @@ _SPEC.loader.exec_module(theme)
 
 # 设计文档 §2.2 的页表：顺序、图标、URL 路径。
 # 「任务控制台」从末位提到**第二位**——它是最常用的操作入口。
-# 「信号池」自 M3 起有内容（§3.4）：紧跟「今日信号」——看到信号 → 加进池子。
+# 「交易日志」自 v0.3.0 M3 起插在「今日信号」之后（§5）：那两张信号表里的
+# 「＋ 记一笔」直接跳到它，两页挨着才是一条路；「信号池」顺次后移一位。
 EXPECTED_PAGES = [
     ("使用说明", ":material/menu_book:", "guide"),
     ("任务控制台", ":material/play_circle:", "console"),
     ("今日信号", ":material/notifications:", "signals"),
+    ("交易日志", ":material/receipt_long:", "journal"),
     ("信号池", ":material/list:", "universe"),
     ("回测报告", ":material/assessment:", "backtest"),
     ("个股K线", ":material/candlestick_chart:", "kline"),
