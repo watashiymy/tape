@@ -13,6 +13,11 @@ baostock 约 17:30 后才有当日数据。耗时 = 固定开销 + 每票速率�
 自 v0.2.3 起清单会落盘到 data/symbols.parquet，7 天内直接复用——那 2-4 分钟的固定
 开销因此每周只付一次（`--refresh-symbols` 可强制重拉；它与回测脚本的 `--refresh`
 是两回事，后者管的是行情缓存）。这份文件同时是面板「名称」列的离线来源。
+
+v0.2.4 补上两道**与清单来源解耦**的就绪闸门（require_trading_day /
+data_not_ready_reason）：基准日不是交易日、或扫过的标的全部没更新到基准日，
+一律非零退出且不落 CSV。解耦是这次的重点——v0.2.3 之前"当日数据是否就绪"全靠
+拉清单时的空表报错兜底，清单一复用，闸门就被整条绕过了。
 """
 from __future__ import annotations
 
@@ -76,6 +81,61 @@ def resolve_expected(provider: BaostockProvider, date_arg: str | None) -> date:
     return expected
 
 
+def require_trading_day(provider: BaostockProvider, expected: date) -> None:
+    """闸门一：基准日必须真是交易日，且必须查在**长跑之前**（v0.2.4）。
+
+    `--date` 是裸的 date.fromisoformat，写个周六/春节照样解析成功。此前全靠
+    `get_all_symbols(expected)` 在空结果时抛 ValueError 兜住，但那是**清单**路径上的
+    副作用：v0.2.3 把清单落盘复用之后，缓存命中就根本不调用它，闸门被整条绕过——
+    周六也能"扫描成功"并落一份空 CSV。所以这道闸门必须与清单来源**解耦**，
+    自己去查一次日历。
+
+    位置很讲究：排在拉清单（2-4 分钟）与逐票取数（全量 0.5-2 小时）之前。
+    日期填错这种事必须在几百毫秒内知道，不是两小时后。
+
+    不带 `--date` 时这是一次冗余查询（resolve_expected 刚取过日历，取出来的必是交易日）：
+    几百毫秒换"闸门不依赖上游是怎么算出 expected 的"，值。
+    """
+    if expected not in provider.get_trade_calendar(expected, expected):
+        sys.exit(f"{expected}（周{'一二三四五六日'[expected.weekday()]}）不是交易日，"
+                 f"没有当日行情可扫；换个交易日重跑（不带 --date 会自动取最近交易日）")
+
+
+def data_not_ready_reason(expected: date, *, scanned: int, stale: int) -> str | None:
+    """闸门二：这一趟扫描的结论到底可不可信？不可信就返回原因（调用方非零退出）。
+
+    与 run_daily_signal.py 的成熟写法同一语义（那边是 `len(stale) == len(bars)`）：
+    **全部落后 = 数据源还没更新，不是"今日无新信号"**。两者的终端输出逐字相同，
+    而全量扫描要 0.5-2 小时，事后根本分不出刚才那趟有没有意义。
+
+    scanned 只数**扣掉取数失败的**：失败的票没有结论，不该进分母。否则 3000 只里
+    偶发 1 只失败，就能让 `stale == 扫描池` 这个朴素判据永远不成立。
+
+    两种"没有结论"：
+    - scanned == 0：一只都没完成判定（全部取数失败，断网/限流）；
+    - stale == scanned：完成判定的**全部**停在基准日之前 = 数据未就绪。
+    注意 stale > 0 是必要条件，扫描池为空的情形由 main 里更早、更准确的守卫处理，
+    不会掉进这里被误报成"数据未就绪"。
+    """
+    if scanned == 0:
+        return (f"全部标的取数失败，没有一只完成判定——本轮没有任何结论（不是"
+                f"「{expected} 无新信号」）。未写 CSV，见上面的失败清单")
+    if stale and stale == scanned:
+        return (f"全部 {scanned} 只标的的数据都停在 {expected} 之前：这是「数据未就绪」，"
+                f"不是「今日无新信号」（baostock 约 17:30 后才有当日数据）。"
+                f"未写 CSV，稍后再试")
+    return None
+
+
+def print_failures(failures: list[tuple[str, str]]) -> None:
+    """失败清单。两条出口都要打：就绪校验不通过时提前退出，也得让人看见怎么失败的。"""
+    if not failures:
+        return
+    print("失败清单（重试一次后仍失败）：")
+    for sym, err in failures:
+        print(f"  {sym}: {err}")
+
+
 def load_universe(provider: BaostockProvider, expected: date, *,
                   refresh: bool = False) -> pd.DataFrame:
     """全市场清单：本地那份还新鲜就直接用，否则联网拉一次并落盘。
@@ -133,15 +193,23 @@ def main() -> None:
     signal_symbols = 0
     with BaostockProvider() as provider:
         expected = resolve_expected(provider, args.date)
+        require_trading_day(provider, expected)        # 闸门一，在两段长跑之前
         try:
             universe = load_universe(provider, expected, refresh=args.refresh_symbols)
         except ValueError as e:
-            # 当日 17:30 前清单未更新 / --date 给了非交易日：提示退出（与 run_daily_signal 一致）
+            # 当日 17:30 前清单未更新：提示退出（与 run_daily_signal 一致）。
+            # 注意这条**不再**是"当日数据是否就绪"的闸门——清单缓存命中时它根本不会触发，
+            # 那件事现在由 require_trading_day + data_not_ready_reason 两道负责。
             sys.exit(str(e))
         if args.limit:
             # 截取只影响本轮扫描；清单已在 load_universe 里整份落盘（见那里的说明）
             universe = universe.head(args.limit)
         total = len(universe)
+        if total == 0:
+            # 0 只标的扫出 0 条信号是纯粹的假成功。单独一条守卫而不是并进就绪校验：
+            # 病因（清单空了）与"数据没到位"完全是两回事，报错必须说对。
+            sys.exit(f"扫描池为空（{SYMBOLS_PATH} 里 0 只标的），拒绝空跑——"
+                     f"加 --refresh-symbols 重拉清单，或删掉该文件后重跑")
         print(f"基准日 {expected}，扫描池 {total} 只，策略: {[s.name for s in strategies]}，"
               f"流动性门槛 20日均额 ≥ {scan_cfg.min_avg_amount:,.0f} 元")
         start = expected - timedelta(days=scan_cfg.history_days)
@@ -167,6 +235,16 @@ def main() -> None:
                       f"耗时 {time.monotonic() - t0:.0f}s", flush=True)
 
     signals = sort_signals(signals)
+    # 闸门二：先判这轮结论可不可信，再决定要不要打印「今日无新信号」、要不要落盘。
+    # 位置是要害——落盘必须排在闸门之后：留下的那份空 CSV 会出现在面板「今日信号」页，
+    # 与一次正常的无信号扫描看不出区别，还会覆盖掉同一天早先跑出来的真结果。
+    reason = data_not_ready_reason(expected, scanned=total - len(failures),
+                                   stale=counts["stale"])
+    if reason:
+        print_failures(failures)
+        sys.exit(f"\n{reason}（扫描 {total} 只，失败 {len(failures)} 只，"
+                 f"总耗时 {time.monotonic() - t0:.0f}s）")
+
     print(f"\n===== {expected} 全市场新 BUY 信号 =====")
     if not signals:
         print("今日无新信号")
@@ -184,10 +262,7 @@ def main() -> None:
           f" low_liquidity={counts['low_liquidity']}"
           f" no_signal={counts['no_signal']}；"
           f"失败 {len(failures)} 只；总耗时 {time.monotonic() - t0:.0f}s")
-    if failures:
-        print("失败清单（重试一次后仍失败）：")
-        for sym, err in failures:
-            print(f"  {sym}: {err}")
+    print_failures(failures)
 
     SCAN_DIR.mkdir(parents=True, exist_ok=True)
     out = SCAN_DIR / f"{expected}.csv"
