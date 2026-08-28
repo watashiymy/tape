@@ -1,16 +1,21 @@
-"""「交易日志」页（v0.3.0 §5）：录入 / 日志表 / 持仓 / 盈亏 / 导出。
+"""「记账」页（v0.3.1 §1，原「交易日志」页的录入 + 历史 + 导出那一半）。
 
-这一页与面板其余五页有一个根本差别：**它会写一份不可再生的文件**。其余页面最坏的
+v0.3.0 的「交易日志」把五块（录入/历史/持仓/盈亏/导出）堆在一屏，拆成两个子页：
+本页管**写**（录入表单 + 历史日志表 + 导出），「持仓与盈亏」页管**读**（算出来的
+持仓与盈亏）。页面函数从 app/pages_journal.py 原样搬来，**逻辑不改只挪**；
+排版按设计 §1：录入表单占一个卡片区，历史表全宽。
+
+这一页与面板其余页面有一个根本差别：**它会写一份不可再生的文件**。其余页面最坏的
 后果是显示错了，重跑一次就好；这里最坏的后果是用户真实的交易记录被改错或删错。
-所以版面上有三条纪律：
+所以版面上有三条纪律（沿自 v0.3.0 §5）：
 
 1. **算数与写盘全在 src/quant/journal/**，本文件只做布局与接线（同项目既定分层）；
    编排逻辑（控件 key、预填、校验编排、表格）在 app/journal_ui.py，那份能脱离
    Streamlit 运行时单测。
-2. **持仓与盈亏永远按整本日志算，不受筛选影响**。筛选只作用于日志表与导出——
-   按日期筛一下就看到一个不存在的持仓，是最容易让人做错决定的显示错误。
-3. **警告显眼、持续可见**（设计 §3）：一致性告警每轮重算并列在持仓上方，
-   不是记完就沉没的 toast。
+2. **卖超警告的持仓上下文按整本日志算**（_held 用整本日志的 PnlReport），
+   不受筛选影响——筛选只作用于日志表与导出。
+3. **警告显眼、持续可见**（设计 §3）：写盘/校验的结论走 journal_ui.flash，
+   警告与错误留在页面上，不是记完就沉没的 toast。
 """
 from __future__ import annotations
 
@@ -30,16 +35,15 @@ from quant.journal import export, pnl, schema, store
 # 值非法……）：那是同一个文件的同一批坏法，两处各存一份迟早只改一边，
 # 而漏掉的那种（第一次就是 yaml.YAMLError）会让整页崩在一屏 traceback 上。
 # 本页只用它降级**录入区**：成本模型拿不到就不给记账（详见下面），
-# 其余部分（日志/持仓/盈亏/导出）都不依赖配置。
+# 其余部分（日志表与导出）都不依赖配置。
 CONFIG_ERRORS = pool.CONFIG_ERRORS
 
 
-def page_journal() -> None:
-    ui.page_head("交易日志")
+def page_journal_entry() -> None:
+    ui.page_head("记账")
     journal_ui.show_flash()          # 上一轮写盘/校验留下的结论
-    with st.expander("这一页记什么、四种记录类型的含义、已知局限", expanded=False):
+    with st.expander("这一页记什么、四种记录类型的含义", expanded=False):
         st.markdown(guide.JOURNAL_KINDS)
-        st.markdown(guide.JOURNAL_LIMITS)
 
     try:
         trades = store.load_trades(ui.JOURNAL_PATH)
@@ -49,11 +53,12 @@ def page_journal() -> None:
         st.error(str(e))
         return
 
-    report = pnl.compute_pnl(trades)          # 永远按整本日志算（见模块 docstring 第 2 条）
-    _entry_section(report)
+    report = pnl.compute_pnl(trades)   # 卖超警告的上下文按整本日志算（见 _held）
+    # 录入表单收进一个卡片区（设计 §1 的排版）：与全宽的历史表拉开层次，
+    # "填的"与"看的"一眼分得开。历史表留在卡片外，照旧全宽。
+    with st.container(border=True):
+        _entry_section(report)
     _log_section(trades)
-    _positions_section(report)
-    _pnl_section(report)
 
 
 # ---------------------------------------------------------------- 录入（§5.1）
@@ -71,7 +76,7 @@ def _entry_section(report: pnl.PnlReport) -> None:
         # 而 0 元费用会让此后每一笔盈亏都偏高一点，永远不报错。
         st.error(f"读不到成本模型 `{ui.CONFIG_PATH}`（{type(e).__name__}: {e}）。"
                  "费用没法自动算，本页**暂不提供录入**（避免把 0 元费用写进日志）；"
-                 "下面的日志、持仓、盈亏与导出不依赖它，照常可用。")
+                 "下面的日志与导出不依赖它，照常可用。")
         return
 
     names = ui.symbol_names()
@@ -130,7 +135,7 @@ def _entry_section(report: pnl.PnlReport) -> None:
                  stop_plan=stop_plan, reason=reason, note=note),
             path=ui.JOURNAL_PATH, costs=costs, names=names, price_range_=span,
             position_shares=_held(report, symbol), today=today)
-        st.rerun()      # 成功要让下面的表格/持仓跟着变，失败也要让提示显示出来
+        st.rerun()      # 成功要让下面的表格跟着变，失败也要让提示显示出来
     _other_records(costs, names, today)
 
 
@@ -284,38 +289,3 @@ def _exports(filtered) -> None:
                                    mime=payload["mime"], key=payload["key"])
     with cols[2]:
         st.caption(guide.JOURNAL_EXPORT_HINT)
-
-
-# ---------------------------------------------------------------- 持仓与盈亏（§4.2）
-
-def _positions_section(report: pnl.PnlReport) -> None:
-    st.html(theme.section("当前持仓"))
-    # 告警排在表格**之前**：设计 §3 要求"错误必须显眼、持续可见"，
-    # 排在表后就会被一屏数字压下去。同一句话去重后只说一次，别刷屏。
-    for message in dict.fromkeys(i.message for i in report.inconsistencies):
-        st.warning(message)
-    ui.data_table(journal_ui.positions_table(report.positions, ui.CACHE_DIR),
-                  journal_ui.positions_columns(),
-                  "当前没有持仓（还没记过买入，或者都已经卖光了）。",
-                  hint=guide.TABLE_HINTS["positions"])
-
-
-def _pnl_section(report: pnl.PnlReport) -> None:
-    st.html(theme.section("已实现盈亏"))
-    metrics = journal_ui.summary_metrics(report.summary)
-    for start in range(0, len(metrics), 4):
-        for col, (label, text, color) in zip(st.columns(4), metrics[start:start + 4]):
-            col.html(theme.metric(label, text, color))
-    st.caption(guide.JOURNAL_PNL_HINT)
-
-    st.html(theme.section("按来源对比：照信号做的 vs 自己拍的"))
-    ui.data_table(journal_ui.by_source_table(report.by_source),
-                  journal_ui.by_source_columns(),
-                  "还没有已平仓的交易，暂时无从对比。",
-                  hint=guide.TABLE_HINTS["by_source"])
-
-    st.html(theme.section("逐笔平仓明细"))
-    ui.data_table(journal_ui.matches_table(report.matches),
-                  journal_ui.matches_columns(),
-                  "还没有已平仓的交易。", hint=guide.TABLE_HINTS["closings"],
-                  color_columns=("盈亏",))

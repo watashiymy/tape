@@ -32,19 +32,32 @@ _SPEC = importlib.util.spec_from_file_location("qd_theme_nav", ROOT / "app" / "t
 theme = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(theme)
 
-# 设计文档 §2.2 的页表：顺序、图标、URL 路径。
-# 「任务控制台」从末位提到**第二位**——它是最常用的操作入口。
-# 「交易日志」自 v0.3.0 M3 起插在「今日信号」之后（§5）：那两张信号表里的
-# 「＋ 记一笔」直接跳到它，两页挨着才是一条路；「信号池」顺次后移一位。
-EXPECTED_PAGES = [
-    ("使用说明", ":material/menu_book:", "guide"),
-    ("任务控制台", ":material/play_circle:", "console"),
-    ("今日信号", ":material/notifications:", "signals"),
-    ("交易日志", ":material/receipt_long:", "journal"),
-    ("信号池", ":material/list:", "universe"),
-    ("回测报告", ":material/assessment:", "backtest"),
-    ("个股K线", ":material/candlestick_chart:", "kline"),
-]
+# v0.3.1 M1（设计 §1）的页表：三组八页。「交易日志」拆成「记账」与「持仓与盈亏」，
+# 侧栏改用 st.navigation 的 Mapping 分组形态。
+# - 主组用空字符串键 ""：**实测**（streamlit 1.61.1，真浏览器截图）它渲染为
+#   无标题组——使用说明/任务控制台/今日信号顶格显示、没有组头占位；
+#   命名组「交易日志」「研究」各带组头。所以设计里"不行则三组都起名"的
+#   备选方案不必启用。
+# - 「记账」沿用老的 journal 路径（一键记账跳的就是它，老书签也不断）；
+#   「持仓与盈亏」用新的 positions。
+# - 「任务控制台」仍第二位；「使用说明」仍默认落地页。
+EXPECTED_GROUPS = {
+    "": [
+        ("使用说明", ":material/menu_book:", "guide"),
+        ("任务控制台", ":material/play_circle:", "console"),
+        ("今日信号", ":material/notifications:", "signals"),
+    ],
+    "交易日志": [
+        ("记账", ":material/edit_note:", "journal"),
+        ("持仓与盈亏", ":material/account_balance_wallet:", "positions"),
+    ],
+    "研究": [
+        ("信号池", ":material/list:", "universe"),
+        ("回测报告", ":material/assessment:", "backtest"),
+        ("个股K线", ":material/candlestick_chart:", "kline"),
+    ],
+}
+EXPECTED_PAGES = [page for group in EXPECTED_GROUPS.values() for page in group]
 
 
 # ================================================================ §1.2 Cmd+C 热键修复
@@ -202,10 +215,45 @@ def _declared_pages(tmp_path, monkeypatch, title: str = "使用说明"):
 
 
 def test_pages_are_declared_in_the_designed_order_with_icons(tmp_path, monkeypatch):
-    """§2.2 的页表：顺序 + 图标 + URL 路径，一项都不许漂。"""
+    """页表（v0.3.1 §1）：扁平顺序 + 图标 + URL 路径，一项都不许漂。"""
     _, pages = _declared_pages(tmp_path, monkeypatch)
     actual = [(p.title, p.icon, p.url_path) for p in pages]
     assert actual == EXPECTED_PAGES
+
+
+def test_navigation_groups_match_the_design(tmp_path, monkeypatch):
+    """v0.3.1 §1 的分组结构：组名与组内顺序都要对上。
+
+    主组的键必须是 ""（实测渲染为无标题组，见 EXPECTED_GROUPS 上的注释）；
+    「交易日志」组恰好两个子页且「记账」在前——侧栏里"记 → 看"的顺序
+    就是使用顺序。dict 的插入序就是侧栏组序，所以整个 Mapping 一次对账。
+    """
+    _, pages = _declared_pages(tmp_path, monkeypatch)
+    actual = {name: [(p.title, p.icon, p.url_path) for p in members]
+              for name, members in pages.groups.items()}
+    assert actual == EXPECTED_GROUPS
+
+
+def test_the_journal_group_holds_exactly_the_two_split_pages(tmp_path, monkeypatch):
+    """拆页的验收面：原「交易日志」一页消失，取而代之的是组里的两个子页。"""
+    _, pages = _declared_pages(tmp_path, monkeypatch)
+    assert [p.title for p in pages.groups["交易日志"]] == ["记账", "持仓与盈亏"]
+    assert "交易日志" not in {p.title for p in pages}, "老的整页不该还挂在侧栏上"
+
+
+def test_the_record_jump_targets_the_entry_subpage(tmp_path, monkeypatch):
+    """「＋ 记一笔」的 st.switch_page 目标钉住指向「记账」子页（v0.3.1 §1）。
+
+    dashboard.py 把跳转目标声明成 ENTRY_PAGE 再交给 journal_ui.jump_if_requested；
+    这里对账那个变量真的是「记账」那页（真跳转 + 预填由
+    tests/test_dashboard_journal.py 的 AppTest 端到端验证）。
+    """
+    mod, pages = _declared_pages(tmp_path, monkeypatch)
+    assert mod.ENTRY_PAGE.title == "记账"
+    assert mod.ENTRY_PAGE is pages.groups["交易日志"][0], \
+        "跳转目标必须就是侧栏里那一页（另造一个同名 Page 会跳到未注册的页上）"
+    assert "journal_ui.jump_if_requested(ENTRY_PAGE)" in SOURCE, \
+        "跳页钩子没接到 ENTRY_PAGE 上"
 
 
 def test_the_console_is_the_second_page(tmp_path, monkeypatch):
@@ -267,7 +315,7 @@ def test_the_guide_is_the_landing_page(tmp_path):
 
 @pytest.mark.parametrize("title", [p[0] for p in EXPECTED_PAGES])
 def test_every_page_renders_without_exception(tmp_path, title):
-    """六页 × 空 output/：导航改版之后任何一页都不得抛异常。"""
+    """八页 × 空 output/：导航分组改版之后任何一页都不得抛异常。"""
     at = goto_page(AppTest.from_file(str(copy_app(tmp_path)), default_timeout=30).run(),
                    title)
     assert not at.exception, f"页面 {title} 抛异常: {at.exception}"

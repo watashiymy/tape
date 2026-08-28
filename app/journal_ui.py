@@ -1,4 +1,5 @@
-"""「交易日志」页的编排层（v0.3.0 §5）：控件 key、预填、表格、校验与写盘的接线。
+"""交易日志两个子页（记账 / 持仓与盈亏）共享的编排层（v0.3.0 §5，v0.3.1 拆页）：
+控件 key、预填、表格、校验与写盘的接线。
 
 **分工**（真正的逻辑都在 src/，这里只是编排 + Streamlit 接线）：
 - `quant.journal.schema`：字段、默认值（费用按成本模型自动算）、校验的阻断/警告语义；
@@ -106,7 +107,7 @@ RECORD_COLUMN = "记账"
 RECORD_LABEL = "＋ 记一笔"
 SIGNAL_CLICK_KEY = "journal_signal_record_click"
 SCAN_CLICK_KEY = "journal_scan_record_click"
-RECORD_HELP = ("按这一行预填一笔交易（代码/名称/日期/方向/来源）并跳到「交易日志」页。"
+RECORD_HELP = ("按这一行预填一笔交易（代码/名称/日期/方向/来源）并跳到「记账」页。"
                "**不预填成交价**：信号那天的收盘价不是你的成交价。")
 
 # 编辑区那一列勾选框。删除刻意是两步（勾选 + 保存）：这份文件不可再生，
@@ -233,7 +234,7 @@ def on_record(rows: Sequence[Mapping], click_key: str) -> None:
 
 
 def jump_if_requested(page) -> None:
-    """有人点过「记一笔」就切到日志页。
+    """有人点过「记一笔」就切到「记账」页（v0.3.1 拆页后录入住在那里）。
 
     必须由 dashboard.py 在 `st.navigation(...)` **之后**调用：st.switch_page 只认
     已注册的页，而注册发生在 st.navigation 里。放在回调里也不行——那时脚本还没重跑。

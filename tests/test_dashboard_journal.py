@@ -35,7 +35,10 @@ from tests.conftest import (click_row_button, copy_app, edit_table, goto_page,
 
 ROOT = Path(__file__).resolve().parent.parent
 REAL_CONFIG = ROOT / "config" / "settings.yaml"
-PAGE = "交易日志"
+# v0.3.1 M1：「交易日志」拆成两个子页（设计 §1）。录入/历史/导出在「记账」，
+# 持仓/盈亏/来源在「持仓与盈亏」——下面的测试按这条分界各找各的页。
+PAGE = "记账"
+REPORT_PAGE = "持仓与盈亏"
 SIGNALS_PAGE = "今日信号"
 COSTS = load_settings(REAL_CONFIG).costs
 
@@ -138,18 +141,39 @@ def _frames(at: AppTest) -> list[pd.DataFrame]:
 
 
 # ================================================================ 三态渲染（设计 §7）
+# v0.3.1 M1：两个子页 × 空日志 / 有数据 / 有一致性告警，先保证一个组合都不崩，
+# 再对"该显示什么"逐页做针对性断言（各自的下面几条）。
 
-def test_empty_journal_renders_without_exception(tmp_path):
-    """第一次打开面板时日志是空的——这是每个新用户的第一屏，不许崩、不许假装有数据。"""
-    at = _page(_root(tmp_path))
+_STATES = {
+    "空日志": lambda root: None,
+    "有数据": lambda root: _journal(root, _buy(), _sell()),
+    "有一致性告警": lambda root: _journal(root, _buy(shares=100.0),
+                                    _sell(shares=500.0)),
+}
+
+
+@pytest.mark.parametrize("state", list(_STATES))
+@pytest.mark.parametrize("page", [PAGE, REPORT_PAGE])
+def test_each_subpage_renders_every_journal_state(tmp_path, page, state):
+    root = _root(tmp_path)
+    _STATES[state](root)
+    at = _page(root, page)
+    assert not at.exception, f"{page} × {state} 抛异常: {at.exception}"
+
+
+@pytest.mark.parametrize("page", [PAGE, REPORT_PAGE])
+def test_an_empty_journal_says_so_in_words(tmp_path, page):
+    """第一次打开面板时日志是空的——这是每个新用户的第一屏，不许假装有数据。"""
+    at = _page(_root(tmp_path), page)
     assert not at.exception, at.exception
-    assert "还没有" in _texts(at) or "暂无" in _texts(at), _texts(at)
+    assert "还没有" in _texts(at) or "还没记过" in _texts(at), _texts(at)
 
 
-def test_empty_journal_shows_no_fabricated_zero_pnl(tmp_path):
+@pytest.mark.parametrize("page", [PAGE, REPORT_PAGE])
+def test_empty_journal_shows_no_fabricated_zero_pnl(tmp_path, page):
     """空日志的已实现盈亏是"没有"，不是 0.00。
     0 会被读成"我不赚不亏"，而实情是一笔都还没记。"""
-    at = _page(_root(tmp_path))
+    at = _page(_root(tmp_path), page)
     assert not at.exception, at.exception
     text = _texts(at)
     assert "0.00" not in text, f"空日志页面上出现了编出来的 0：{text}"
@@ -159,7 +183,7 @@ def test_journal_with_data_renders_positions_and_pnl(tmp_path):
     root = _root(tmp_path)
     _journal(root, _buy(), _sell())
     _cache(root, close=76.0, day=D_SELL)
-    at = _page(root)
+    at = _page(root, REPORT_PAGE)
 
     assert not at.exception, at.exception
     text = _texts(at)
@@ -177,7 +201,7 @@ def test_realized_pnl_matches_the_hand_computed_number(tmp_path):
     """
     root = _root(tmp_path)
     _journal(root, _buy(), _sell())
-    at = _page(root)
+    at = _page(root, REPORT_PAGE)
 
     assert not at.exception, at.exception
     assert "3,425.87" in _texts(at), _texts(at)
@@ -187,7 +211,7 @@ def test_oversell_warning_is_visible_and_does_not_break_the_page(tmp_path):
     """卖超（漏记了买入）：设计 §3 要求"警告并在持仓页持续标红"，但不阻断、不崩页。"""
     root = _root(tmp_path)
     _journal(root, _buy(shares=100.0), _sell(shares=500.0))
-    at = _page(root)
+    at = _page(root, REPORT_PAGE)
 
     assert not at.exception, at.exception
     warnings = "\n".join(str(w.value) for w in at.warning)
@@ -201,10 +225,55 @@ def test_a_row_the_engine_cannot_read_is_reported_not_swallowed(tmp_path):
     path = _journal(root, _buy(), _sell())
     text = path.read_text(encoding="utf-8-sig").replace(",1000.0,71.5,", ",,,", 1)
     path.write_text("﻿" + text, encoding="utf-8")
-    at = _page(root)
+    at = _page(root, REPORT_PAGE)
 
     assert not at.exception, at.exception
     assert "跳过" in _texts(at), _texts(at)
+
+
+def test_the_report_page_tucks_the_three_tables_into_tabs(tmp_path):
+    """v0.3.1 §1 的排版验收：持仓 / 平仓明细 / 来源对比收进 st.tabs，
+    不再纵向全部铺开（原页五块堆一屏正是这次拆页要治的拥挤）。"""
+    root = _root(tmp_path)
+    _journal(root, _buy(), _sell())
+    at = _page(root, REPORT_PAGE)
+
+    assert not at.exception, at.exception
+    labels = [t.label for t in at.get("tab")]
+    assert labels == ["当前持仓", "平仓明细", "来源对比"], labels
+
+
+def _walk(node):
+    """AppTest 元素树递归展开（顶层只给容器，卡片里的控件要自己走下去）。"""
+    for child in getattr(node, "children", {}).values():
+        yield child
+        yield from _walk(child)
+
+
+def test_the_entry_page_keeps_the_form_in_a_card(tmp_path):
+    """v0.3.1 §1 的排版验收：录入表单占一个卡片区（带边框容器），
+    历史表留在卡片之外全宽铺开。
+
+    st.container(border=True) 在 1.61.1 的元素树里是 flex_container 块、
+    边框标志在 proto.flex_container.border（实测，vertical.border 恒为 False）。
+    只断言"有个带框容器"不够——还要钉住录入按钮在框内、日志编辑表在框外，
+    不然把整页包进一个框也能通过。
+    """
+    root = _root(tmp_path)
+    _journal(root, _buy())
+    at = _page(root)
+    assert not at.exception, at.exception
+    cards = [n for n in _walk(at._tree)
+             if getattr(n, "type", "") == "flex_container"
+             and n.proto.flex_container.border]
+    assert len(cards) == 1, f"录入表单应恰好一个卡片容器，实际 {len(cards)} 个"
+    inside = list(_walk(cards[0]))
+    assert any(getattr(e, "key", None) == jui.SUBMIT_KEY for e in inside), \
+        "「＋ 记这一笔」不在卡片里"
+    editors = [e for e in _walk(at._tree)
+               if getattr(e, "type", "") == "dataframe" and e.proto.id]
+    assert editors, "找不到日志编辑表"
+    assert not any(e is i for e in editors for i in inside), "历史表不该被收进卡片"
 
 
 # ================================================================ 录入（设计 §5.1）
@@ -396,6 +465,11 @@ def test_an_unreadable_config_disables_only_the_entry_form(tmp_path):
 
     assert not at.exception, at.exception
     assert not [b for b in at.button if b.key == jui.SUBMIT_KEY], "配置坏了还能录入"
+    shown = [f for f in _frames(at) if "trade_id" in getattr(f, "columns", [])]
+    assert shown, "配置坏了不该连日志表一起藏起来"
+
+    at = goto_page(at, REPORT_PAGE)
+    assert not at.exception, at.exception
     assert "3,425.87" in _texts(at), "配置坏了不该连盈亏一起藏起来"
 
 
@@ -475,13 +549,16 @@ def test_filtering_narrows_the_log_table(tmp_path):
 
 def test_filtering_does_not_change_positions_or_pnl(tmp_path):
     """筛选只作用于日志表与导出。持仓与盈亏必须反映**全部**记录——
-    按日期筛一下就看到一个不存在的持仓，是最容易让人做错决定的显示错误。"""
+    按日期筛一下就看到一个不存在的持仓，是最容易让人做错决定的显示错误。
+    拆页后筛选条件留在 session_state 里，所以要真的带着筛选切过去看一眼。"""
     root = _root(tmp_path)
     _journal(root, _buy(), _sell())
     at = _page(root)
     at.multiselect(key=jui.FILTER_KIND_KEY).set_value(["buy"])
     at = at.run()
+    assert not at.exception, at.exception
 
+    at = goto_page(at, REPORT_PAGE)
     assert not at.exception, at.exception
     assert "3,425.87" in _texts(at), "只筛出买入之后，已实现盈亏被算成了别的数"
 
@@ -781,7 +858,16 @@ def test_the_readme_states_the_known_limits(fragment):
 
 
 def test_the_page_shows_the_known_limits_too(tmp_path):
-    """局限要写在**页面上**，不只在 README 里：看数字的人不一定读过 README。"""
-    at = _page(_root(tmp_path))
+    """局限要写在**页面上**，不只在 README 里：看数字的人不一定读过 README。
+    拆页后数字在「持仓与盈亏」页，局限就得跟着数字走。"""
+    at = _page(_root(tmp_path), REPORT_PAGE)
     text = _texts(at)
     assert "浮动盈亏" in text and "缓存" in text, text
+
+
+def test_the_entry_page_still_explains_the_record_types(tmp_path):
+    """四种记录类型的解释跟着录入表单走：漏记 adjust/dividend 的后果
+    （持仓对不上、FIFO 全错且不报错）必须在记的那一刻看得到。"""
+    at = _page(_root(tmp_path))
+    text = _texts(at)
+    assert "四种记录类型" in text, text

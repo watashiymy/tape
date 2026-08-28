@@ -41,11 +41,15 @@ def copy_app(tmp_path: Path) -> Path:
 # AppTest 只有 `_page_hash` 这一个入口（公开的 switch_page 只认 pages/ 目录下的
 # **文件**，本项目是单文件多函数，用不了）。这张表是测试侧的副本，
 # test_dashboard_nav.py 有一条测试拿面板里真实的 st.Page 声明与它对账。
+#
+# v0.3.1 M1：「交易日志」拆成「记账」与「持仓与盈亏」两个子页。
+# 「记账」沿用老的 journal 路径——一键记账跳的就是它，老书签也不断。
 PAGE_URL_PATHS = {
     "使用说明": "guide",
     "任务控制台": "console",
     "今日信号": "signals",
-    "交易日志": "journal",
+    "记账": "journal",
+    "持仓与盈亏": "positions",
     "信号池": "universe",
     "回测报告": "backtest",
     "个股K线": "kline",
@@ -79,23 +83,41 @@ class FakePage:
         self.page()
 
 
-def stub_navigation(monkeypatch, title: str) -> list[FakePage]:
+class NavPages(list):
+    """stub_navigation 的返回值：**侧栏顺序**的扁平页表，外加 `.groups`。
+
+    v0.3.1 起 st.navigation 收的是 Mapping[组名, Sequence[Page]]（分组形态），
+    但既有测试大多只关心扁平顺序，所以保持"它就是个 list"；
+    要对账分组结构（组名、组内顺序）的测试读 `.groups`。
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.groups: dict[str, list[FakePage]] = {}
+
+
+def stub_navigation(monkeypatch, title: str) -> NavPages:
     """让 bare 模式 exec 的 dashboard.py 渲染指定页，并返回**侧栏顺序**的页表。
 
     元素带 title/icon/url_path/default，可直接对账导航表（见 tests/test_dashboard_nav.py）。
 
-    顺序取自传给 `st.navigation` 的列表，**不是** `st.Page` 的调用顺序——两者不等价：
-    dashboard.py 会把需要 `st.switch_page` 跳转的页（如「交易日志」）提前声明成变量
-    再插进 PAGES，于是它的构造调用排在最前，而侧栏位置在中间。v0.3.0 加交易日志时
-    这条差异让两个顺序断言假失败过一次；侧栏顺序的唯一事实来源是 st.navigation 收到的列表。
+    顺序取自传给 `st.navigation` 的实参（Mapping 按组序展开），**不是** `st.Page`
+    的调用顺序——两者不等价：dashboard.py 会把需要 `st.switch_page` 跳转的页
+    （如「记账」）提前声明成变量再插进页表，于是它的构造调用排在最前，而侧栏位置
+    在中间。v0.3.0 加交易日志时这条差异让两个顺序断言假失败过一次；
+    侧栏顺序的唯一事实来源是 st.navigation 收到的那份实参。
     """
-    pages: list[FakePage] = []
+    pages = NavPages()
 
     def _page(*args, **kwargs) -> FakePage:
         return FakePage(*args, **kwargs)
 
     def _navigation(items, **_kwargs) -> FakePage:
-        pages[:] = list(items)          # 就地替换：调用方拿到的是同一个列表对象
+        # dict 的插入序就是侧栏组序（streamlit 1.61.1 按此渲染）；
+        # 传 list 时折成单个无名组，两种形态共用同一套断言口径。
+        groups = dict(items) if isinstance(items, dict) else {"": list(items)}
+        pages.groups = {name: list(members) for name, members in groups.items()}
+        pages[:] = [p for members in pages.groups.values() for p in members]
         picked = [p for p in pages if p.title == title]
         if not picked:
             raise AssertionError(

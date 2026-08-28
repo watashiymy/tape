@@ -28,9 +28,11 @@ SOURCE = DASHBOARD.read_text(encoding="utf-8")
 UI_SOURCE = (ROOT / "app" / "ui.py").read_text(encoding="utf-8")
 
 GUIDE = "使用说明"
-# 侧栏顺序自 v0.2.2 §2.2 起：控制台提到第二位。页表本身（顺序/图标/URL）
+# 侧栏顺序自 v0.2.2 §2.2 起：控制台提到第二位。v0.3.1 M1 起「交易日志」拆成
+# 「记账」与「持仓与盈亏」两个子页（侧栏成组）。页表本身（分组/顺序/图标/URL）
 # 由 tests/test_dashboard_nav.py 对账，这里只借它来遍历"每页都要成立"的断言。
-PAGES = [GUIDE, "任务控制台", "今日信号", "交易日志", "信号池", "回测报告", "个股K线"]
+PAGES = [GUIDE, "任务控制台", "今日信号", "记账", "持仓与盈亏",
+         "信号池", "回测报告", "个股K线"]
 
 # 先塞 sys.modules 再 exec：guide.py 用了 @dataclass，而 dataclasses 会回查
 # sys.modules[cls.__module__] 解析注解，没注册会 AttributeError。
@@ -259,7 +261,7 @@ def test_page_intro_covers_every_page(tmp_path):
                  if isinstance(n, ast.Assign)
                  and any(getattr(t, "id", "") == "PAGE_INTRO" for t in n.targets))
     keys = [k.value for k in intro.value.keys]
-    assert keys == PAGES, f"PAGE_INTRO 的键必须与侧栏六页一致: {keys}"
+    assert keys == PAGES, f"PAGE_INTRO 的键必须与侧栏页表一致: {keys}"
 
 
 # ================================================================ 就地帮助：卡片 popover
