@@ -163,7 +163,7 @@ def warnings(issues) -> list[Issue]:
 
 
 def _check_date(value, *, today: date, ctx: Context) -> list[Issue]:
-    if _blank(value):
+    if is_blank(value):
         return [Issue(MISSING, DATE_COLUMN, "缺少成交日期：不知道什么时候发生的事记不下来")]
     d = parse_date(value)
     if d is None:
@@ -194,14 +194,14 @@ def _check_numbers(row: Mapping, *, kind: str, ctx: Context) -> list[Issue]:
     issues: list[Issue] = []
     for field in REQUIRED_BY_KIND[kind]:
         value = row.get(field)
-        if _blank(value):
+        if is_blank(value):
             issues.append(Issue(MISSING, field, f"{kind} 必须填写 {field}"))
             continue
-        if _num(value) is None:
+        if to_number(value) is None:
             issues.append(Issue(BAD_NUMBER, field, f"{field} 的值 {value!r} 不是数字"))
 
-    shares = _num(row.get("shares"))
-    price = _num(row.get("price"))
+    shares = to_number(row.get("shares"))
+    price = to_number(row.get("price"))
 
     if kind in ("buy", "sell"):
         if shares is not None and shares <= 0:
@@ -211,7 +211,7 @@ def _check_numbers(row: Mapping, *, kind: str, ctx: Context) -> list[Issue]:
     elif kind == "adjust" and shares is not None and shares == 0:
         issues.append(Issue(BAD_NUMBER, "shares", "股数调整为 0 没有意义（送股填正数、缩股填负数）"))
     elif kind == "dividend":
-        amount = _num(row.get("amount"))
+        amount = to_number(row.get("amount"))
         if amount is not None and amount <= 0:
             issues.append(Issue(BAD_NUMBER, "amount", f"分红到账金额必须为正，实际 {amount:g}"))
 
@@ -260,7 +260,7 @@ def apply_defaults(row: Mapping, *, costs: Costs,
     out: dict = {}
     for col in COLUMNS:
         value = row.get(col)
-        if _blank(value):
+        if is_blank(value):
             out[col] = "" if col in STR_COLUMNS else None
         else:
             out[col] = value
@@ -271,7 +271,7 @@ def apply_defaults(row: Mapping, *, costs: Costs,
     if not out["name"] and names and symbol in names:
         out["name"] = names[symbol]                # 查不到就留空：填"未知"看着像个名字
 
-    shares, price = _num(out["shares"]), _num(out["price"])
+    shares, price = to_number(out["shares"]), to_number(out["price"])
     d = parse_date(out[DATE_COLUMN])
 
     if kind in ("buy", "sell") and shares is not None and price is not None:
@@ -300,7 +300,7 @@ def parse_date(value) -> date | None:
     datetime 必须先于 date 判断——`isinstance(datetime_obj, date)` 恒为 True，
     漏判会让 datetime 一路流到比较处才炸（与 config._to_date 同一个坑）。
     """
-    if _blank(value):
+    if is_blank(value):
         return None
     if isinstance(value, datetime):
         return value.date()
@@ -313,12 +313,16 @@ def parse_date(value) -> date | None:
 
 
 def _fill(out: dict, key: str, value) -> None:
-    if _blank(out.get(key)):
+    if is_blank(out.get(key)):
         out[key] = value
 
 
-def _blank(value) -> bool:
-    """没填。空串与 NaN 都算——前者来自表单，后者来自 CSV/DataFrame。"""
+def is_blank(value) -> bool:
+    """没填。空串与 NaN 都算——前者来自表单，后者来自 CSV/DataFrame。
+
+    公开而不是私有：`pnl` 也要照同一条规则判"这行有没有记下事实"。
+    各写一份的话，某一天只有一边认得 NaN，缺股数的买入就会溜进 FIFO。
+    """
     if value is None:
         return True
     if isinstance(value, str):
@@ -331,8 +335,9 @@ def _blank(value) -> bool:
         return False
 
 
-def _num(value) -> float | None:
-    if _blank(value):
+def to_number(value) -> float | None:
+    """取数：没填返回 None，**认不出来也返回 None**（由调用方决定怎么报）。"""
+    if is_blank(value):
         return None
     try:
         return float(value)

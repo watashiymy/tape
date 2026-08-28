@@ -2,7 +2,7 @@ import pandas as pd
 import pytest
 
 from quant.backtest.portfolio import Trade
-from quant.report.metrics import compute_metrics
+from quant.report.metrics import compute_metrics, trade_stats
 
 
 def _equity(values, start="2024-01-02"):
@@ -114,3 +114,47 @@ def test_flat_equity_no_crash():
     m = compute_metrics(_equity([100, 100, 100]), trades=[])
     assert m["sharpe"] == 0.0
     assert m["max_drawdown"] == 0.0
+
+
+# ---------------------------------------------------------------- trade_stats（v0.3.0）
+# 胜率/盈亏比/平均持仓天数的口径被抽成一个纯函数，回测报告与**交易日志**共用。
+# 抽出来而不是各写一份：设计 §4.2 要求两边"并排比较"，
+# 而"平手算亏""全亏 PF=0.0 vs 无亏损 PF=None"这类边界一旦在两处各写一遍，
+# 迟早只改一边 —— 那时两张表看着都对，比出来的结论却是错的。
+
+def test_trade_stats_matches_compute_metrics():
+    t = pd.Timestamp("2024-01-05")
+    trades = [
+        Trade("A", "sell", t, 10, 100, 5, 5, pnl=100.0, holding_days=10),
+        Trade("A", "sell", t, 10, 100, 5, 5, pnl=-50.0, holding_days=20),
+    ]
+    m = compute_metrics(_equity([100, 101]), trades)
+    s = trade_stats([100.0, -50.0], [10, 20])
+    assert s == {k: m[k] for k in s}
+
+
+def test_trade_stats_skips_unclosed_entries():
+    """pnl 为 None = 这笔算不出盈亏（回测里的未平仓、日志里的无批次可配的卖出）。
+    它不能进胜率的分母，更不能被当成 0 记一笔平手。"""
+    s = trade_stats([100.0, None, -50.0], [10, None, 20])
+    assert s["n_trades"] == 2
+    assert s["win_rate"] == pytest.approx(0.5)
+    assert s["avg_holding_days"] == pytest.approx(15.0)
+
+
+def test_trade_stats_holding_days_may_be_missing():
+    s = trade_stats([100.0, -50.0], [None, None])
+    assert s["n_trades"] == 2
+    assert s["avg_holding_days"] is None
+
+
+def test_trade_stats_empty():
+    s = trade_stats([], [])
+    assert s == {"n_trades": 0, "win_rate": None,
+                 "profit_factor": None, "avg_holding_days": None}
+
+
+def test_trade_stats_rejects_misaligned_inputs():
+    """两列错位会静默把 A 的盈亏配上 B 的持仓天数 —— 响亮报错。"""
+    with pytest.raises(ValueError):
+        trade_stats([100.0, -50.0], [10])
