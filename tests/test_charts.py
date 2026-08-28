@@ -1,4 +1,5 @@
 import re
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -6,7 +7,8 @@ import pytest
 
 from quant.backtest.portfolio import Trade
 from quant.report import charts, palette
-from quant.report.charts import equity_chart, kline_chart
+from quant.report.charts import (equity_chart, journal_cum_pnl_chart, kline_chart,
+                                 position_weights_chart, source_compare_chart)
 from quant.report.metrics import compute_metrics
 from tests.conftest import make_bars
 
@@ -146,15 +148,34 @@ def test_kline_title_and_no_rangeslider():
 # 色值一律断言"取自 quant.report.palette"，不在测试里裸写十六进制：色板是单一事实
 # 来源（面板的 app/theme.py 也从它导入），裸写就等于在测试里埋第三份定义。
 
+# v0.3.1 仪表盘三图的样例输入（与 test_journal_analytics.py 的手算夹具同形）。
+_CUM_POINTS = [(date(2026, 3, 2), 1988.10), (date(2026, 4, 15), 72.05),
+               (date(2026, 5, 20), 144.05)]
+_WEIGHT_ROWS = [
+    {"symbol": "000333", "name": "美的集团", "value": 12000.0,
+     "weight": 12000.0 / 18005.0, "by_cost": False},
+    {"symbol": "600519", "name": "贵州茅台", "value": 6005.0,
+     "weight": 6005.0 / 18005.0, "by_cost": True},
+]
+_BY_SOURCE = {
+    "ma_cross": {"total_realized": 1988.10, "win_rate": 0.5},
+    "discretionary": {"total_realized": -1916.05, "win_rate": None},
+}
+
+
 def _figs() -> dict:
-    """两个图表函数各来一张。暗色是**图表基线**，不是某个函数的特性——
+    """每个图表函数各来一张。暗色是**图表基线**，不是某个函数的特性——
     只改一个函数、另一个仍白底，是这次缺陷最可能的复发形态。"""
     return {"equity": equity_chart(_eq([100.0, 110.0, 105.0]),
                                    {"HS300": _eq([200.0, 210.0, 190.0])}),
-            "kline": kline_chart(_bars(), [], "TEST")}
+            "kline": kline_chart(_bars(), [], "TEST"),
+            "journal_cum": journal_cum_pnl_chart(_CUM_POINTS),
+            "weights": position_weights_chart(_WEIGHT_ROWS),
+            "source": source_compare_chart(_BY_SOURCE)}
 
 
-@pytest.mark.parametrize("kind", ["equity", "kline"])
+@pytest.mark.parametrize("kind", ["equity", "kline", "journal_cum",
+                                  "weights", "source"])
 def test_chart_surfaces_come_from_the_palette(kind):
     """paper 用卡片底色（与面板内嵌它的容器同色），plot 用页面底色（同族、下沉一档）。
     默认模板下这两个值是 white / #E5ECF6。"""
@@ -163,7 +184,8 @@ def test_chart_surfaces_come_from_the_palette(kind):
     assert layout.plot_bgcolor == palette.BACKGROUND
 
 
-@pytest.mark.parametrize("kind", ["equity", "kline"])
+@pytest.mark.parametrize("kind", ["equity", "kline", "journal_cum",
+                                  "weights", "source"])
 def test_chart_font_is_palette_text_in_mono(kind):
     """暗底上必须显式给字色：默认模板是给浅底配的深灰（#444），暗底上几乎看不见。
     等宽字体是为了数值轴标签对齐（与面板的数字同一套字体栈）。"""
@@ -172,7 +194,8 @@ def test_chart_font_is_palette_text_in_mono(kind):
     assert layout.font.family == palette.MONO
 
 
-@pytest.mark.parametrize("kind", ["equity", "kline"])
+@pytest.mark.parametrize("kind", ["equity", "kline", "journal_cum",
+                                  "weights", "source"])
 def test_chart_grid_lines_are_the_low_contrast_hairline(kind):
     """默认模板的网格线是白色（浅底上才成立）。暗底上必须换成低对比发丝灰，
     否则一屏白格子比数据还抢眼。两个子图的四条轴都要覆盖到。"""
@@ -184,7 +207,8 @@ def test_chart_grid_lines_are_the_low_contrast_hairline(kind):
         assert ax.zerolinecolor == palette.HAIRLINE, ax
 
 
-@pytest.mark.parametrize("kind", ["equity", "kline"])
+@pytest.mark.parametrize("kind", ["equity", "kline", "journal_cum",
+                                  "weights", "source"])
 def test_chart_colorway_avoids_the_direction_colors(kind):
     """线条自动配色不许落到红/绿：那两个色在本项目里专门表示涨跌，
     一条红色的基准线就是个假信号（plotly 默认 colorway 的第 2、3 位正是红和绿）。"""
@@ -206,3 +230,112 @@ def test_charts_module_never_writes_a_bare_hex_color():
     抄一份十六进制——那正是"面板改了、图表没改"的配色漂移来源。"""
     src = Path(charts.__file__).read_text(encoding="utf-8")
     assert HEX.findall(src) == [], "charts.py 里有裸写色值，应从 palette 取"
+
+
+# ================================================================ 仪表盘三图（v0.3.1 §2）
+# 硬约束：**零类别配色**（设计 §2.5）。琥珀+灰作类别对实测过不了可辨阈值
+# （ΔE 12.7 < 15），所以身份一律由位置/轴标签/直接标注承载，条与线一律单色琥珀。
+
+def test_cum_pnl_curve_is_a_step_line_in_primary():
+    """已实现盈亏在平仓时点**跳变**，平滑连线是在编造两笔平仓之间的过程——
+    必须是阶梯线（hv：先横到下一时点再竖跳）。单序列琥珀，无图例（标题即名）。"""
+    fig = journal_cum_pnl_chart(_CUM_POINTS)
+    assert len(fig.data) == 1
+    trace = fig.data[0]
+    assert trace.line.shape == "hv"
+    assert trace.line.color == palette.PRIMARY
+    assert fig.layout.showlegend is False
+
+
+def test_cum_pnl_curve_carries_the_points_verbatim():
+    """点就是手算的累计值（test_journal_analytics 的同一组数），一个不多一个不少
+    ——多出来的插值点等于编造了不存在的平仓。"""
+    trace = journal_cum_pnl_chart(_CUM_POINTS).data[0]
+    assert [pd.Timestamp(x) for x in trace.x] == \
+        [pd.Timestamp(d) for d, _ in _CUM_POINTS]
+    assert list(trace.y) == pytest.approx([v for _, v in _CUM_POINTS])
+
+
+def test_cum_pnl_curve_draws_the_zero_baseline_in_hairline():
+    """零轴是"赚/亏"的分界，必须有一条浅灰参考线；全盈利时 plotly 的自动
+    zeroline 可能压根不在可视范围里，所以要显式画。"""
+    fig = journal_cum_pnl_chart(_CUM_POINTS)
+    zero = [s for s in fig.layout.shapes if s.y0 == 0 and s.y1 == 0]
+    assert zero and zero[0].line.color == palette.HAIRLINE
+
+
+def test_cum_pnl_chart_survives_an_empty_journal():
+    fig = journal_cum_pnl_chart([])
+    assert len(fig.data) == 0     # 页面空态显示引导文案，这里只保证不崩
+
+
+def test_weights_chart_is_horizontal_single_amber_desc():
+    """横向条 + 单一琥珀：持仓 3~10 只时条形对比精度远高于饼图扇形角度；
+    颜色不承载身份（§2.5），身份在 y 轴标签上。首行（最大持仓）在最上面。"""
+    fig = position_weights_chart(_WEIGHT_ROWS)
+    assert len(fig.data) == 1
+    bar = fig.data[0]
+    assert bar.orientation == "h"
+    assert bar.marker.color == palette.PRIMARY
+    assert fig.layout.yaxis.autorange == "reversed"
+    assert list(bar.x) == pytest.approx([12000.0, 6005.0])
+    assert list(bar.y) == ["000333 美的集团", "600519 贵州茅台"]
+    assert fig.layout.showlegend is False
+
+
+def test_weights_chart_labels_carry_percent_value_and_cost_flag():
+    """右端直接标注百分比+市值；按成本顶上的那条必须打「按成本」标——
+    不打标的话，一个没有市价的重仓会看着和有市价的一样可信。"""
+    texts = list(position_weights_chart(_WEIGHT_ROWS).data[0].text)
+    assert "66.6%" in texts[0] and "12,000" in texts[0]
+    assert "按成本" not in texts[0]
+    assert "33.4%" in texts[1] and "6,005" in texts[1] and "按成本" in texts[1]
+
+
+def test_weights_chart_survives_no_positions():
+    assert len(position_weights_chart([]).data) == 0
+
+
+def test_source_compare_bars_are_single_amber_with_axis_labels():
+    """类目（来源）由**轴标签**承载身份，条一律单色琥珀——琥珀+灰的类别对
+    实测过不了可辨阈值（设计 §2.5），干脆不用颜色分类别。"""
+    fig = source_compare_chart(_BY_SOURCE, {"ma_cross": "双均线信号",
+                                            "discretionary": "自主决策"})
+    assert len(fig.data) == 1
+    bar = fig.data[0]
+    assert bar.orientation == "h"
+    assert bar.marker.color == palette.PRIMARY
+    assert set(bar.y) == {"双均线信号", "自主决策"}
+    assert fig.layout.showlegend is False
+
+
+def test_source_compare_annotates_pnl_and_win_rate_without_nan():
+    """右端直接标注已实现盈亏与胜率；某组还没有平仓交易时胜率是"算不出来"，
+    必须显示 —，渲染出 None/nan 是甩到用户脸上的乱码。"""
+    fig = source_compare_chart(_BY_SOURCE)
+    by_label = dict(zip(fig.data[0].y, fig.data[0].text))
+    assert "1,988" in by_label["ma_cross"] and "50%" in by_label["ma_cross"]
+    assert "-1,916" in by_label["discretionary"]
+    assert "—" in by_label["discretionary"]
+    blob = "".join(by_label.values())
+    assert "None" not in blob and "nan" not in blob.lower()
+
+
+def test_source_compare_values_are_the_total_realized():
+    fig = source_compare_chart(_BY_SOURCE)
+    by_label = dict(zip(fig.data[0].y, fig.data[0].x))
+    assert by_label["ma_cross"] == pytest.approx(1988.10)
+    assert by_label["discretionary"] == pytest.approx(-1916.05)
+
+
+def test_source_compare_survives_an_empty_grouping():
+    assert len(source_compare_chart({}).data) == 0
+
+
+@pytest.mark.parametrize("kind", ["journal_cum", "weights", "source"])
+def test_dashboard_charts_never_color_by_category(kind):
+    """零类别配色的总闸：新图任何轨迹的主色都只能是琥珀，尤其不许把红/绿
+    当类别色用——那两个色在本项目里专门表示涨跌方向。"""
+    for trace in _figs()[kind].data:
+        color = (trace.marker.color if trace.type == "bar" else trace.line.color)
+        assert color == palette.PRIMARY, (kind, trace)

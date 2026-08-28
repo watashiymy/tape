@@ -1,4 +1,5 @@
-"""plotly 图表（spec §9）：净值+回撤、K线+买卖点。K 线用原始价（所见即真实价位）。
+"""plotly 图表（spec §9 + v0.3.1 §2）：净值+回撤、K线+买卖点、交易日志仪表盘三图。
+K 线用原始价（所见即真实价位）。
 
 **暗色是硬要求**：这两个函数的产物（report.html / kline_*.html）会被面板内嵌，
 而面板是暗色（.streamlit/config.toml）。plotly 的默认模板是浅色（纸底纯白、
@@ -82,3 +83,94 @@ def kline_chart(df: pd.DataFrame, trades: list[Trade], title: str) -> go.Figure:
                                              color=palette.DOWN)))
     fig.update_layout(title=title, xaxis_rangeslider_visible=False, height=550)
     return _apply_dark(fig)
+
+
+# ================================================================ 交易日志仪表盘（v0.3.1 §2）
+# 三张图共同的硬约束：**零类别配色**（设计 §2.5）。琥珀 + 灰作类别对经校验脚本
+# 实测过不了正常视力可辨阈值（ΔE 12.7 < 15），所以身份一律由位置/轴标签/直接
+# 标注承载，条与线只有一个琥珀色；红绿仍专属涨跌方向，不当类别色用。
+
+
+def journal_cum_pnl_chart(points: list[tuple]) -> go.Figure:
+    """累计已实现盈亏（元，含分红）的**阶梯线**。
+
+    - `line_shape="hv"` 不是审美偏好：已实现盈亏只在平仓/分红时点**跳变**，
+      平滑连线是在编造两笔平仓之间的过程。点带 marker，让"哪天跳的"看得见。
+    - 单序列无图例（标题即名）；零轴用发丝灰显式画一条——全盈利时 plotly 的
+      自动 zeroline 根本不在可视范围里，而零轴是"赚/亏"的分界。
+    - `points` 为空时返回一张没有轨迹的图（页面空态显示引导文案，不画空图，
+      这里只保证不崩）。
+    """
+    fig = go.Figure()
+    if points:
+        fig.add_trace(go.Scatter(
+            x=[day for day, _ in points], y=[value for _, value in points],
+            mode="lines+markers", name="累计已实现",
+            line=dict(color=palette.PRIMARY, width=2, shape="hv"),
+            marker=dict(color=palette.PRIMARY, size=6),
+            hovertemplate="%{x|%Y-%m-%d}<br>累计 %{y:,.2f} 元<extra></extra>"))
+    fig.add_hline(y=0, line_color=palette.HAIRLINE, line_width=1)
+    fig.update_layout(title="累计已实现盈亏（元，含分红）", showlegend=False,
+                      height=340)
+    return _apply_dark(fig)
+
+
+def position_weights_chart(rows: list[dict]) -> go.Figure:
+    """持仓占比：横向条按市值降序，单一琥珀 + 右端直接标注百分比与市值。
+
+    不做饼图：持仓通常 3~10 只，条形长度的对比精度远高于扇形角度，且降序
+    排完一眼看出集中度。`rows` 来自 analytics.position_weights（已排序）；
+    无市价按成本顶上的行带 by_cost=True，条上打「按成本」标——不打标的话，
+    一个没有市价的重仓会看着和有市价的一样可信。
+    """
+    fig = go.Figure()
+    if rows:
+        fig.add_trace(go.Bar(
+            x=[r["value"] for r in rows],
+            y=[f"{r['symbol']} {r['name']}".strip() for r in rows],
+            orientation="h", marker_color=palette.PRIMARY,
+            text=[f"{r['weight']:.1%} · {r['value']:,.0f} 元"
+                  + ("（按成本）" if r["by_cost"] else "") for r in rows],
+            textposition="outside", cliponaxis=False,
+            hovertemplate="%{y}<br>%{text}<extra></extra>"))
+    fig.update_layout(
+        title="持仓占比（按市值）", showlegend=False,
+        height=max(340, 120 + 44 * len(rows)),
+        # 首行（最大持仓）在最上面：plotly 横向条默认把第一条画在最下面。
+        yaxis=dict(autorange="reversed"),
+        # 右侧留白给条外的直接标注；margin 挤掉标注是这种图最常见的翻车点。
+        margin=dict(r=40))
+    return _apply_dark(fig)
+
+
+def source_compare_chart(by_source: dict, labels: dict | None = None) -> go.Figure:
+    """来源对比（照信号做的 vs 自己拍的）：横向条，值 = 各来源的总已实现（含分红）。
+
+    类目身份由**轴标签**承载（中文名由调用方传入，charts 属于 src/ 不 import
+    app 层的标签表）；条一律单色琥珀，右端直接标注盈亏与胜率——某组还没有
+    平仓交易时胜率是"算不出来"，标 — 而不是 None/nan。
+    """
+    names = labels or {}
+    rows = sorted(by_source.items(),
+                  key=lambda kv: -(kv[1].get("total_realized") or 0.0))
+    fig = go.Figure()
+    if rows:
+        fig.add_trace(go.Bar(
+            x=[summary.get("total_realized") or 0.0 for _, summary in rows],
+            y=[names.get(source, source) or "—" for source, _ in rows],
+            orientation="h", marker_color=palette.PRIMARY,
+            text=[_source_note(summary) for _, summary in rows],
+            textposition="outside", cliponaxis=False,
+            hovertemplate="%{y}<br>%{text}<extra></extra>"))
+    fig.add_vline(x=0, line_color=palette.HAIRLINE, line_width=1)
+    fig.update_layout(title="按来源对比：总已实现（元，含分红）", showlegend=False,
+                      height=max(300, 140 + 44 * len(rows)), margin=dict(r=40))
+    return _apply_dark(fig)
+
+
+def _source_note(summary: dict) -> str:
+    """条右端那句标注：总已实现 + 胜率。胜率 None（该组没有平仓）→ —。"""
+    total = summary.get("total_realized") or 0.0
+    money = f"{total:,.0f}" if round(total) == 0 else f"{total:+,.0f}"
+    win = summary.get("win_rate")
+    return f"{money} 元 · 胜率 {'—' if win is None else f'{win:.0%}'}"

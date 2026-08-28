@@ -1,9 +1,11 @@
 """「持仓与盈亏」页（v0.3.1 §1，原「交易日志」页的持仓/盈亏/来源那一半）。
 
 「记账」页管**写**，本页管**读**：整本日志算出来的当前持仓、已实现盈亏与来源对比。
-页面函数从 app/pages_journal.py 原样搬来，**逻辑不改只挪**；排版按设计 §1：
-三张表收进 st.tabs（当前持仓 / 平仓明细 / 来源对比），不再纵向全部铺开。
-仪表盘（指标块 + 两图）v0.3.1 M2 再加。
+页面函数从 app/pages_journal.py 原样搬来（M1 的拆页**逻辑不改只挪**）；排版按
+设计 §1：三张表收进 st.tabs（当前持仓 / 平仓明细 / 来源对比），不再纵向全部铺开。
+顶部是 M2 的仪表盘（设计 §2）：指标块 2×3 + 曲线/占比两图并排，来源对比图在
+来源 tab 里。数字口径全在 journal_ui.dashboard_metrics 与 quant.journal.analytics
+（纯函数，手算单测钉住），本页只做排版与转述。
 
 两条纪律沿自 v0.3.0 §5：
 
@@ -20,7 +22,8 @@ import guide
 import journal_ui
 import theme
 import ui
-from quant.journal import pnl, store
+from quant.journal import analytics, pnl, store
+from quant.report import charts
 
 
 def page_journal_report() -> None:
@@ -41,7 +44,7 @@ def page_journal_report() -> None:
     # 收进某个 tab 就会被藏起来。同一句话去重后只说一次，别刷屏。
     for message in dict.fromkeys(i.message for i in report.inconsistencies):
         st.warning(message)
-    _summary_section(report)
+    _dashboard_section(report, trades)
     positions_tab, matches_tab, source_tab = st.tabs(["当前持仓", "平仓明细", "来源对比"])
     with positions_tab:
         _positions_section(report)
@@ -51,17 +54,47 @@ def page_journal_report() -> None:
         _by_source_section(report)
 
 
-# ---------------------------------------------------------------- 持仓与盈亏（§4.2）
+# ---------------------------------------------------------------- 仪表盘（v0.3.1 §2）
 
-def _summary_section(report: pnl.PnlReport) -> None:
-    """已实现盈亏的汇总指标卡。留在 tabs 之外：这几个数是本页的结论，
-    收进某个 tab 就得多点一下才看得到。M2 的仪表盘会在这里长出来。"""
-    st.html(theme.section("已实现盈亏"))
-    metrics = journal_ui.summary_metrics(report.summary)
-    for start in range(0, len(metrics), 4):
-        for col, (label, text, color) in zip(st.columns(4), metrics[start:start + 4]):
+def _dashboard_section(report: pnl.PnlReport, trades) -> None:
+    """指标块 2×3 + 曲线/占比两图并排。留在 tabs 之外：这几个数是本页的结论，
+    收进某个 tab 就得多点一下才看得到。
+
+    两条口径纪律（数字本身在 journal_ui / analytics 里，有手算单测）：
+    - 无市价的持仓**不按 0 计入**市值与浮动，如实注明有几只没算进来；
+    - 曲线是**累计已实现盈亏（元）**，不是收益率（设计 §2.6）：日志不记本金
+      与出入金，任何收益率的分母都只能编造——这条取舍就注在图旁边。
+    """
+    st.html(theme.section("仪表盘"))
+    prices = {p.symbol: journal_ui.latest_price(p.symbol, ui.CACHE_DIR)
+              for p in report.positions}
+    metrics, unpriced = journal_ui.dashboard_metrics(report.summary,
+                                                     report.positions, prices)
+    for start in (0, 3):
+        for col, (label, text, color) in zip(st.columns(3), metrics[start:start + 3]):
             col.html(theme.metric(label, text, color))
+    if unpriced:
+        st.caption(f"{unpriced} 只持仓无市价未计入市值与浮动盈亏"
+                   "（本地缓存 `data/cache/` 里没有它们的日线——"
+                   "跑一次回测或每日信号就有了），显示的是可算部分，不按 0 顶包。")
     st.caption(guide.JOURNAL_PNL_HINT)
+
+    curve_col, weights_col = st.columns(2)
+    with curve_col:
+        # 空态不画空图（设计 §2.2）：一张空坐标系没有任何信息量，还像出了错。
+        if points := analytics.cumulative_realized(trades):
+            st.plotly_chart(charts.journal_cum_pnl_chart(points), width="stretch")
+        else:
+            st.caption("还没有平仓记录——第一笔卖出后这里会出现你的已实现盈亏曲线。")
+    with weights_col:
+        # 占比图里无市价的标的按成本顶上并打「按成本」标（与指标卡刻意相反：
+        # 占比漏一只会让其余标的虚高，见 analytics 的模块 docstring）。
+        if rows := analytics.position_weights(report.positions, prices):
+            st.plotly_chart(charts.position_weights_chart(rows), width="stretch")
+        else:
+            st.caption("当前没有持仓，暂无占比可画。")
+    st.caption("金额一律是**元**而非收益率：日志不记本金与出入金，收益率的分母"
+               "只能编造；将来若加「本金/出入金」记录类型再升级成真收益率（设计 §2.6）。")
 
 
 def _positions_section(report: pnl.PnlReport) -> None:
@@ -79,6 +112,12 @@ def _matches_section(report: pnl.PnlReport) -> None:
 
 
 def _by_source_section(report: pnl.PnlReport) -> None:
+    # 图在表之上：图先回答"哪边赚得多"，表再给全部口径的数。类目身份由轴标签
+    # 承载、条一律单色琥珀——零类别配色是设计 §2.5 经校验实测定下的硬约束。
+    if report.by_source:
+        st.plotly_chart(charts.source_compare_chart(report.by_source,
+                                                    journal_ui.SOURCE_LABELS),
+                        width="stretch")
     ui.data_table(journal_ui.by_source_table(report.by_source),
                   journal_ui.by_source_columns(),
                   "还没有已平仓的交易，暂时无从对比。",

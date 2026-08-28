@@ -20,6 +20,7 @@
 """
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import date
 from pathlib import Path
@@ -608,6 +609,61 @@ def summary_metrics(summary: Mapping) -> list[tuple[str, str, str | None]]:
         text = str(closed) if key == "n_trades" else fmt.fmt_metric(key, value)
         out.append((label, text, None))
     return out
+
+
+def dashboard_metrics(summary: Mapping, positions: Iterable, prices: Mapping[str, float]
+                      ) -> tuple[list[tuple[str, str, str | None]], int]:
+    """仪表盘 2×3 指标块（v0.3.1 §2.1）：[(标签, 文本, 颜色)] + 无市价的持仓数。
+
+    与 summary_metrics 同一条"没有就说没有"的纪律，外加市价这一维：
+
+    - **无市价的持仓不按 0 计入市值与浮动盈亏**——0 元市值等于宣布那只票
+      一文不值。可算的部分照给（调用方要把"N 只无市价未计入"注在旁边），
+      一只都算不了时显示 —。
+    - **总盈亏 = 总已实现 + 浮动**。浮动整个算不出来（有持仓但全无市价）时
+      总盈亏也是 —：拿"已实现"顶给"总盈亏"等于宣称浮动为 0。
+      没有任何持仓时浮动**确为** 0（什么都没拿着），总盈亏就是总已实现。
+    - 胜率/盈亏比直接走 fmt.fmt_metric（与回测指标卡同一个函数，None 自动 —）。
+    """
+    market = floating = 0.0
+    priced = unpriced = 0
+    for position in positions:
+        if position.shares <= 0:
+            continue                    # pnl 为挂告警造的 0 股空壳，没有市值可言
+        price = prices.get(position.symbol)
+        if price is not None and math.isfinite(price) and price > 0:
+            priced += 1
+            market += price * position.shares
+            floating += price * position.shares - position.cost
+        else:
+            unpriced += 1
+
+    closed = int(summary.get("n_trades") or 0)
+    dividends = float(summary.get("dividends") or 0.0)
+    realized_known = closed > 0 or dividends != 0.0
+    realized = float(summary.get("total_realized") or 0.0)
+    # 浮动"确为 0"（没有任何持仓）也算已知；有持仓但全无市价才是"算不出来"。
+    floating_known = priced > 0 or unpriced == 0
+    total_known = floating_known and (priced > 0 or realized_known)
+    total = realized + floating
+
+    def money(value: float, known: bool, *, directional: bool = True
+              ) -> tuple[str, str | None]:
+        if not known:
+            return fmt.MISSING, None
+        return (fmt.fmt_amount(value, decimals=2),
+                fmt.signed_color(value) if directional else None)
+
+    out: list[tuple[str, str, str | None]] = []
+    for label, (text, color) in (
+            ("总已实现（含分红）", money(realized, realized_known)),
+            ("当前持仓市值", money(market, priced > 0, directional=False)),
+            ("浮动盈亏", money(floating, priced > 0)),
+            ("总盈亏（已实现+浮动）", money(total, total_known))):
+        out.append((label, text, color))
+    for key, label in (("win_rate", "胜率"), ("profit_factor", "盈亏比")):
+        out.append((label, fmt.fmt_metric(key, summary.get(key)), None))
+    return out, unpriced
 
 
 BY_SOURCE_COLUMN = "来源"

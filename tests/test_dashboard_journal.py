@@ -243,6 +243,140 @@ def test_the_report_page_tucks_the_three_tables_into_tabs(tmp_path):
     assert labels == ["当前持仓", "平仓明细", "来源对比"], labels
 
 
+# ================================================================ 仪表盘（v0.3.1 §2，M2）
+# 指标块 2×3 + 两图并排（曲线/占比），来源对比图在来源 tab 里。
+# 铁律有两条：缺市价的标的**不按 0 计入**（如实显示 — 并注明有几只没算进来）；
+# 新图零类别配色（那是 test_charts.py 钉的，这里钉页面接线与数字本身）。
+
+# 开着一半仓位的日志：买 1000 卖 500，剩 500 股在手（仪表盘要有市值可算）。
+# 手算（真配置成本模型，同 test_realized_pnl_matches_the_hand_computed_number）：
+#   买 1000 @ 71.50 → 成本基 71,500 + 17.88 = 71,517.88
+#   卖  500 @ 75.00 → 名义 37,500，佣金 9.38，印花税 18.75，净得 37,471.87
+#     消耗成本 71,517.88 × 500/1000 = 35,758.94 → 已实现 **1,712.93**
+#   缓存最新价 76.00 → 市值 76 × 500 = **38,000.00**
+#     浮动 = 38,000 − 35,758.94 = **2,241.06**
+#     总盈亏 = 1,712.93 + 2,241.06 = **3,953.99**
+
+def _half_closed(root: Path) -> None:
+    _journal(root, _buy(), _sell(shares=500.0))
+    _cache(root, close=76.0, day=D_SELL)
+
+
+def test_dashboard_shows_the_six_hand_computed_metrics(tmp_path):
+    root = _root(tmp_path)
+    _half_closed(root)
+    at = _page(root, REPORT_PAGE)
+
+    assert not at.exception, at.exception
+    blob = "".join(e.proto.body for e in at.get("html"))
+    for label, value in [("总已实现（含分红）", "1,712.93"),
+                         ("当前持仓市值", "38,000.00"),
+                         ("浮动盈亏", "2,241.06"),
+                         ("总盈亏（已实现+浮动）", "3,953.99")]:
+        assert f">{label}</div>" in blob, f"缺指标卡 {label}"
+        assert value in blob, f"{label} 的值不对（该是 {value}）：{blob}"
+    assert ">胜率</div>" in blob and ">盈亏比</div>" in blob
+
+
+def test_dashboard_renders_all_three_charts_when_there_is_data(tmp_path):
+    """曲线 + 占比在仪表盘并排，来源对比图在「来源对比」tab 里——共三张。"""
+    root = _root(tmp_path)
+    _half_closed(root)
+    at = _page(root, REPORT_PAGE)
+
+    assert not at.exception, at.exception
+    assert len(at.get("plotly_chart")) == 3, "该有曲线/占比/来源对比三张图"
+
+
+def test_unpriced_positions_show_dash_and_an_honest_note(tmp_path):
+    """没有本地缓存的持仓：市值/浮动/总盈亏显示 —（不按 0 编），
+    并注明有几只没算进来——静默漏项会让看的人以为市值就这么点。"""
+    root = _root(tmp_path)
+    _journal(root, _buy())          # 只有买入，无缓存 → 1 只持仓、无市价
+    at = _page(root, REPORT_PAGE)
+
+    assert not at.exception, at.exception
+    blob = "".join(e.proto.body for e in at.get("html"))
+    for label in ("当前持仓市值", "浮动盈亏", "总盈亏（已实现+浮动）"):
+        assert f'>{label}</div><div class="qd-metric-value">—<' in blob, \
+            f"{label} 缺市价时该显示 —：{blob}"
+    text = _texts(at)
+    assert "1 只" in text and "无市价" in text, text
+
+
+def test_empty_journal_dashboard_offers_guidance_not_an_empty_chart(tmp_path):
+    """空态（§2.2）：不画空图，显示引导文案。"""
+    at = _page(_root(tmp_path), REPORT_PAGE)
+    assert not at.exception, at.exception
+    assert len(at.get("plotly_chart")) == 0, "空日志不该画任何图"
+    text = _texts(at)
+    assert "还没有平仓记录——第一笔卖出后这里会出现你的已实现盈亏曲线" in text, text
+
+
+def test_the_page_admits_why_it_is_yuan_not_percent(tmp_path):
+    """设计 §2.6：日志不记本金与出入金，收益率分母只能编造——
+    这条取舍必须写在页面上，否则一定有人问"为什么不是收益率曲线"。"""
+    root = _root(tmp_path)
+    _half_closed(root)
+    at = _page(root, REPORT_PAGE)
+    assert "本金" in _texts(at), _texts(at)
+
+
+def test_dashboard_metrics_hand_computed_with_a_price_gap():
+    """dashboard_metrics 的纯函数口径（页面只是转述它）。手算：
+    A 500 股 @ 76.00 → 市值 38,000.00，成本 35,758.94 → 浮动 2,241.06；
+    B 100 股无市价 → **不计入**市值与浮动（不按 0 也不按成本顶进指标卡）。
+    已实现 1,712.93 → 总盈亏 = 1,712.93 + 2,241.06 = 3,953.99。"""
+    from quant.journal.pnl import Position
+
+    summary = {"total_realized": 1712.93, "realized_pnl": 1712.93, "dividends": 0.0,
+               "n_trades": 1, "win_rate": 1.0, "profit_factor": None,
+               "avg_holding_days": 21.0}
+    positions = (Position("000333", "美的集团", 500.0, 35758.94, 71.5179),
+                 Position("600519", "贵州茅台", 100.0, 160000.0, 1600.0))
+    metrics, unpriced = jui.dashboard_metrics(
+        summary, positions, {"000333": 76.0, "600519": float("nan")})
+
+    assert unpriced == 1
+    by_label = {label: (text, color) for label, text, color in metrics}
+    assert by_label["总已实现（含分红）"] == ("1,712.93", jui.fmt.UP)
+    assert by_label["当前持仓市值"][0] == "38,000.00"
+    assert by_label["浮动盈亏"] == ("2,241.06", jui.fmt.UP)
+    assert by_label["总盈亏（已实现+浮动）"] == ("3,953.99", jui.fmt.UP)
+    assert by_label["胜率"][0] == "100.00%"
+    assert by_label["盈亏比"][0] == "—"
+
+
+def test_dashboard_metrics_all_dashes_when_nothing_is_known():
+    """空日志：六项全是 —，一个 0.00 都不许有（0 会被读成"不赚不亏"）。"""
+    from quant.journal.pnl import compute_pnl
+
+    report = compute_pnl(store.empty_trades())
+    metrics, unpriced = jui.dashboard_metrics(report.summary, report.positions, {})
+    assert unpriced == 0
+    assert [text for _l, text, _c in metrics] == ["—"] * 6
+    assert all(color is None for _l, _t, color in metrics)
+
+
+def test_dashboard_metrics_hide_the_total_when_floating_is_unknowable():
+    """有持仓但全都没市价：浮动是"算不出来"，总盈亏也必须是 —。
+    拿"已实现"顶给"总盈亏"等于宣称浮动为 0——那正是本页明令禁止的编数。"""
+    from quant.journal.pnl import Position
+
+    summary = {"total_realized": 1712.93, "realized_pnl": 1712.93, "dividends": 0.0,
+               "n_trades": 1, "win_rate": 1.0, "profit_factor": None,
+               "avg_holding_days": 21.0}
+    positions = (Position("000333", "美的集团", 500.0, 35758.94, 71.5179),)
+    metrics, unpriced = jui.dashboard_metrics(summary, positions, {})
+
+    assert unpriced == 1
+    by_label = {label: text for label, text, _c in metrics}
+    assert by_label["总已实现（含分红）"] == "1,712.93"
+    assert by_label["当前持仓市值"] == "—"
+    assert by_label["浮动盈亏"] == "—"
+    assert by_label["总盈亏（已实现+浮动）"] == "—"
+
+
 def _walk(node):
     """AppTest 元素树递归展开（顶层只给容器，卡片里的控件要自己走下去）。"""
     for child in getattr(node, "children", {}).values():
