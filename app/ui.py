@@ -28,6 +28,7 @@ import theme
 from quant.data import symbols
 from quant.report import fmt
 from quant.runner import jobs, process, view
+from quant.signal import scan_meta
 
 # 生产里的默认值（app/ui.py 的上一级就是仓库根）。测试会用 bind() 覆盖。
 ROOT = Path(__file__).resolve().parent.parent
@@ -184,6 +185,35 @@ def _listing_names() -> dict[str, str]:
         return {}
     listing, _as_of = loaded
     return {str(s): n for s, n in zip(listing["symbol"], listing["name"])}
+
+
+# ---------------------------------------------------------------- 扫描产物（v0.2.4）
+
+def latest_scan() -> Path | None:
+    """面板该显示哪份扫描产物：最新一天的，**同一天优先全量**（试跑只是抽样）。
+    挑选规则连同"为什么不能用 sorted()[0]"都在 quant.signal.scan_meta 里（可单测）。"""
+    return scan_meta.latest_scan(OUTPUT / "scan")
+
+
+def scan_scope_pill(csv_path: Path) -> str:
+    """扫描范围徽标的 HTML：`全量 3010 只` / `试跑 30 只` / `范围未知`。
+
+    这个徽标要回答的是一个真实发生过的困惑：面板上写着"当日无新信号"时，
+    到底是全市场真没机会，还是一次 3 只票冒烟测试的残渣。
+
+    三处降级都不许把页面打没，但话都要说全：
+    - 没有 meta（v0.2.4 之前的老产物）→「范围未知」+ tooltip 说清为什么未知，
+      **不猜也不编**：显示成"全量"或"试跑"都可能是错的，而这正是用户拿来做决定的依据；
+    - meta 损坏 → 徽标同样退回「范围未知」，但 tooltip 与 st.warning 说的是**真原因**
+      （文件坏了，不是老产物）——两者混为一谈，那份坏文件就永远不会被发现；
+    - 一律中性灰（PILL_IDLE）：这是一条事实注记，不该跟"运行中/失败"抢眼。
+    """
+    try:
+        text, tip = scan_meta.scope_badge(scan_meta.load_meta(csv_path))
+    except RuntimeError as e:
+        st.warning(str(e))
+        text, tip = scan_meta.UNKNOWN_SCOPE, str(e)
+    return theme.pill(text, view.PILL_IDLE, tip)
 
 
 def _run_key(p: Path) -> tuple[str, str]:

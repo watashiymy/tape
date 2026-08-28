@@ -13,6 +13,7 @@ import pool
 import theme
 import ui
 from quant.report import fmt
+from quant.signal import scan_meta
 
 
 def _scan_columns(symbols: tuple[str, ...]) -> dict:
@@ -55,16 +56,19 @@ def _scan_table(df: pd.DataFrame) -> None:
 
 
 def scan_section() -> None:
-    """全市场扫描区块（v0.1.1）：读 output/scan/ 最新 CSV。"""
-    scan_dir = ui.OUTPUT / "scan"
-    # 文件名是 YYYY-MM-DD.csv，ISO 日期字典序即时间序，reverse 后 [0] 就是最新
-    files = sorted(scan_dir.glob("*.csv"), reverse=True) if scan_dir.exists() else []
-    if not files:
+    """全市场扫描区块（v0.1.1）：读 output/scan/ 最新一份产物。
+
+    v0.2.4 起同一天可能有两份产物（全量 `<date>.csv` 与试跑 `<date>_limit{N}.csv`），
+    选哪份由 ui.latest_scan 决定（全量优先），标题旁的徽标说清这份是什么范围。
+    """
+    latest = ui.latest_scan()
+    if latest is None:
         st.info(guide.EMPTY_STATES["scan"])
         return
-    latest = files[0]
-    # 标题必须带扫描日期（文件名 stem）：停牌日/忘跑的日子，别让人把旧扫描当今天的
-    st.html(theme.section(f"全市场扫描（{latest.stem}）"))
+    # 标题必须带扫描日期：停牌日/忘跑的日子，别让人把旧扫描当今天的。
+    # 日期取 scan_day 而不是整个 stem——试跑产物的 stem 带着 `_limit3` 那截给机器看的后缀。
+    st.html(theme.section(f"全市场扫描（{scan_meta.scan_day(latest)}）",
+                          ui.scan_scope_pill(latest)))
     # 扫描被 Ctrl-C 打断可能留下零字节/半截 CSV：EmptyDataError / ParserError
     # 都是 ValueError 子类，与回测页同一套容错口径，崩页不如明说
     try:

@@ -293,11 +293,17 @@ def _esc(text) -> str:
     return _html.escape(str(text), quote=True)
 
 
-def pill(text: str, kind: str) -> str:
+def pill(text: str, kind: str, tooltip: str = "") -> str:
     """状态 pill。kind 取 quant.runner.view.PILL_*（running/success/failed/idle）；
-    拼错或将来多出一种状态时退回 idle——绝不渲染出没有底色的裸文字。"""
+    拼错或将来多出一种状态时退回 idle——绝不渲染出没有底色的裸文字。
+
+    `tooltip` 走原生 title 属性（v0.2.4 扫描范围徽标要用）：pill 上只放得下四五个字，
+    "范围未知"这种说法必须能就地解释清楚为什么未知，否则用户只会当成又一个 bug。
+    与文案同样转义——它同样来自磁盘上的文件内容。
+    """
     css = kind if kind in _PILL_KINDS else "idle"
-    return f'<span class="qd-pill qd-pill-{css}">{_esc(text)}</span>'
+    title = f' title="{_esc(tooltip)}"' if tooltip else ""
+    return f'<span class="qd-pill qd-pill-{css}"{title}>{_esc(text)}</span>'
 
 
 def page_head(title: str, subtitle: str, pill_html: str = "") -> str:

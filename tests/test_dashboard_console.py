@@ -256,6 +256,49 @@ def test_finished_scan_shows_result_table(tmp_path):
     assert at.dataframe[0].value["symbol"].tolist() == ["000020"]
 
 
+def _finished_scan(tmp_path) -> Path:
+    """一次成功的扫描 + 它的产物 CSV（日志里的 `已保存:` 指着它）。"""
+    scan = tmp_path / "output" / "scan"
+    scan.mkdir(parents=True)
+    csv = scan / "2026-08-24.csv"
+    csv.write_text(
+        "date,symbol,name,strategy,close,pct_chg,amount,amount_ratio_20d\n"
+        "2026-08-24,000020,深华发A,ma_cross,11.74,-5.09,2.9e8,4.22\n", encoding="utf-8")
+    _fake_run(tmp_path, "market_scan", "success", exit_code=0, log=SCAN_LOG)
+    return csv
+
+
+def test_the_scan_result_card_says_whether_it_was_a_trial_run(tmp_path):
+    """`--limit` 的控件就在这一页上：一次 3 只票的试跑与一次全量扫描，
+    在卡片里长得一模一样（尤其两者都"无新信号"时）。徽标必须说破（v0.2.4 §2.3）。"""
+    from datetime import datetime as _dt
+
+    from quant.signal import scan_meta
+
+    csv = _finished_scan(tmp_path)
+    scan_meta.save_meta(scan_meta.ScanMeta(
+        date=date(2026, 8, 24), scanned=3, pool_total=3010, limit=3, signals=1,
+        skipped={"no_signal": 2}, failed=0, elapsed_s=8.0,
+        started_at=_dt(2026, 8, 24, 18, 0, 0)), csv)
+
+    at = _console(tmp_path)
+
+    assert not at.exception, at.exception
+    blob = "\n".join(_htmls(at))
+    assert "试跑 3 只" in blob, blob
+
+
+def test_an_old_scan_product_shows_unknown_scope_in_the_console(tmp_path):
+    """有 CSV 无 meta（v0.2.4 之前的产物）：说"范围未知"，不报错也不猜。"""
+    _finished_scan(tmp_path)
+
+    at = _console(tmp_path)
+
+    assert not at.exception, at.exception
+    assert not at.error, [e.value for e in at.error]
+    assert "范围未知" in "\n".join(_htmls(at))
+
+
 def test_finished_backtest_shows_metrics_of_every_strategy(tmp_path):
     """默认两个策略两个报告目录：两张指标卡都要出（只认第一条 = donchian 白跑）。"""
     for name, n_trades in (("ma_cross_20260826_112606", 243), ("donchian_20260826_112606", 436)):

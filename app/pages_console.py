@@ -59,6 +59,13 @@ def _result_table(path_str: str, config: dict, hint: str,
 
 
 def _result_scan(path_str: str) -> None:
+    """当次扫描的结果表，标题旁带范围徽标（v0.2.4 设计 §2.3）。
+
+    控制台这条路径尤其需要它：`--limit` 就在这一页的控件上，一次试跑的结果与一次
+    全量扫描的结果在卡片里长得一模一样——尤其是两者都"无新信号"的时候。
+    路径取自日志里的 `已保存:` 行，meta 就在它旁边。
+    """
+    st.html(theme.section("本次扫描结果", ui.scan_scope_pill(ui.resolve(path_str))))
     _result_table(path_str, fmt.scan_column_config(), guide.TABLE_HINTS["scan"],
                   ui.SCAN_COLOR_COLUMNS)
 

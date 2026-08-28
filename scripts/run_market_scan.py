@@ -18,13 +18,17 @@ v0.2.4 补上两道**与清单来源解耦**的就绪闸门（require_trading_da
 data_not_ready_reason）：基准日不是交易日、或扫过的标的全部没更新到基准日，
 一律非零退出且不落 CSV。解耦是这次的重点——v0.2.3 之前"当日数据是否就绪"全靠
 拉清单时的空表报错兜底，清单一复用，闸门就被整条绕过了。
+
+同版还做了产物隔离：`--limit N` 的试跑写到 `<交易日>_limit{N}.csv`，收尾再写一份
+伴生的 `<同名>.meta.json` 记下这趟的扫描范围（见 quant.signal.scan_meta 的模块说明——
+那里有这次事故的原委：本地 5 份扫描 CSV 里 3 份被试跑静默覆盖）。
 """
 from __future__ import annotations
 
 import argparse
 import sys
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -36,6 +40,7 @@ from quant.data import symbols
 from quant.data.baostock_provider import BaostockProvider
 from quant.data.cache import BarCache
 from quant.data.service import DataService
+from quant.signal import scan_meta
 from quant.signal.market_scan import classify_and_scan, sort_signals
 from quant.strategy import build_strategies
 
@@ -186,6 +191,7 @@ def main() -> None:
     strategies = require_strategies(settings.strategies)   # 守卫在联网之前
     scan_cfg = settings.scan
     t0 = time.monotonic()
+    started_at = datetime.now()    # 墙上时钟，只为写进 meta（t0 是单调钟，算不出时刻）
 
     signals: list[dict] = []
     failures: list[tuple[str, str]] = []
@@ -201,6 +207,7 @@ def main() -> None:
             # 注意这条**不再**是"当日数据是否就绪"的闸门——清单缓存命中时它根本不会触发，
             # 那件事现在由 require_trading_day + data_not_ready_reason 两道负责。
             sys.exit(str(e))
+        pool_total = len(universe)     # 截取**之前**的池子大小，写进 meta 供面板判"全量与否"
         if args.limit:
             # 截取只影响本轮扫描；清单已在 load_universe 里整份落盘（见那里的说明）
             universe = universe.head(args.limit)
@@ -264,10 +271,24 @@ def main() -> None:
           f"失败 {len(failures)} 只；总耗时 {time.monotonic() - t0:.0f}s")
     print_failures(failures)
 
+    # 产物路径带上试跑规模（v0.2.4）：`--limit N` 写 `<date>_limit{N}.csv`，
+    # 全量结果在**文件系统层面**就不可能被一次冒烟测试覆盖。此前本地 5 份扫描 CSV
+    # 里有 3 份就是这么没的（08-24 原本 86 条信号），而 output/ 不在版本控制内。
     SCAN_DIR.mkdir(parents=True, exist_ok=True)
-    out = SCAN_DIR / f"{expected}.csv"
+    out = scan_meta.scan_csv_path(expected, args.limit, SCAN_DIR)
     pd.DataFrame(signals, columns=CSV_COLUMNS).to_csv(out, index=False)  # 空结果也留表头
+    # CSV 先写、meta 后写：中途挂掉留下的是"有 CSV 无 meta"，面板照常显示表格并标
+    # 「范围未知」——这是老产物本来就有的降级路径。反过来（meta 先写）留下的是一份
+    # 说着"扫了 3010 只"却没有结果的范围记录，那才叫误导。
+    meta = scan_meta.ScanMeta(
+        date=expected, scanned=total, pool_total=pool_total, limit=args.limit,
+        signals=len(signals), skipped=dict(counts), failed=len(failures),
+        elapsed_s=time.monotonic() - t0, started_at=started_at)
+    saved_meta = scan_meta.save_meta(meta, out)
+    # 「已保存:」这个前缀是面板解析产物路径的唯一钩子（runner/progress.py 的 _SAVED），
+    # meta 必须换个说法打印——否则面板会把那份 JSON 当 CSV 读，回一句"产物读取失败"。
     print(f"已保存: {out}")
+    print(f"已记录扫描范围: {saved_meta}（{scan_meta.scope_badge(meta)[0]}）")
 
 
 if __name__ == "__main__":

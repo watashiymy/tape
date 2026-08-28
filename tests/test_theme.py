@@ -246,6 +246,24 @@ def test_pill_of_unknown_kind_falls_back_to_idle():
     assert "qd-pill-idle" in theme.pill("怪状态", "no-such-kind")
 
 
+def test_pill_carries_an_optional_native_tooltip():
+    """v0.2.4 扫描范围徽标：pill 上只放得下四五个字，"范围未知"必须能就地解释。"""
+    html = theme.pill("范围未知", "idle", "该文件产生于记录范围之前")
+    assert 'title="该文件产生于记录范围之前"' in html
+
+
+def test_a_pill_without_a_tooltip_has_no_title_attribute():
+    """没有 tooltip 就不留空属性（空 title 会在有些浏览器上弹一个空气泡）。"""
+    assert "title=" not in theme.pill("空闲", "idle")
+
+
+def test_pill_escapes_its_tooltip():
+    """tooltip 同样来自磁盘上的文件内容，未转义的引号能直接撑破 title 属性
+    （`" onmouseover=… x="` 就是这么塞进一个事件处理器的）。"""
+    html = theme.pill("范围未知", "idle", '" onmouseover=alert(1) x="')
+    assert 'title="&quot; onmouseover=alert(1) x=&quot;"' in html
+
+
 @pytest.mark.parametrize("kind", ["running", "success", "failed", "idle"])
 def test_every_pill_kind_has_a_css_rule(kind):
     """构造出来的类名必须在 CSS 里真有对应规则，否则 pill 就是没底色的白字。"""

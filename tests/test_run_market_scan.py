@@ -506,3 +506,120 @@ def test_a_stale_symbol_among_healthy_ones_is_a_suspension_not_an_outage(tmp_pat
 
     assert "stale=2" in capsys.readouterr().out
     assert _csvs(tmp_path) == [f"{BASE_DAY}.csv"]
+
+
+# ---------------------------------------------------------------------------
+# v0.2.4 扫描范围记录与产物隔离（设计 §2）
+#
+# 已经发生过的事故：产物文件名只有日期，`--limit N` 试跑**静默覆盖**同一天的全量结果。
+# 本地 5 份扫描 CSV 里 3 份就是这么没的（08-24 原本 86 条信号、08-27 原本全量），
+# output/ 不在版本控制内，找不回来。而面板显示"某日无信号"时，用户根本分不出
+# 那是全市场真没机会，还是一次 3 只票冒烟测试的残渣——本项目一路在防的
+# "不报错但结论错"，这次赔的是数据。
+#
+# 两条防线一起测：路径隔离（试跑写 `_limit{N}` 文件）+ 伴生 meta（每份产物记住自己的范围）。
+# ---------------------------------------------------------------------------
+
+
+def _scan_csv(tmp_path, name: str) -> Path:
+    return tmp_path / "output" / "scan" / name
+
+
+def _load_meta(tmp_path, name: str):
+    from quant.signal import scan_meta
+    return scan_meta.load_meta(_scan_csv(tmp_path, name))
+
+
+def test_a_trial_run_never_clobbers_the_full_scan_of_the_same_day(tmp_path, monkeypatch):
+    """本次的核心回归：先跑一次全量，再跑 `--limit 1`，全量 CSV 必须**逐字节未变**。
+
+    隔离靠路径、不靠约定：试跑落在 `<date>_limit1.csv`，两份结果各自成文件，
+    文件系统层面就不可能互相覆盖。
+    """
+    monkeypatch.setattr(FakeService, "bars_per_symbol", MIN_BARS)
+    _run_scan(tmp_path, monkeypatch, [])
+    full = _scan_csv(tmp_path, f"{BASE_DAY}.csv")
+    before = full.read_bytes()
+    assert before.count(b"\n") == len(FAKE_ROWS) + 1, "全量那趟没扫出该有的信号，这条测试没在测它"
+
+    _run_scan(tmp_path, monkeypatch, ["--limit", "1"])
+
+    assert full.read_bytes() == before, "试跑把同一天的全量扫描结果覆盖了"
+    assert _csvs(tmp_path) == [f"{BASE_DAY}.csv", f"{BASE_DAY}_limit1.csv"], \
+        "试跑没有落在自己的 _limit 路径上"
+    trial = _scan_csv(tmp_path, f"{BASE_DAY}_limit1.csv")
+    assert trial.read_bytes().count(b"\n") == 2, "试跑产物应只有 1 只标的的信号"
+
+
+def test_the_two_products_carry_their_own_scope(tmp_path, monkeypatch):
+    """两份 meta 各自正确：全量说"扫了 4 只（全部）"，试跑说"扫了 1 只（池子有 4 只）"。
+
+    meta 必须**单独成文件**而不是塞进 CSV：信号数为 0 时 CSV 只有表头，
+    没有任何地方能承载"我扫了 3010 只"这个事实——而那正是要区分的核心。
+    """
+    monkeypatch.setattr(FakeService, "bars_per_symbol", MIN_BARS)
+    _run_scan(tmp_path, monkeypatch, [])
+    _run_scan(tmp_path, monkeypatch, ["--limit", "1"])
+
+    full = _load_meta(tmp_path, f"{BASE_DAY}.csv")
+    trial = _load_meta(tmp_path, f"{BASE_DAY}_limit1.csv")
+
+    assert full.date == BASE_DAY and trial.date == BASE_DAY
+    assert (full.scanned, full.pool_total, full.limit) == (len(FAKE_ROWS), len(FAKE_ROWS), None)
+    assert full.is_full is True and full.signals == len(FAKE_ROWS)
+    assert (trial.scanned, trial.pool_total, trial.limit) == (1, len(FAKE_ROWS), 1)
+    assert trial.is_full is False and trial.signals == 1
+
+
+def test_the_meta_records_the_skip_breakdown_and_failures(tmp_path, monkeypatch):
+    """meta 要能替代终端汇总那一行：跳过明细、失败数、耗时、起始时刻。
+    终端输出会滚走，这份文件是事后唯一的第一手证据。"""
+    monkeypatch.setattr(FakeService, "bars_per_symbol", MIN_BARS)
+    monkeypatch.setattr(FakeService, "fail_symbols", (FAKE_ROWS[0][0],))
+    monkeypatch.setattr(FakeService, "last_bars", {FAKE_ROWS[1][0]: PREV_DAY})
+
+    _run_scan(tmp_path, monkeypatch, [])
+
+    meta = _load_meta(tmp_path, f"{BASE_DAY}.csv")
+    assert meta.failed == 1
+    assert meta.skipped["stale"] == 1
+    assert set(meta.skipped) == set(run_market_scan.SKIP_KEYS)
+    assert meta.elapsed_s >= 0 and meta.started_at is not None
+
+
+def test_no_meta_is_written_when_the_readiness_gates_reject_the_run(tmp_path, monkeypatch):
+    """闸门不通过时 CSV 和 meta **都**不写。只写 meta 会更糟：
+    面板会看见一个说"扫了 4 只"的范围记录，配着一份根本不存在的结果。"""
+    monkeypatch.setattr(FakeService, "last_bar", PREV_DAY)
+
+    with pytest.raises(SystemExit):
+        _run_scan(tmp_path, monkeypatch, [])
+
+    assert _csvs(tmp_path) == []
+    assert list((tmp_path / "output").rglob("*.meta.json")) == []
+
+
+def test_a_saturday_writes_neither_csv_nor_meta(tmp_path, monkeypatch):
+    _seed_fresh_listing(tmp_path)
+
+    with pytest.raises(SystemExit):
+        _run_scan(tmp_path, monkeypatch, [], date_arg=str(SATURDAY))
+
+    assert list((tmp_path / "output").rglob("*.meta.json")) == []
+
+
+def test_the_saved_path_printed_for_the_panel_is_the_real_one(tmp_path, monkeypatch,
+                                                              capsys):
+    """`已保存: <path>` 是面板解析产物路径的唯一钩子（runner/progress.py），
+    试跑时它必须指向 `_limit` 那份，否则控制台会去读全量结果并当成本次输出。
+
+    而且**只能有一行** `已保存:`：meta 的路径若也用这个前缀打出来，
+    面板会把那份 JSON 当成 CSV 去读，直接一句"产物读取失败"。
+    """
+    monkeypatch.setattr(FakeService, "bars_per_symbol", MIN_BARS)
+    _run_scan(tmp_path, monkeypatch, ["--limit", "2"])
+
+    out = capsys.readouterr().out
+    saved = [line for line in out.splitlines() if line.startswith("已保存: ")]
+    assert len(saved) == 1, f"「已保存:」不止一行: {saved}"
+    assert saved[0].endswith(f"{BASE_DAY}_limit2.csv"), saved[0]
