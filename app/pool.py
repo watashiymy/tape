@@ -23,6 +23,9 @@ import yaml
 from quant.config import load_settings
 from quant.config_edit import write_universe
 from quant.data.cache import BarCache
+# 取函数而不是 `from quant.data import symbols`：本模块里 `symbols` 已经是好几个
+# 函数的形参名（pool_table / on_remove / on_add 的那一轮行序），模块名会被就地遮住。
+from quant.data.symbols import is_fresh, load_symbols
 from quant.report import fmt
 from quant.universe import add_symbol, remove_symbol, validate_symbol
 
@@ -56,7 +59,7 @@ POOL_TTL_S = 6 * 3600
 # 转圈文案里**不写具体分钟数**：那个数字的唯一出处是 guide.FACTS["pool_fetch"]
 # （按钮上方那行说明就在渲染它，且与 README 的实测拆解对账）。这里再抄一份
 # 就成了两套说法，改一处必漏一处。
-POOL_SPINNER = "正在拉取全市场标的清单（首次较慢，之后 6 小时走缓存）…"
+POOL_SPINNER = "正在准备全市场标的清单（本地已有近期清单则瞬时，否则联网拉取较慢）…"
 
 # 读配置能出的错：文件不在（OSError）、YAML 语法坏（YAMLError）、
 # 缺键/类型不对（KeyError/TypeError）、universe 为空或 capital 非法（ValueError）。
@@ -105,8 +108,19 @@ def remove(symbol: str, *, config_path: str | Path) -> str:
 # ---------------------------------------------------------------- 扫描池清单（联网 + 缓存）
 
 @st.cache_data(ttl=POOL_TTL_S, show_spinner=POOL_SPINNER)
-def scan_pool() -> tuple[pd.DataFrame, str]:
+def scan_pool(symbols_path: str) -> tuple[pd.DataFrame, str]:
     """全市场扫描池清单 DataFrame[symbol, name] 与它的基准日（ISO 字符串）。
+
+    **先看本地那份**（`symbols_path`，由 run_market_scan.py 落盘）：7 天内的直接用，
+    瞬时返回——跑过一次扫描之后，点「加载可选标的清单」不该再等 2-4 分钟。
+    没有 / 已过期才联网，走下面那条老路（行为与 v0.2.2 完全一致）。
+    文件损坏时 load_symbols 响亮抛 RuntimeError，这里**不接**：页面会按 FETCH_ERRORS
+    降级并把路径与自愈办法如实转述。悄悄退回联网重拉的话，每次开面板都白等 2-4 分钟，
+    而那个坏文件永远没人发现。
+
+    路径由调用方传进来而不是在这里写死：本模块刻意不 import ui（见模块 docstring），
+    而且测试必须能把它指到 tmp_path——写死的话，跑过一次真扫描之后离线测试就会去读
+    线上文件，联网那条分支再也测不到。
 
     与 scripts/run_market_scan.py 同一个数据源（provider.get_all_symbols），
     所以面板上能加的票与扫描能扫到的票**是同一批**。
@@ -120,6 +134,12 @@ def scan_pool() -> tuple[pd.DataFrame, str]:
     于是离线测试会真的去登录 baostock。
     """
     from quant.data import baostock_provider
+
+    local = load_symbols(symbols_path)              # 损坏 → RuntimeError，故意不接
+    if local is not None:
+        listing, as_of = local
+        if is_fresh(as_of, date.today()):
+            return listing, as_of.isoformat()
 
     with baostock_provider.BaostockProvider() as provider:
         today = date.today()
@@ -178,8 +198,9 @@ def pool_table(symbols: Sequence[str], names: dict[str, str],
                cache_dir: str | Path) -> pd.DataFrame:
     """信号池表格（§3.4 A）：代码 / 名称 / 最新价 / 每行一个 − 按钮。
 
-    名称来自扫描 CSV（唯一的离线来源，只记出信号的标的），查不到就留空串
-    ——不写"未知"，那看着像个名字。
+    名称来自 `ui.symbol_names()`（全市场清单 + 扫描 CSV，见那里的合并规则）。
+    查不到就显示 `fmt.MISSING`（—）而不是空串：空白像 bug（"是不是没加载出来"），
+    — 是明确的"暂无"，与右边「最新价」那一列同一个符号。不写"未知"——那看着像个名字。
 
     最新价是**格式化后的字符串**（`fmt.fmt_amount` → "1,600.00" / "—"），
     不是浮点数。理由是浏览器实测（v0.2.2 M3）：`st.column_config.NumberColumn`
@@ -189,7 +210,7 @@ def pool_table(symbols: Sequence[str], names: dict[str, str],
     """
     return pd.DataFrame({
         "代码": list(symbols),
-        "名称": [names.get(s, "") for s in symbols],
+        "名称": [names.get(s) or fmt.MISSING for s in symbols],
         "最新价": [fmt.fmt_amount(latest_close(s, cache_dir), decimals=2)
                 for s in symbols],
         ACTION_COLUMN: [REMOVE_LABEL] * len(symbols),

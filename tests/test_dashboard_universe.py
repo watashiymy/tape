@@ -261,7 +261,9 @@ def test_pool_table_shows_code_name_and_latest_close(tmp_path):
     table = pool.pool_table(("600519", "000333"), {"600519": "贵州茅台"}, cache)
 
     assert list(table["代码"]) == ["600519", "000333"]
-    assert list(table["名称"]) == ["贵州茅台", ""]
+    # 缺名显示 —（v0.2.3）：空白像"没加载出来"，— 才是明确的"暂无"，
+    # 与右边「最新价」用同一个符号。详见 tests/test_dashboard_names.py。
+    assert list(table["名称"]) == ["贵州茅台", fmt.MISSING]
     assert list(table["最新价"]) == ["1,600.00", fmt.MISSING]
     assert "None" not in list(table["最新价"])
     assert list(table[pool.ACTION_COLUMN]) == [pool.REMOVE_LABEL] * 2
@@ -294,6 +296,16 @@ def test_scan_table_marks_symbols_that_are_already_in_the_pool():
 
 
 # ================================================================ 扫描池清单（缓存）
+#
+# v0.2.3 起清单先看本地那份（data/symbols.parquet，由扫描脚本落盘）：新鲜就直接用，
+# 用户点「加载可选标的清单」不该再等 2-4 分钟。清单路径由调用方传进来
+# （pool.py 刻意不 import ui），测试一律用 tmp_path——传真实路径的话，
+# 跑过一次真扫描之后这些测试就会去读线上文件，联网那条分支再也测不到。
+
+def _missing(tmp_path: Path) -> str:
+    """一个不存在的清单路径 = "本地还没有清单"，走联网那条老路。"""
+    return str(tmp_path / "data" / "symbols.parquet")
+
 
 def test_the_scan_pool_is_cached_with_a_ttl():
     """7000+ 条、约 2-4 分钟一次。没有缓存的话每次交互（每次点按钮）都重拉一遍。"""
@@ -303,7 +315,7 @@ def test_the_scan_pool_is_cached_with_a_ttl():
 
 
 def test_the_scan_pool_falls_back_to_the_previous_trading_day(fake_provider,
-                                                             monkeypatch):
+                                                             monkeypatch, tmp_path):
     """当日清单约 17:30 后才有（baostock）。盘中打开面板时最近交易日会抛 ValueError，
     退一个交易日重试，而不是让"添加"整天不可用。"""
     calls: list[date] = []
@@ -317,11 +329,49 @@ def test_the_scan_pool_falls_back_to_the_previous_trading_day(fake_provider,
     # 必须走 monkeypatch：fake_provider 是**类**，裸赋值会留到本次会话的后续测试里
     # （替身的行为被永久改掉，后面几条断言就在测别的东西——踩过一次）
     monkeypatch.setattr(fake_provider, "get_all_symbols", get_all_symbols)
-    df, as_of = pool.scan_pool()
+    df, as_of = pool.scan_pool(_missing(tmp_path))
 
     assert calls == [date(2026, 8, 27), date(2026, 8, 26)], calls
     assert as_of == "2026-08-26", as_of
     assert list(df["symbol"]) == ["600519"]
+
+
+def test_a_fresh_local_listing_is_used_instead_of_going_online(fake_provider, tmp_path):
+    """本次改动的第二件事：本地清单新鲜（7 天内）就直接用，省掉那 2-4 分钟。"""
+    from quant.data.symbols import save_symbols
+    path = tmp_path / "data" / "symbols.parquet"
+    save_symbols(pd.DataFrame([("600519", "贵州茅台"), ("000333", "美的集团")],
+                              columns=["symbol", "name"]), date.today(), path)
+
+    df, as_of = pool.scan_pool(str(path))
+
+    assert fake_provider.calls == 0, "本地清单新鲜却仍然联网拉了 2-4 分钟"
+    assert list(df["symbol"]) == ["600519", "000333"]
+    assert as_of == date.today().isoformat()
+
+
+def test_a_stale_local_listing_still_goes_online(fake_provider, tmp_path):
+    """过期的清单不能一直用下去：新股上市/退市/改名会积累。"""
+    from quant.data.symbols import save_symbols
+    path = tmp_path / "data" / "symbols.parquet"
+    stale = date.fromordinal(date.today().toordinal() - 8)
+    save_symbols(pd.DataFrame([("600519", "贵州茅台")], columns=["symbol", "name"]),
+                 stale, path)
+
+    df, _as_of = pool.scan_pool(str(path))
+
+    assert fake_provider.calls == 1
+    assert list(df["symbol"]) == [s for s, _ in FakeProvider.pool_rows]
+
+
+def test_no_local_listing_falls_back_to_the_network_exactly_like_before(fake_provider,
+                                                                       tmp_path):
+    """降级：没有清单文件（还没跑过扫描）时行为与从前完全一致。"""
+    df, as_of = pool.scan_pool(_missing(tmp_path))
+
+    assert fake_provider.calls == 1
+    assert list(df["symbol"]) == [s for s, _ in FakeProvider.pool_rows]
+    assert as_of == "2026-08-27"
 
 
 # ================================================================ 信号池页（AppTest）
@@ -423,6 +473,42 @@ def test_the_add_box_only_fetches_the_pool_when_asked(tmp_path, fake_provider):
     labels = at.selectbox(key=pool.PICK_KEY).options
     assert "000333 美的集团" in labels, labels
     assert "600519 贵州茅台" not in labels, "已在池中的标的不该再出现在候选里"
+
+
+def test_the_add_box_uses_the_local_listing_instead_of_waiting_2_to_4_minutes(
+        tmp_path, fake_provider):
+    """v0.2.3：跑过扫描之后本地就有清单了，点「加载」应当**瞬时**出候选，不再联网。"""
+    from quant.data.symbols import save_symbols
+    _config(tmp_path, ("600519",))
+    save_symbols(pd.DataFrame([("600519", "贵州茅台"), ("000333", "美的集团")],
+                              columns=["symbol", "name"]),
+                 date.today(), tmp_path / "data" / "symbols.parquet")
+    at = _at(tmp_path)
+
+    at = at.button(key=pool.LOAD_BUTTON_KEY).click().run()
+
+    assert not at.exception, at.exception
+    assert fake_provider.calls == 0, "本地已有新鲜清单却还是联网拉了"
+    assert "000333 美的集团" in at.selectbox(key=pool.PICK_KEY).options
+
+
+def test_a_corrupt_local_listing_is_named_instead_of_silently_refetching(tmp_path,
+                                                                        fake_provider):
+    """坏清单文件必须被点名（路径 + 怎么自愈），不能悄悄退回联网重拉——
+    那样每次开面板都白等 2-4 分钟，而那个坏文件永远没人发现。页面照样不许崩。"""
+    from quant.data.symbols import save_symbols
+    _config(tmp_path, ("600519",))
+    path = tmp_path / "data" / "symbols.parquet"
+    save_symbols(pd.DataFrame([("600519", "贵州茅台")], columns=["symbol", "name"]),
+                 date.today(), path)
+    path.write_bytes(path.read_bytes()[:20])
+    at = _at(tmp_path)
+
+    at = at.button(key=pool.LOAD_BUTTON_KEY).click().run()
+
+    assert not at.exception, at.exception
+    assert "symbols.parquet" in _texts(at), _texts(at)
+    assert fake_provider.calls == 0
 
 
 def test_the_scan_pool_is_not_refetched_on_every_interaction(tmp_path, fake_provider):

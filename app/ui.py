@@ -25,6 +25,7 @@ import streamlit as st
 
 import guide
 import theme
+from quant.data import symbols
 from quant.report import fmt
 from quant.runner import jobs, process, view
 
@@ -34,16 +35,18 @@ OUTPUT = ROOT / "output"
 RUNS_DIR = OUTPUT / "runs"
 CONFIG_PATH = ROOT / "config" / "settings.yaml"
 CACHE_DIR = ROOT / "data" / "cache"
+SYMBOLS_PATH = ROOT / "data" / "symbols.parquet"
 
 
 def bind(root: Path) -> None:
     """把全部路径钉到 root（见模块 docstring 里"为什么要 bind"）。"""
-    global ROOT, OUTPUT, RUNS_DIR, CONFIG_PATH, CACHE_DIR
+    global ROOT, OUTPUT, RUNS_DIR, CONFIG_PATH, CACHE_DIR, SYMBOLS_PATH
     ROOT = root
     OUTPUT = root / "output"
     RUNS_DIR = OUTPUT / "runs"
     CONFIG_PATH = root / "config" / "settings.yaml"
     CACHE_DIR = root / "data" / "cache"
+    SYMBOLS_PATH = root / "data" / "symbols.parquet"
 
 
 AUTO_REFRESH_S = "2s"     # 运行中卡片的局部刷新间隔（空闲时不设，避免面板空转）
@@ -132,14 +135,30 @@ def data_table(df: pd.DataFrame, config: dict, empty_text: str, *,
 
 
 def symbol_names() -> dict[str, str]:
-    """symbol → 名称。唯一的离线来源是扫描 CSV，而扫描只记录**出信号**的标的，
-    所以多数标的（含 universe 里那十只蓝筹）查不到名字——缺名是常态，不是异常。
+    """symbol → 名称。两个离线来源，合并规则见下。查不到的键**不出现**在字典里
+    （由渲染层显示 fmt.MISSING，绝不在这里编一个"未知"——那看着像个名字）。
 
-    坏掉的扫描文件一律跳过：K 线页不该因为一份半截 CSV 就打不开。
+    **来源一：全市场清单 data/symbols.parquet（底稿）**。它含每只票的 name、覆盖
+    整个扫描池（实测约 3000 只），由 run_market_scan.py 每 7 天内刷新一份。
+    这是 v0.2.3 加的，也是名称列真正被填满的原因。
+
+    **来源二：扫描 CSV（补充 + 覆盖）**。它只记录**出了信号**的标的（实测 5 份文件
+    累计 313 只），所以单独用它时缺名是常态——这正是过去信号池表格名称列大半空缺的
+    原因。但它不能丢：清单是**筛过**的（主板、非 ST、上市满 400 天），后来变成 ST
+    的票会从清单里消失，而它可能还在用户的信号池里、还在老扫描文件里。
+
+    **冲突取谁：CSV 覆盖清单。** CSV 记的是"扫描那天实际看到的名字"，而清单文件按
+    is_fresh 的窗口最多可以滞后 7 天。正常情况下两者恒等（扫描写 CSV 用的就是当轮
+    那份清单），这条规则只在清单明显更旧时才起作用；但它必须是**确定**的一条。
+    多份 CSV 之间仍是"新的先到者胜"（改过名的取最近一份）。
+
+    坏文件一律降级、不许把页面打没：半截 CSV 跳过；清单文件坏了退回只用 CSV，并把
+    路径与自愈办法用 st.warning 如实说出来（命令行那边是**响亮抛错**——那里必须响亮，
+    静默会退化成每轮白拉 2-4 分钟；这里只是显示名字，页面打不开的代价更大）。
     """
+    names: dict[str, str] = {}
     scan_dir = OUTPUT / "scan"
     files = sorted(scan_dir.glob("*.csv"), reverse=True) if scan_dir.exists() else []
-    names: dict[str, str] = {}
     for path in files[:NAME_LOOKBACK_FILES]:   # 新的排前面，先到者胜（改过名的取最近）
         try:
             df = pd.read_csv(path, dtype={"symbol": str})
@@ -149,7 +168,22 @@ def symbol_names() -> dict[str, str]:
             continue
         for sym, name in zip(df["symbol"], df["name"]):
             names.setdefault(str(sym), name)
+    for sym, name in _listing_names().items():
+        names.setdefault(sym, name)            # CSV 已有的不覆盖（见上面"冲突取谁"）
     return names
+
+
+def _listing_names() -> dict[str, str]:
+    """全市场清单里的 symbol → 名称；没有清单文件就返回空表（降级到只用扫描 CSV）。"""
+    try:
+        loaded = symbols.load_symbols(SYMBOLS_PATH)
+    except RuntimeError as e:
+        st.warning(f"{e} 名称暂时只能取自扫描结果，多数标的会显示 —。")
+        return {}
+    if loaded is None:
+        return {}
+    listing, _as_of = loaded
+    return {str(s): n for s, n in zip(listing["symbol"], listing["name"])}
 
 
 def _run_key(p: Path) -> tuple[str, str]:

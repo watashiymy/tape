@@ -69,7 +69,8 @@ def _add_block(symbols: tuple[str, ...]) -> None:
             st.rerun()          # 重跑一轮：这一轮的版面就只剩下拉框，按钮不再占位
         return
     try:
-        listing, as_of = pool.scan_pool()
+        # 路径传字符串：st.cache_data 按参数值分缓存，而 pool.py 不认识 ui 的路径
+        listing, as_of = pool.scan_pool(str(ui.SYMBOLS_PATH))
     except pool.FETCH_ERRORS as e:
         # 如实报出类型与原因（多半是"网络不可达"或"当日清单未更新"），
         # 并说清哪些功能还能用——只说"失败了"等于让人去猜。

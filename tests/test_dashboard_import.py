@@ -340,10 +340,12 @@ def test_shared_paths_follow_the_dashboard_that_loaded_them(tmp_path, monkeypatc
                                                      copy_app(root))
         spec.loader.exec_module(importlib.util.module_from_spec(spec))
         ui = app_module("ui")
-        seen.append((ui.ROOT, ui.OUTPUT, ui.RUNS_DIR, ui.CONFIG_PATH, ui.CACHE_DIR))
+        seen.append((ui.ROOT, ui.OUTPUT, ui.RUNS_DIR, ui.CONFIG_PATH, ui.CACHE_DIR,
+                     ui.SYMBOLS_PATH))
 
     assert seen == [(r, r / "output", r / "output" / "runs",
-                     r / "config" / "settings.yaml", r / "data" / "cache")
+                     r / "config" / "settings.yaml", r / "data" / "cache",
+                     r / "data" / "symbols.parquet")
                     for r in roots]
 
 
