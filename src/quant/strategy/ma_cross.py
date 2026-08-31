@@ -9,6 +9,7 @@ from quant.strategy.base import Strategy
 
 class MaCross(Strategy):
     name = "ma_cross"
+    label = "双均线交叉"          # 行业通行译名（MA crossover），不自创
 
     def __init__(self, fast: int = 20, slow: int = 60):
         # 构造期校验，用 raise 而非 assert（-O 下 assert 会被剥除）。

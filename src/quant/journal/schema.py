@@ -29,6 +29,7 @@ import pandas as pd
 
 from quant.backtest.costs import commission, stamp_tax
 from quant.config import Costs
+from quant.strategy import REGISTRY
 
 # ---------------------------------------------------------------- 字段（设计 §2.3）
 # 顺序即 journal/trades.csv 的列顺序：它是存储格式的契约，
@@ -69,7 +70,11 @@ REQUIRED_BY_KIND = {
     "dividend": ("amount",),    # 只有到账金额，要股数就是逼用户编数字
 }
 
-SOURCES = ("ma_cross", "donchian", "discretionary", "other")
+# source 的合法值派生自策略注册表 + 两个固定项（v0.4.0 M1，不再手写死）：
+# 手写的四元组在加第三个策略那天就欠一个座位，而漏掉的那一个会让
+# "照信号做的交易"永远进不了按来源对比——一个不会报错的静默缺口。
+# 数据文件里存的是键；给人看的中文标签在 app/journal_ui.SOURCE_LABELS。
+SOURCES = tuple(REGISTRY) + ("discretionary", "other")
 LOT = 100                       # A 股买入的整手单位
 
 # ---------------------------------------------------------------- 问题码

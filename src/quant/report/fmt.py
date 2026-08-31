@@ -10,11 +10,13 @@
 from __future__ import annotations
 
 import math
+import re
 
 import pandas as pd
 import streamlit.column_config as column_config
 
 from quant.report import palette
+from quant.strategy import strategy_label
 
 # A 股惯例红涨绿跌，与 K 线图一致。**全局铁律**：收益率、涨跌幅、盈亏一律用这两个色，
 # 不许某处反过来（欧美习惯绿涨红跌，抄来的代码片段最容易在这里埋反向信号）。
@@ -131,6 +133,41 @@ def direction_color(x) -> str:
     if v is None or v == 0:
         return NEUTRAL
     return UP if v > 0 else DOWN
+
+
+# 回测产物目录名的时间戳后缀（run_backtest.py 的 {策略键}_{YYYYMMDD}_{HHMMSS}）。
+# 这是**唯一定义处**：app/ui.py 的排序键也用它，两处各写一份迟早对不上。
+RUN_STAMP = re.compile(r"_(\d{8}_\d{6})$")
+
+
+def run_label(name: str) -> str:
+    """回测目录名 → 给人看的「策略显示名 时间戳」（v0.4.0 M1）。
+
+    目录名照旧存键（它是数据，不是界面）；这里只换显示。两级兜底都不许抛错：
+    未知策略键（已下架策略的旧产物）原样显示键——strategy_label 的原样返回
+    正好是这个语义；没有时间戳后缀的目录名（手工改过名）整个原样返回，
+    不猜哪截是策略。
+    """
+    m = RUN_STAMP.search(name)
+    if m is None:
+        return name
+    return f"{strategy_label(name[:m.start()])} {m.group(1)}"
+
+
+def map_strategy_labels(df: pd.DataFrame) -> pd.DataFrame:
+    """把表的 strategy 列换成中文显示名，返回**新的** DataFrame（v0.4.0 M1）。
+
+    只在显示层用（扫描/信号表喂给 st.dataframe 之前那一下）；磁盘上的 CSV
+    与预填（journal_ui.prefills 读的原 df）照旧是键，所以**绝不改原 df**。
+    没有 strategy 列的表（成交明细、被跳过表）原样返回；未知键原样显示；
+    非字符串（读坏的 CSV 里的 NaN）不碰——str(NaN) 会变成一个像键的 "nan"。
+    """
+    if "strategy" not in df.columns:
+        return df
+    out = df.copy()
+    out["strategy"] = [strategy_label(v) if isinstance(v, str) else v
+                       for v in out["strategy"]]
+    return out
 
 
 def scan_column_config() -> dict:

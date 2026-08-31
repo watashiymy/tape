@@ -394,6 +394,38 @@ def test_strategy_dropdown_and_refresh_flag_reach_argv(tmp_path, monkeypatch):
          "--strategy", "ma_cross", "--refresh"]]
 
 
+def test_strategy_dropdown_displays_chinese_labels_but_the_value_is_the_key(tmp_path,
+                                                                            monkeypatch):
+    """v0.4.0 M1（设计 §1.3 的 AppTest 项）：下拉**显示**中文显示名，
+    **底层值**仍是内部键——argv、REGISTRY、产物目录名认的都是键。"""
+    from quant.strategy import REGISTRY, strategy_label
+
+    started: list[tuple] = []
+    monkeypatch.setattr(process, "start", lambda *a, **k: started.append(a))
+    at = _console(tmp_path)
+    box = at.selectbox("backtest_strategy")
+    assert box.options == ["全部"] + [strategy_label(k) for k in REGISTRY], \
+        "选项的显示文案应是中文显示名（「全部」除外）"
+    assert "双均线交叉" in box.options and "ma_cross" not in box.options
+    box.set_value("ma_cross").run()
+    assert at.selectbox("backtest_strategy").value == "ma_cross", "底层值必须仍是键"
+    at.button("start_backtest").click().run()
+    assert [a[1] for a in started] == [
+        [sys.executable, "-u", jobs.JOBS["backtest"].script,
+         "--strategy", "ma_cross"]], "argv 里传的必须是键，不是中文"
+
+
+def test_finished_scan_result_table_displays_the_strategy_label(tmp_path):
+    """控制台卡片里的结果表也要换显示名（磁盘上的 CSV 照旧存键）。"""
+    csv = _finished_scan(tmp_path)
+    at = _console(tmp_path)
+    assert not at.exception, at.exception
+    shown = at.dataframe[0].value
+    shown = getattr(shown, "data", shown)          # 扫描表可能包着 Styler
+    assert shown["strategy"].tolist() == ["双均线交叉"]
+    assert "ma_cross" in csv.read_text(encoding="utf-8"), "导出物是数据，保持键"
+
+
 def test_strategy_all_option_omits_the_flag(tmp_path, monkeypatch):
     """留空（「全部」）= 不传 --strategy，跑全部策略。把「全部」当策略名传下去
     会被 build_argv 拒（不在 REGISTRY），用户点了开始只看到一句报错。"""

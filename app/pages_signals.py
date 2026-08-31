@@ -59,14 +59,17 @@ def _scan_table(df: pd.DataFrame, names: dict[str, str]) -> None:
     except pool.CONFIG_ERRORS as e:
         st.caption(f"读不到信号池配置（{type(e).__name__}: {e}），本表暂不提供「＋ 加入」；"
                    "详情见「信号池」页。「＋ 记一笔」不依赖配置，照常可用。")
-        ui.data_table(journal_ui.record_table(df),
+        # 策略列只在**显示层**换中文显示名（map_strategy_labels 返回新表）：
+        # 预填与按钮回调（_record_column）拿的仍是原 df——journal 的 source 存键。
+        ui.data_table(fmt.map_strategy_labels(journal_ui.record_table(df)),
                       {**fmt.scan_column_config(),
                        **_record_column(df, names, journal_ui.SCAN_CLICK_KEY)},
                       "当日无新信号", hint=guide.TABLE_HINTS["scan"],
                       color_columns=ui.SCAN_COLOR_COLUMNS)
         return
     symbols = tuple(str(s) for s in df["symbol"])
-    ui.data_table(journal_ui.record_table(pool.scan_table(df, in_pool)),
+    ui.data_table(fmt.map_strategy_labels(
+                      journal_ui.record_table(pool.scan_table(df, in_pool))),
                   _scan_columns(df, symbols, names),
                   "当日无新信号", hint=guide.TABLE_HINTS["scan"],
                   color_columns=ui.SCAN_COLOR_COLUMNS)
@@ -117,7 +120,8 @@ def page_signals() -> None:
         # 表格渲染统一走 ui.data_table：空表时那句提示必须是 if/else **语句**，
         # streamlit 的 magic 会把裸三元（ast.IfExp）整条包进 st.write()，
         # 于是 st.dataframe 的返回值被当对象内省，把整份 API 手册糊在信号表下面。
-        ui.data_table(journal_ui.record_table(df),
+        # 策略列显示中文显示名；预填（_record_column 里的 prefills）仍读原 df 的键
+        ui.data_table(fmt.map_strategy_labels(journal_ui.record_table(df)),
                       {**fmt.signal_column_config(),
                        **_record_column(df, names, journal_ui.SIGNAL_CLICK_KEY)},
                       "当日无新信号", hint=guide.TABLE_HINTS["signal"])
@@ -128,5 +132,6 @@ def page_signals() -> None:
             # 历史表不再重复那行灰字：同一页里连着出现两遍等于噪声
             # 历史表刻意**不**带「记一笔」：补记一笔几个月前的老交易走录入表单更合适，
             # 而这张表可能有几百行，多一列按钮只会让"今天该做什么"更难看清。
-            ui.data_table(hist, fmt.signal_column_config(), "无")
+            ui.data_table(fmt.map_strategy_labels(hist),
+                          fmt.signal_column_config(), "无")
     scan_section(names)

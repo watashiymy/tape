@@ -183,6 +183,41 @@ def test_truncated_metrics_json_shows_error_not_crash(tmp_path):
     assert any("删除" in e.value for e in at.error), "应出现提示删除残缺目录的 st.error"
 
 
+def test_run_selector_displays_the_strategy_label_not_the_key(tmp_path):
+    """v0.4.0 M1：回测选择器**显示**「双均线交叉 时间戳」，**底层值**仍是
+    产物目录的 Path（目录名照旧存键——它是数据，不是界面）。"""
+    _complete_run(tmp_path / "output", "ma_cross_20260817_121152", {"n_trades": 1})
+    at = _at_page(tmp_path)
+    assert not at.exception, at.exception
+    box = at.selectbox[0]
+    assert box.options == ["双均线交叉 20260817_121152"], box.options
+    assert box.value.name == "ma_cross_20260817_121152", "底层值仍指向原目录"
+
+
+def test_signal_and_scan_tables_display_strategy_labels(tmp_path, monkeypatch):
+    """今日信号页三张表（最新信号 / 历史信号 / 全市场扫描）的策略列都换显示名；
+    磁盘上的 CSV 一个字节不动。"""
+    sig = tmp_path / "output" / "signals"
+    sig.mkdir(parents=True)
+    header = "date,symbol,strategy,action,close\n"
+    (sig / "2026-08-24.csv").write_text(
+        header + "2026-08-24,000333,ma_cross,buy,10.0\n", encoding="utf-8")
+    (sig / "2026-08-21.csv").write_text(
+        header + "2026-08-21,000001,donchian,sell,9.0\n", encoding="utf-8")
+    scan = tmp_path / "output" / "scan"
+    scan.mkdir(parents=True)
+    (scan / "2026-08-24.csv").write_text(
+        SCAN_HEADER + "2026-08-24,000020,深华发A,donchian,11.74,-5.09,2.9e8,4.22\n",
+        encoding="utf-8")
+
+    _, frames = _load_dashboard(tmp_path, monkeypatch, "今日信号")
+
+    shown = [f["strategy"].tolist() for f in frames if "strategy" in f.columns]
+    assert shown == [["双均线交叉"], ["唐奇安通道突破"], ["唐奇安通道突破"]], shown
+    assert "ma_cross" in (sig / "2026-08-24.csv").read_text(encoding="utf-8"), \
+        "数据文件照旧存键"
+
+
 def test_half_written_run_does_not_shadow_complete_run(tmp_path):
     """最新目录半截、更早目录完整：完整的那次必须仍然可看（默认被选中）。"""
     out = tmp_path / "output"

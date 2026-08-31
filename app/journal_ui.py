@@ -32,12 +32,15 @@ from quant.config import Costs
 from quant.data.cache import BarCache
 from quant.journal import export, pnl, schema, store
 from quant.report import fmt
+from quant.strategy import REGISTRY, strategy_label
 
 # ---------------------------------------------------------------- 中文标签
 # 四种记录类型都要有标签：漏一个，那一档在筛选框里就是个裸 'adjust'。
 # 长句解释（各自的含义与为什么必须有）在 app/guide.py 与 README 里，这里只放短标签。
 KIND_LABELS = {"buy": "买入", "sell": "卖出", "adjust": "股数调整", "dividend": "现金分红"}
-SOURCE_LABELS = {"ma_cross": "双均线信号", "donchian": "唐奇安信号",
+# 策略侧的来源标签派生自注册表（v0.4.0 M1）：新策略自动获得日志侧显示名，
+# 不再有"加了策略忘了这里"的静默缺口；两个非策略项手写（它们不在注册表里）。
+SOURCE_LABELS = {**{key: f"{strategy_label(key)}信号" for key in REGISTRY},
                  "discretionary": "自主决策", "other": "其他"}
 
 #: 主路径与"其他记录"的分工（设计 §2.2）：买卖是日常，另两种收进折叠区，
@@ -183,7 +186,8 @@ def prefills(signals: pd.DataFrame, names: Mapping[str, str] | None = None
 
     两处容错都是真会发生的：
     - 扫描 CSV 没有 `action` 列（全市场扫描只报当日新触发的 BUY）→ 一律 buy；
-    - 策略名不在 `schema.SOURCES` 里（将来加了新策略而这里没跟上）→ 退到 `other`，
+    - 策略名不在 `schema.SOURCES` 里（旧产物里已下架策略的键；"新策略没跟上"
+      自 v0.4.0 起不存在了——SOURCES 派生自注册表）→ 退到 `other`，
       而不是让来源选择框收到一个不在选项里的值当场崩掉。
     """
     lookup = dict(names or {})

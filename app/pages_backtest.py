@@ -28,7 +28,8 @@ def page_backtest() -> None:
     if not runs:
         st.info(guide.EMPTY_STATES["backtest"])
         return
-    run = st.selectbox("选择回测", runs, format_func=lambda p: p.name)
+    # 显示「策略显示名 时间戳」，底层值仍是产物目录（目录名存键，是数据不是界面）
+    run = st.selectbox("选择回测", runs, format_func=lambda p: fmt.run_label(p.name))
     # 所有文件读取集中在 try 里：即便三件套都在，metrics.json 仍可能只写了一半
     # （JSONDecodeError）。JSONDecodeError / EmptyDataError 都是 ValueError 子类，
     # FileNotFoundError 是 OSError 子类。崩页不如明说：提示删除残缺目录。
@@ -67,7 +68,7 @@ def page_kline() -> None:
     if not runs:
         st.info(guide.EMPTY_STATES["backtest"])   # 与回测报告页同一句：读的是同一批产物
         return
-    run = st.selectbox("选择回测", runs, format_func=lambda p: p.name)
+    run = st.selectbox("选择回测", runs, format_func=lambda p: fmt.run_label(p.name))
     try:
         trades_df = pd.read_csv(run / "trades.csv", dtype={"symbol": str})
     except (ValueError, OSError):

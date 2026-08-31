@@ -471,6 +471,21 @@ def test_strategy_tooltip_lists_the_registered_strategies():
         assert name in text, f"策略 tooltip 缺 {name}: {text!r}"
 
 
+def test_strategy_copy_pairs_every_display_label_with_its_key():
+    """v0.4.0 M1：guide 文案换显示名，但键不许消失——CLI 与 settings.yaml
+    认的是键，只写中文名会让人在命令行里无从下手。策略对比一节与策略 tooltip
+    两处都要 label 与键成对出现（注册表驱动：新策略漏更新文案这条会红）。"""
+    from quant.strategy import REGISTRY, strategy_label
+
+    body = guide.section("strategies").body
+    tooltip = guide.PARAM_HELP[("backtest", "strategy")]
+    for key in REGISTRY:
+        label = strategy_label(key)
+        assert label in body, f"策略对比一节缺显示名 {label}"
+        assert key in body, f"策略对比一节缺内部键 {key}"
+        assert label in tooltip, f"策略 tooltip 缺显示名 {label}"
+
+
 def test_refresh_tooltip_warns_it_costs_a_full_redownload():
     """--refresh 会丢掉缓存重拉十年日线。不警告的话它看起来只是个无害的勾选框。"""
     text = guide.PARAM_HELP[("backtest", "refresh")]

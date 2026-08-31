@@ -17,7 +17,6 @@ dashboard.py 与 pages_*.py 都只依赖它，单向、无环。
 """
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 import pandas as pd
@@ -82,7 +81,9 @@ PAGE_INTRO = {
     "个股K线": "单只标的的日线走势，叠加本次回测在它身上的买卖点。",
 }
 
-RUN_STAMP = re.compile(r"_(\d{8}_\d{6})$")   # run_backtest.py 的 {策略}_{YYYYMMDD}_{HHMMSS}
+# run_backtest.py 的 {策略键}_{YYYYMMDD}_{HHMMSS}。定义在 fmt（run_label 也用它），
+# 这里只转发：排序键与显示名对同一个形态各写一份正则，迟早有一份悄悄过期。
+RUN_STAMP = fmt.RUN_STAMP
 
 # 一次可展示的回测最少要有这三件；缺任何一件都是被 Ctrl-C 打断留下的半截目录。
 # run_backtest.py 已把 metrics.json 挪到最后写作为完成标记，但老目录仍可能残缺。

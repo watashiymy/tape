@@ -61,10 +61,40 @@ def test_columns_match_design_field_table():
     )
 
 
-def test_sources_include_two_strategies_and_discretionary():
+def test_sources_are_derived_from_the_strategy_registry():
     """source 是设计里学习价值最高的字段：分组统计"跟信号做"与"自己拍脑袋"
-    谁更赚钱。两个策略名必须与 strategy 注册表一致，否则永远分不到组。"""
-    assert set(schema.SOURCES) == {"ma_cross", "donchian", "discretionary", "other"}
+    谁更赚钱。合法值 = 全部注册策略 + 两个固定项（v0.4.0 M1 起派生，
+    不再手写死——手写的四元组在加第三个策略那天就欠一个座位）。"""
+    from quant.strategy import REGISTRY
+
+    assert schema.SOURCES == tuple(REGISTRY) + ("discretionary", "other")
+    assert "ma_cross" in schema.SOURCES and "donchian" in schema.SOURCES
+
+
+def test_sources_follow_a_new_strategy_registration():
+    """往 REGISTRY 塞个假策略，SOURCES 必须自动跟上（设计 §1.3）。
+    SOURCES 是 import 时求值的元组，所以按真实路径验证：注册后重新加载本模块
+    ——新装的策略正是走这条路（先注册、后 import journal）。"""
+    import importlib
+
+    from quant.strategy import REGISTRY
+    from quant.strategy.base import Strategy
+
+    class Fake(Strategy):
+        name = "fake_v99"
+        label = "假策略"
+
+        def generate_positions(self, df):
+            raise NotImplementedError
+
+    REGISTRY["fake_v99"] = Fake
+    try:
+        reloaded = importlib.reload(schema)
+        assert "fake_v99" in reloaded.SOURCES
+        assert reloaded.SOURCES[-2:] == ("discretionary", "other")
+    finally:
+        del REGISTRY["fake_v99"]
+        importlib.reload(schema)   # 恢复原状，别让假策略漏进后面的测试
 
 
 # ================================================================ 阻断 vs 警告（本文件的核心）

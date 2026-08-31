@@ -15,6 +15,7 @@ import theme
 import ui
 from quant.report import fmt
 from quant.runner import jobs, process, progress, view
+from quant.strategy import strategy_label
 
 
 def _param_widgets(job: jobs.Job) -> dict:
@@ -38,8 +39,11 @@ def _param_widgets(job: jobs.Job) -> dict:
             values[spec.name] = st.date_input(spec.label, value=None, key=key,
                                               help=tip)
         elif spec.kind == "choice":
+            # 显示中文显示名、底层传内部键（argv 与 REGISTRY 认的是键）。
+            # 「全部」与将来非策略的 choice 值不在注册表里，strategy_label
+            # 对未知键原样返回，正好原样显示。
             picked = st.selectbox(spec.label, ("全部", *spec.choices), key=key,
-                                  help=tip)
+                                  format_func=strategy_label, help=tip)
             values[spec.name] = None if picked == "全部" else picked
         elif spec.kind == "flag":
             values[spec.name] = st.checkbox(spec.label, value=False, key=key,
@@ -55,7 +59,9 @@ def _result_table(path_str: str, config: dict, hint: str,
     except (ValueError, OSError) as e:
         st.warning(f"产物 {path_str} 读取失败（{type(e).__name__}），可能已被删除或仍在写。")
         return
-    ui.data_table(df, config, "当次无新信号", hint=hint, color_columns=color_columns)
+    # 策略列只在显示层换中文显示名，磁盘上的 CSV 照旧存键
+    ui.data_table(fmt.map_strategy_labels(df), config, "当次无新信号",
+                  hint=hint, color_columns=color_columns)
 
 
 def _result_scan(path_str: str) -> None:

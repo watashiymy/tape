@@ -1010,6 +1010,47 @@ def test_kind_labels_cover_every_record_type():
     assert set(jui.SOURCE_LABELS) == set(schema.SOURCES)
 
 
+def test_source_labels_are_derived_from_the_strategy_labels():
+    """v0.4.0 M1：策略侧的来源标签 = 策略显示名 + "信号"，派生自注册表，
+    不再手写死；两个固定项照旧。"""
+    from quant.strategy import REGISTRY, strategy_label
+
+    for key in REGISTRY:
+        assert jui.SOURCE_LABELS[key] == f"{strategy_label(key)}信号", \
+            f"{key} 的来源标签没跟上策略显示名"
+    assert jui.SOURCE_LABELS["ma_cross"] == "双均线交叉信号"
+    assert jui.SOURCE_LABELS["donchian"] == "唐奇安通道突破信号"
+    assert jui.SOURCE_LABELS["discretionary"] == "自主决策"
+    assert jui.SOURCE_LABELS["other"] == "其他"
+
+
+def test_source_labels_follow_a_new_strategy_registration():
+    """往 REGISTRY 塞个假策略，SOURCE_LABELS 必须自动跟上（设计 §1.3）：
+    新策略自动获得日志侧显示名，不再有"欠一个座位"的那类静默缺口。
+    与 SOURCES 同一验证路径：注册后重新加载模块（新装策略走的正是这条路）。"""
+    from quant.strategy import REGISTRY
+    from quant.strategy.base import Strategy
+
+    class Fake(Strategy):
+        name = "fake_v99"
+        label = "假策略"
+
+        def generate_positions(self, df):
+            raise NotImplementedError
+
+    REGISTRY["fake_v99"] = Fake
+    try:
+        importlib.reload(importlib.import_module("quant.journal.schema"))
+        fresh = _load_journal_ui()
+        assert fresh.SOURCE_LABELS["fake_v99"] == "假策略信号"
+        assert set(fresh.SOURCE_LABELS) == set(fresh.schema.SOURCES), \
+            "派生之后两边必须继续同步（选择框只认 SOURCES 里的值）"
+    finally:
+        del REGISTRY["fake_v99"]
+        importlib.reload(importlib.import_module("quant.journal.schema"))
+        sys.modules["qd_journal_ui_probe"] = jui   # 放回本文件其余测试用的那份
+
+
 # ================================================================ 文档（设计 §4.3）
 
 README = (ROOT / "README.md").read_text(encoding="utf-8")

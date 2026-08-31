@@ -12,6 +12,7 @@ from quant.strategy.base import Strategy
 
 class Donchian(Strategy):
     name = "donchian"
+    label = "唐奇安通道突破"      # 行业通行译名（Donchian channel breakout），不自创
 
     def __init__(self, entry_n: int = 20, exit_n: int = 10,
                  amount_n: int = 20, amount_ratio: float = 1.5):

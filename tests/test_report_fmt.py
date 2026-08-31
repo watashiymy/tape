@@ -510,3 +510,42 @@ def test_skipped_column_config_matches_the_skipped_csv():
 def test_skipped_reason_column_is_wide_enough_to_read():
     """原因是这张表唯一有信息量的列（"涨停无法买入"/"资金不足"），别缩成一条。"""
     assert fmt.skipped_column_config()["reason"]["width"] == "medium"
+
+
+# -------------------------------------------------- 显示名与内部键分离（v0.4.0 M1）
+# 数据文件（扫描/信号 CSV、回测目录名）照旧存键；下面两个函数只在**显示层**换成
+# 中文显示名。未知键一律原样通行——旧产物里的键永远能显示，绝不抛错。
+
+
+def test_run_label_replaces_the_strategy_key_with_its_label():
+    """回测目录名 {策略键}_{YYYYMMDD}_{HHMMSS} → 「策略显示名 时间戳」。"""
+    assert fmt.run_label("ma_cross_20260817_121152") == "双均线交叉 20260817_121152"
+    assert fmt.run_label("donchian_20260824_151600") == "唐奇安通道突破 20260824_151600"
+
+
+def test_run_label_keeps_unknown_names_readable_and_never_raises():
+    """未知策略键（已下架策略的旧产物）原样显示键；没有时间戳后缀的目录名
+    （手工改过名的产物）整个原样返回——这两种目录都真会留在 output/ 里。"""
+    assert fmt.run_label("turtle_20260817_121152") == "turtle 20260817_121152"
+    assert fmt.run_label("我改过名的目录") == "我改过名的目录"
+
+
+def test_map_strategy_labels_touches_only_the_strategy_column():
+    df = pd.DataFrame({"symbol": ["000333", "000020"],
+                       "strategy": ["ma_cross", "donchian"],
+                       "close": [71.5, 11.74]})
+    out = fmt.map_strategy_labels(df)
+    assert out["strategy"].tolist() == ["双均线交叉", "唐奇安通道突破"]
+    assert out["symbol"].tolist() == ["000333", "000020"], "别的列一个字不许动"
+    assert out["close"].tolist() == [71.5, 11.74]
+    assert df["strategy"].tolist() == ["ma_cross", "donchian"], \
+        "不许改原 df：预填（prefills）读的还是键"
+
+
+def test_map_strategy_labels_passes_unknown_keys_and_absent_column_through():
+    """未知键原样显示（旧产物兼容）；没有 strategy 列的表（成交明细、被跳过表）
+    原样返回，不 KeyError。"""
+    assert (fmt.map_strategy_labels(pd.DataFrame({"strategy": ["turtle"]}))
+            ["strategy"].tolist() == ["turtle"])
+    df = pd.DataFrame({"symbol": ["000333"]})
+    assert fmt.map_strategy_labels(df).equals(df)

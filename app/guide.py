@@ -27,10 +27,10 @@ README_SECTION = "面板使用说明页"
 # 一律写成字符串而不是数字：这些值要原样进 markdown，float 化再格式化只会
 # 引入一层"格式串写错就显示成 117.40000001%"的风险，而且 README 对账要逐字比。
 FACTS: dict[str, str] = {
-    # —— 双均线 ma_cross
+    # —— 双均线交叉 ma_cross
     "ma_total": "117.4%", "ma_cagr": "7.6%", "ma_dd": "-15.2%",
     "ma_sharpe": "0.97", "ma_trades": "243",
-    # —— 唐奇安 donchian
+    # —— 唐奇安通道突破 donchian
     "dc_total": "49.3%", "dc_cagr": "3.8%", "dc_dd": "-12.4%",
     "dc_sharpe": "0.57", "dc_trades": "436",
     # —— 主要对照组：等权买入持有（后复权价、分红再投资口径，与策略同权）
@@ -172,8 +172,8 @@ _METRICS = _f("""| 指标 | 含义 | 读的时候注意 |
 
 | | 总收益 | 年化 | 最大回撤 | 夏普(rf=0) | 交易次数 |
 |---|--:|--:|--:|--:|--:|
-| 双均线 ma_cross | {ma_total} | {ma_cagr} | {ma_dd} | {ma_sharpe} | {ma_trades} |
-| 唐奇安 donchian | {dc_total} | {dc_cagr} | {dc_dd} | {dc_sharpe} | {dc_trades} |
+| 双均线交叉 ma_cross | {ma_total} | {ma_cagr} | {ma_dd} | {ma_sharpe} | {ma_trades} |
+| 唐奇安通道突破 donchian | {dc_total} | {dc_cagr} | {dc_dd} | {dc_sharpe} | {dc_trades} |
 | **等权买入持有** | **{hold_total}** | **{hold_cagr}** | **{hold_dd}** | — | — |
 | 沪深300（价格指数） | {csi300_total} | {csi300_cagr} | {csi300_dd} | — | — |
 
@@ -190,7 +190,7 @@ _METRICS = _f("""| 指标 | 含义 | 读的时候注意 |
 「等权买入持有」，与策略同权，才是公平的那一栏。
 """)
 
-_STRATEGIES = _f("""| | 双均线 ma_cross | 唐奇安通道突破 donchian |
+_STRATEGIES = _f("""| | 双均线交叉 ma_cross | 唐奇安通道突破 donchian |
 |---|---|---|
 | 进场看什么 | 短均线**站上**长均线（看两条线的**相对位置**） | 收盘**创 N 日新高**（看**突破**） |
 | 看不看量 | **不看** | **必须放量**才算，量不够的突破直接不认 |
@@ -374,7 +374,7 @@ PARAM_HELP: dict[tuple[str, str], str] = {
         "以指定交易日为基准，用来补扫历史某天。留空 = 最近交易日。"
         "给非交易日、或当日 {data_ready} 前数据还没更新，都会明确提示后退出。"),
     ("backtest", "strategy"): _f(
-        "只回测一个策略：ma_cross（双均线）或 donchian（唐奇安通道突破）。"
+        "只回测一个策略：ma_cross（双均线交叉）或 donchian（唐奇安通道突破）。"
         "留空 = 跑配置里的**全部**策略，每个出一份独立报告。"),
     ("backtest", "refresh"): _f(
         "丢掉本地**缓存**、把 {universe_n} 只标的约十年日线全部**重拉**一遍。"
