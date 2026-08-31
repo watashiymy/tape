@@ -159,8 +159,15 @@ def map_strategy_labels(df: pd.DataFrame) -> pd.DataFrame:
 
     只在显示层用（扫描/信号表喂给 st.dataframe 之前那一下）；磁盘上的 CSV
     与预填（journal_ui.prefills 读的原 df）照旧是键，所以**绝不改原 df**。
-    没有 strategy 列的表（成交明细、被跳过表）原样返回；未知键原样显示；
-    非字符串（读坏的 CSV 里的 NaN）不碰——str(NaN) 会变成一个像键的 "nan"。
+    没有 strategy 列的表（成交明细、被跳过表）原样返回；未知键（已下架策略的
+    旧产物）原样显示。
+
+    读坏的 CSV 里 strategy 那格可能是空的（读出来是 NaN）：它**原样留着**，
+    表格里就是一格空白。`isinstance` 那个守卫只是替 strategy_label 守住它
+    `key: str` 的入参契约，**不是**这条行为的依靠——去掉它输出一模一样
+    （NaN 会走"未知键原样返回"那条路，实测过）。真正要防的是有人顺手写成
+    `strategy_label(str(v))`：那会渲染出一个像策略键的 "nan"，即显示给用户的
+    假策略名。这条由 tests/test_report_fmt.py 的缺值那条测试钉住。
     """
     if "strategy" not in df.columns:
         return df

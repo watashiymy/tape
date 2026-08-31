@@ -40,7 +40,17 @@ journal 的 source 合法值），**内部键永不改**；加一层中文显示
 - 每个注册策略都有非空 label 且互不相同（注册表驱动，新策略漏写会红）
 - `strategy_label` 对未知键原样返回（旧产物兼容）
 - SOURCES/SOURCE_LABELS 随 REGISTRY 派生（往 REGISTRY 塞个假策略断言两者自动跟上）
-- AppTest：选择器显示中文、底层值仍是键
+- AppTest：选择器显示中文、底层值仍是键。**两页都要断言**（回测报告页与个股K线页
+  各写一次 `format_func`，只钉一页时另一页退回裸键不会红）。
+- AppTest：「＋ 记一笔」的预填 source 是**键**——扫描表与信号表**各自**一条，
+  扫描表还要覆盖读不到池子配置时的降级分支（共三个 `_record_column` 调用点）。
+  这条是 M1 最贵的不变量：预填拿到显示名的话，它不在 `schema.SOURCES` 里，
+  `journal_ui.prefills` 会把它兜底成 `other` 写进用户真实的 `journal/trades.csv`，
+  「按来源对比谁更赚钱」于是静默丢掉全部信号来源的交易，页面不报错。
+  变异测试（把 `_record_column(df, ...)` 换成
+  `_record_column(fmt.map_strategy_labels(df), ...)`）必须红。
+- `map_strategy_labels`：读坏的 CSV 里 strategy 那格是缺值时**原样留着**，
+  不许变成看着像策略键的字符串 `"nan"`。
 
 ## 2. M2：信号流水线收拢 + ATR 追踪止损
 

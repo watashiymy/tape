@@ -183,11 +183,20 @@ def test_truncated_metrics_json_shows_error_not_crash(tmp_path):
     assert any("删除" in e.value for e in at.error), "应出现提示删除残缺目录的 st.error"
 
 
-def test_run_selector_displays_the_strategy_label_not_the_key(tmp_path):
+@pytest.mark.parametrize("page", ["回测报告", "个股K线"])
+def test_run_selector_displays_the_strategy_label_not_the_key(tmp_path, page):
     """v0.4.0 M1：回测选择器**显示**「双均线交叉 时间戳」，**底层值**仍是
-    产物目录的 Path（目录名照旧存键——它是数据，不是界面）。"""
+    产物目录的 Path（目录名照旧存键——它是数据，不是界面）。
+
+    **两页都要断言**：读同一批产物的两个选择器是各写一次 format_func 的
+    （pages_backtest.py 的 :32 与 :71），只钉住回测报告页时，把 K 线页那句退回
+    `lambda p: p.name` 全绿——那页的下拉重新显示裸键 ma_cross_20260817_121152。
+    设计 §1.2 把"UI 触点全部换 label"逐个列了出来，漏掉的触点不该悄悄退回去。
+    两页的 selectbox[0] 都是「选择回测」（控制条里没有选择框；K 线页的「选择标的」
+    在它之后）。
+    """
     _complete_run(tmp_path / "output", "ma_cross_20260817_121152", {"n_trades": 1})
-    at = _at_page(tmp_path)
+    at = _at_page(tmp_path, page)
     assert not at.exception, at.exception
     box = at.selectbox[0]
     assert box.options == ["双均线交叉 20260817_121152"], box.options

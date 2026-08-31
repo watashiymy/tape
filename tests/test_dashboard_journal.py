@@ -899,6 +899,65 @@ def test_recording_a_sell_signal_prefills_the_sell_direction(tmp_path):
     assert at.selectbox(key=jui.SOURCE_KEY).value == "donchian"
 
 
+def test_recording_from_the_scan_table_prefills_the_key_not_the_display_name(tmp_path):
+    """扫描表的「＋ 记一笔」：表里**显示**「双均线交叉」，预填的 source 仍是键。
+
+    两半必须在同一条测试里断言——它们就是 v0.4.0 M1 那条不变量的两面：显示换名、
+    数据存键。只钉住显示的话，把 pages_signals 里的
+    `_record_column(df, ...)` 写成 `_record_column(fmt.map_strategy_labels(df), ...)`
+    照样全绿：预填拿到的 strategy 是「双均线交叉」，它不在 schema.SOURCES 里，
+    于是 prefills 的兜底把它降级成 source="other" 写进**用户真实的** trades.csv。
+    页面不报错、数字也正常，只有「按来源对比谁更赚钱」那块会静默丢掉所有信号来源的
+    交易——本项目 MEMORY 里记的那类静默失败。
+
+    夹具刻意只放扫描 CSV、不放 signals/：这样扫描表就是本页第一张表（dataframe=0）。
+    对称的信号表路径由上面两条钉住（那边的夹具里 dataframe[0] 是信号表）。
+    """
+    root = _root(tmp_path)
+    _scan(root, "2026-08-24,000333,美的集团,ma_cross,71.5,1.2,3e8,1.8\n")
+    at = _page(root, SIGNALS_PAGE)
+    assert not at.exception, at.exception
+    shown = _frames(at)[0]["strategy"].tolist()
+    at = click_row_button(at, jui.RECORD_COLUMN, 0, jui.RECORD_LABEL, dataframe=0)
+
+    assert not at.exception, at.exception
+    assert shown == ["双均线交叉"], f"扫描表的策略列该显示中文名：{shown}"
+    assert at.selectbox(key=jui.SOURCE_KEY).value == "ma_cross", \
+        "预填的 source 必须是内部键：显示名不在 schema.SOURCES 里，会被兜底成 other"
+    assert at.text_input(key=jui.SYMBOL_KEY).value == "000333"
+
+
+def test_the_scan_table_still_prefills_the_key_when_the_pool_config_is_broken(tmp_path):
+    """扫描表的降级分支（读不到信号池配置时那一路）也必须预填键。
+
+    这是同一条不变量的**第二个**调用点：配置读不出来时扫描表照常显示、照常带
+    「＋ 记一笔」（它只写 journal/trades.csv，不依赖配置），于是它也能把中文显示名
+    写进用户真实的日志。两个分支各写一次 `_record_column`，只钉住一个的话另一个
+    改坏了不会红。
+
+    这一路上录入表单本身是关着的（拿不到成本模型就不给录入，免得把 0 元费用写进
+    日志），所以断言落在预填那句 caption 上——它在 `apply_prefill()` 之后、
+    读成本模型之前就渲染了，正好能读出预填的 source 是键还是显示名。
+    """
+    root = _root(tmp_path)
+    # 坏在**本地池子**文件上：settings.yaml 本身是好的，坏文件不许被悄悄绕过
+    (root / "config" / "universe.local.yaml").write_text(
+        "universe: 这不是列表\n", encoding="utf-8")
+    _scan(root, "2026-08-24,000333,美的集团,ma_cross,71.5,1.2,3e8,1.8\n")
+    at = _page(root, SIGNALS_PAGE)
+
+    assert not at.exception, at.exception
+    assert "读不到信号池配置" in _texts(at), "这条测的是降级分支，得先确认真走了那一路"
+    columns = dict(at.get("dataframe")[0].proto.button_click_widgets)
+    assert jui.RECORD_COLUMN in columns and "信号池" not in columns, columns
+    assert _frames(at)[0]["strategy"].tolist() == ["双均线交叉"]
+
+    at = click_row_button(at, jui.RECORD_COLUMN, 0, jui.RECORD_LABEL, dataframe=0)
+    assert not at.exception, at.exception
+    said = _texts(at)
+    assert "已按「ma_cross" in said, f"预填的 source 不是内部键：{said}"
+
+
 # ================================================================ 纯函数（可脱离 Streamlit 测）
 
 def test_prefills_map_action_and_strategy_onto_the_journal_fields():

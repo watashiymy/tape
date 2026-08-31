@@ -5,6 +5,8 @@
 # 这些值都是真会出现的：trades.csv 里未平仓那行 pnl 是空单元格（读出来 NaN），
 # metrics.json 里 profit_factor 可能是 null。
 import importlib.util
+import io
+import math
 from dataclasses import fields
 from pathlib import Path
 
@@ -549,3 +551,20 @@ def test_map_strategy_labels_passes_unknown_keys_and_absent_column_through():
             ["strategy"].tolist() == ["turtle"])
     df = pd.DataFrame({"symbol": ["000333"]})
     assert fmt.map_strategy_labels(df).equals(df)
+
+
+def test_map_strategy_labels_keeps_a_missing_strategy_cell_missing():
+    """读坏的 CSV（strategy 那格是空的）：那格仍是缺值，**不许**变成字符串 "nan"。
+
+    刻意走 read_csv 而不是手搭 DataFrame——这条路径的输入只可能来自磁盘上的 CSV，
+    pandas 读出来的缺值是 float('nan')（strategy 列本身是 str dtype）。
+    "nan" 是个看着像策略键的假值，表格里会显示成一个并不存在的策略名；缺值原样
+    留着，st.dataframe 就显示成空格。守住这条的是 strategy_label 的"未知键原样
+    返回"（NaN 走的正是那条路），所以映射里不需要额外的类型守卫。
+    """
+    df = pd.read_csv(io.StringIO("symbol,strategy\n000333,ma_cross\n600519,\n"),
+                     dtype={"symbol": str})
+    got = fmt.map_strategy_labels(df)["strategy"].tolist()
+    assert got[0] == "双均线交叉"
+    assert isinstance(got[1], float) and math.isnan(got[1]), \
+        f"缺值被改成了 {got[1]!r}"
