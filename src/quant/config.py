@@ -96,6 +96,40 @@ def _flag(name: str, v) -> bool:
     return v
 
 
+def _mapping(where: str, v) -> dict:
+    """配置段必须是映射（YAML 的 `键: 值` 块）。**None 当空映射**（写了段没给内容
+    与整段缺失同义），其余形态一律当场报错并指名段。
+
+    不挡的下场不是静默，而是报错离病因太远：`atr_stop: 3.0`（把 k 直接写在叠加层名
+    后面，很自然的手误）会在 `.get` 上抛 `AttributeError: 'float' object has no
+    attribute 'get'`，`overlays: 5` 抛 `TypeError: 'int' object is not iterable`——
+    用户得自己回去猜是哪一段写坏了。
+    """
+    if v is None:
+        return {}
+    if not isinstance(v, dict):
+        raise ValueError(
+            f"配置段 {where} 必须是映射（写成 `键: 值`），实际为 {type(v).__name__}: {v!r}")
+    return v
+
+
+def _reject_unknown(where: str, raw: dict, known: set[str]) -> None:
+    """认不出的键**报错**，绝不忽略。
+
+    `scan` 与 `overlays` 是配置里唯一两处 `.get(键, 默认值)` 的段——也就是唯一两处
+    键名拼错不会 KeyError 的段。静默忽略的下场很具体：`enabled` 漏个 d 写成 `enable`
+    就是"配置里写着开、实际一直关着"，`min_avg_amount` 少个 n 就是门槛悄悄回到默认值
+    而扫描换出一批不同的票；两者都零告警、exit 0。
+
+    键名用 repr 打出来：`enable` 与 `enabled` 只差一个字符，不加引号根本看不出差在哪。
+    """
+    unknown = [k for k in raw if k not in known]
+    if unknown:
+        raise ValueError(
+            f"配置段 {where} 里有认不出的键 {', '.join(map(repr, unknown))}，"
+            f"可用: {sorted(known)!r}")
+
+
 @dataclass(frozen=True)
 class AtrStopCfg:
     """ATR 追踪止损（v0.4.0 M2 设计 §2.2）。默认 n=20, k=3.0，但**默认关闭**。
@@ -127,17 +161,17 @@ class OverlaysCfg:
 
 
 def _load_overlays(raw: dict | None) -> OverlaysCfg:
-    """解析 overlays 段。认不出的叠加层名**报错**，绝不忽略。
+    """解析 overlays 段。认不出的叠加层名**和**叠加层内部认不出的参数名都报错。
 
     静默忽略的下场很具体：趋势过滤要到 M3 才实现，若现在往配置里写 trend_filter
     就被无声吞掉，用户看着"开着"的配置、跑的是没有过滤的规则，零告警。
+    严格度不能只做一半——叠加层**里面**的参数名同样要认（`enable`/`kk` 这种手误
+    比未知叠加层名更常见，后果也更重：它决定每一笔交易何时认输）。
     """
-    raw = raw or {}
-    known = {f.name for f in fields(OverlaysCfg)}
-    unknown = [k for k in raw if k not in known]
-    if unknown:
-        raise ValueError(f"未知叠加层 {', '.join(map(str, unknown))}，可用: {sorted(known)}")
-    atr_raw = raw.get("atr_stop") or {}
+    raw = _mapping("overlays", raw)
+    _reject_unknown("overlays", raw, {f.name for f in fields(OverlaysCfg)})
+    atr_raw = _mapping("overlays.atr_stop", raw.get("atr_stop"))
+    _reject_unknown("overlays.atr_stop", atr_raw, {f.name for f in fields(AtrStopCfg)})
     d = AtrStopCfg()                    # 默认值只在 dataclass 声明处维护一份
     return OverlaysCfg(atr_stop=AtrStopCfg(
         enabled=atr_raw.get("enabled", d.enabled),
@@ -249,7 +283,9 @@ def load_settings(path: str | Path) -> Settings:
     if capital <= 0:
         # 负本金能"成功"跑完回测：全零 metrics + 上万行"资金不足"，exit 0
         raise ValueError(f"capital 必须大于 0，实际为 {capital!r}")
-    scan_raw = raw.get("scan") or {}   # 无 scan: 段的旧配置走 ScanConfig 默认值
+    # 无 scan: 段的旧配置走 ScanConfig 默认值；段在但键名拼错则报错（同 overlays 口径）
+    scan_raw = _mapping("scan", raw.get("scan"))
+    _reject_unknown("scan", scan_raw, {f.name for f in fields(ScanConfig)})
     d = ScanConfig()                   # 默认值只在 dataclass 声明处维护一份
     scan = ScanConfig(
         history_days=int(scan_raw.get("history_days", d.history_days)),

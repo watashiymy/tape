@@ -36,7 +36,7 @@ def target_positions(df: pd.DataFrame, strategy: Strategy,
 def atr_trailing_stop(df: pd.DataFrame, base: pd.Series, *, n: int, k: float) -> pd.Series:
     """ATR 追踪止损（海龟法则变体，全部用后复权价）。
 
-    语义三条，逐条都有专测（tests/test_strategy_pipeline.py）：
+    语义四条，逐条都有专测（tests/test_strategy_pipeline.py）：
 
     1. 持有期间维护 `peak = 入场以来最高 adj_close`；当日
        `adj_close < peak − k × ATR(n)` → 目标仓位归 0。归 0 落在**触发当根**
@@ -46,9 +46,18 @@ def atr_trailing_stop(df: pd.DataFrame, base: pd.Series, *, n: int, k: float) ->
     2. 止损后**保持空仓，直到基础策略给出新的 0→1 入场**。基础信号一直是 1 不算：
        否则止损次日立刻回补，买回的还是那只刚跌破止损线的票，止损形同虚设。
        这条是本函数必须带状态（而不是逐根重算一个布尔掩码）的全部原因。
+       解锁只写一处：基础信号回 0 时清掉封锁。此后的每个 1 都必然是一次 0→1，
+       所以**不需要**再单独判"上一根 base 是 0 就解锁"——那条分支与这里逐位等价
+       （穷举 3 条价格路径 × 2^11 基础信号 × 3 组参数 = 18432 组核对，0 组不同），
+       而一个任何测试都分不开的分支只会烂在那儿：改坏了没人红。
     3. ATR 暖机期（`rolling(n)` 还给不出值）不触发——算不出来就不装算得出来。
        这里显式判 `notna` 而不是依赖"NaN 参与比较恒为 False"的副作用：后者一旦
        被改写成等价的否定形式（`not (close >= thr)`）就会静默反转成"暖机期全止损"。
+    4. peak **每次入场重置**（`c if not held`），绝不沿用被止损那一轮的旧高点、
+       也不是"全样本滚动最高"。写错的表现只是"止损好像变紧了一点"：止损线钉在
+       早已作废的旧高点上，新一轮刚入场就带着一大截凭空的"回撤"。
+       tests 里那条**二次入场价落在旧 peak 之下**的用例是全套件唯一分得开两种口径
+       的（入场价高于旧 peak 时 `max(旧peak, c) == c`，两种写法逐位一致）。
 
     逐根循环而非向量化：`peak` 依赖"上一次入场在哪儿"，而那又依赖止损是否已发生，
     互相递归。唐奇安的持仓状态机同样是逐根写的（见 donchian.py），口径一致。
@@ -59,21 +68,17 @@ def atr_trailing_stop(df: pd.DataFrame, base: pd.Series, *, n: int, k: float) ->
     blocked = False     # 止损后的封锁：等基础信号的新 0→1 才解除
     peak = 0.0
     out = [0] * len(df)
-    prev_base = 0
     for i in range(len(df)):
-        cur_base = int(base.iloc[i])
-        if cur_base == 0:
-            held, blocked = False, False    # 基础信号自己离场，封锁随之作废
-        else:
-            if prev_base == 0:              # 基础信号的新入场 → 解除封锁
-                blocked = False
-            if not blocked:
-                c = float(close.iloc[i])
-                peak = c if not held else max(peak, c)
-                held = True
-                b = band.iloc[i]
-                if pd.notna(b) and c < peak - b:
-                    held, blocked = False, True
+        if int(base.iloc[i]) == 0:
+            # 基础信号自己离场 → 封锁随之作废。解锁只有这一处（见文档串第 2 条）：
+            # 此后的每个 1 都必然是一次 0→1，无需再单独判"上一根是 0"。
+            held, blocked = False, False
+        elif not blocked:
+            c = float(close.iloc[i])
+            peak = c if not held else max(peak, c)   # 每次入场重置 peak，不跨轮沿用
+            held = True
+            b = band.iloc[i]
+            if pd.notna(b) and c < peak - b:
+                held, blocked = False, True
         out[i] = int(held)
-        prev_base = cur_base
     return pd.Series(out, index=df.index, dtype=int, name=base.name)

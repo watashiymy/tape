@@ -25,10 +25,18 @@ from quant.strategy.pipeline import target_positions
 from tests.conftest import make_bars
 
 ROOT = Path(__file__).resolve().parent.parent
-_SCRIPT = ROOT / "scripts" / "run_backtest.py"
-_SPEC = importlib.util.spec_from_file_location("run_backtest_m2", _SCRIPT)
-run_backtest = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(run_backtest)
+
+
+def _load_script(stem: str):
+    spec = importlib.util.spec_from_file_location(
+        f"{stem}_m2", ROOT / "scripts" / f"{stem}.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+run_backtest = _load_script("run_backtest")
+run_daily_signal = _load_script("run_daily_signal")
 
 EXPECTED = pd.Timestamp("2024-06-28").date()   # 周五，bdate_range(end=...) 的最后一根
 
@@ -187,23 +195,58 @@ def test_a_fresh_0_to_1_base_entry_re_arms_the_position():
     assert list(pos) == [0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 1]
 
 
-#: 二次入场（idx10，peak = 150）之后每根跌 30，用来分开"新 peak"与"旧 peak"两种口径
+#: 二次入场（idx10，入场价 150）之后每根跌 30，用来钉"回撤恰好等于阈值不触发"这条边界
 REENTRY = BLOCKED + [120.0, 90.0, 60.0, 30.0]
 REENTRY_BASE = [0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1]
 
 
-def test_re_entry_starts_a_brand_new_peak():
-    """重新入场后 peak 从**新**入场价起算，不复用被止损那一轮的旧 peak。
+def test_the_drawdown_threshold_is_a_strict_less_than():
+    """"回撤 == 阈值不触发"这条边界（判据是 `<` 而不是 `<=`）。
 
-    idx10 以 150 入场（上一轮的旧 peak 是 120），随后每根跌 30（TR=30 → ATR(4)=30，
-    阈值 3×30 = 90）：
-      idx13: c=60 → 新 peak 口径回撤 = 150−60 = 90，**恰好等于**阈值 → 判据是 <，不触发
-      idx14: c=30 → 新 peak 口径回撤 = 120 > 90 → 触发
-                    旧 peak 口径回撤 = 120−30 = 90，不触发 → 会多持一根
-    idx13 顺带钉住"回撤 == 阈值不触发"这条边界（写成 <= 会让止损整体提前一档）。
+    idx10 以 150 入场，随后每根跌 30（TR=30 → ATR(4)=30，阈值 3×30 = 90）：
+      idx13: c=60 → 回撤 = 150−60 = 90，**恰好等于**阈值 → 不触发
+      idx14: c=30 → 回撤 = 120 > 90 → 触发
+    写成 <= 会让止损整体提前一档（每一笔都早认输一根）。
+
+    注意本条**分不开** peak 的两种口径：二次入场价 150 高于上一轮的旧 peak 120，
+    于是"新 peak"与"跨轮沿用的旧 peak"逐位一致（max(120, 150) == 150）。
+    那条语义由下面那条（入场价落在旧 peak **之下**）单独钉。
     """
     pos = target_positions(bars(REENTRY), Fixed(REENTRY_BASE), stop())
     assert list(pos) == [0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0]
+
+
+#: 二次入场价 60 落在**旧 peak 120 之下**——两种 peak 口径只有这样才分得开。
+#: idx6 打平（TR=0）让基础信号先离场，idx7 以 60 重新入场，idx8 跌到 40。
+RE_LOW = TRIGGERED + [27.0, 60.0, 40.0]
+RE_LOW_BASE = [0, 0, 1, 1, 1, 1, 0, 1, 1]
+
+
+def test_re_entry_below_the_old_peak_starts_a_brand_new_peak():
+    """peak 从**新入场那根**起算，绝不跨轮沿用上一轮的高点。
+
+    这条是全套件里唯一分得开两种 peak 口径的用例，所以它决定每一笔的认输点：
+    一旦 peak 被写成"全局滚动最高"或"止损后仍沿用"，止损线会钉在早已作废的旧高点上，
+    新一轮刚入场就带着一大截"回撤"，回测里只表现为"止损变紧了一点"，无人报错。
+
+    手算（bars() 里 TR = |Δadj_close|，首根退化为 high−low = 0）：
+      idx      0     1     2      3     4     5      6      7      8
+      close   66    93   120     89    58    27     27     60     40
+      TR       0    27    27     31    31    31      0     33     20
+      ATR(4) NaN   NaN   NaN  21.25  29.0  30.0  23.25  23.75  21.00
+    第一轮：idx2 以 120 入场；idx5 回撤 120−27 = 93 > 3×30 = 90 → 止损（既有用例已钉）。
+    idx6 基础信号回 0（封锁作废），idx7 基础信号 0→1 → 以 60 **重新入场**：
+      idx7: 阈值 3×23.75 = 71.25。新 peak 口径回撤 = 60−60 = 0 → 不触发；
+            旧 peak 口径回撤 = 120−60 = 60 < 71.25 → 也不触发（两种口径这里同分，
+            所以判据必须看下一根）。
+      idx8: 阈值 3×21.0 = 63。新 peak 口径回撤 = 60−40 = 20 < 63 → **不触发**；
+            旧 peak 口径回撤 = 120−40 = 80 > 63 → 会凭空止损一次。
+    """
+    pos = target_positions(bars(RE_LOW), Fixed(RE_LOW_BASE), stop())
+    assert list(pos) == [0, 0, 1, 1, 1, 0, 0, 1, 1]
+    assert int(pos.iloc[-1]) == 1, (
+        "末根被止掉 = peak 沿用了上一轮的旧高点 120（正确口径是新入场价 60，"
+        "回撤 20 远不到阈值 63）")
 
 
 def test_a_base_exit_clears_the_block_too():
@@ -345,6 +388,72 @@ def test_every_entry_point_goes_through_the_pipeline(rel):
     assert "target_positions" in names, f"{rel} 没有经过 pipeline.target_positions"
 
 
+# ---------- 传的是**配置里那份** overlays（上面两条断言管不到实参）----------
+#
+# "漏接"有两种形态：一种是根本不走 pipeline（上面两条钉住了），另一种是走了 pipeline
+# 但把一个全关的 OverlaysCfg() 递进去——配置里写着 atr_stop 开着，实际按无叠加层跑，
+# 三个入口各自都输出一串合法仓位，零告警。第二种形态完全合法（overlays 是必填参数，
+# 填什么都是填了），所以必须钉到**实参**上。
+
+#: 哪些函数按位置收 overlays（第几个位置参数）；其余一律走关键字。
+_OVERLAYS_POSITION = {"target_positions": 2, "strategy_positions": 2}
+
+#: 允许出现的两种实参形态。`settings.overlays` = load_settings 读出来的那份；
+#: `overlays` = 本函数自己的同名参数往下转发。除此之外的任何表达式（尤其是就地
+#: 构造的 OverlaysCfg(...)）都意味着这一处跑的规则与配置文件无关。
+_ALLOWED_OVERLAYS_ARGS = {"settings.overlays", "overlays"}
+
+
+def _overlays_arguments(path: Path) -> list[tuple[str, int]]:
+    """文件里每一处"把叠加层交出去"的实参源码 + 行号。
+
+    用 AST 而不是文本匹配：实参是表达式，`settings.overlays` 与 `OverlaysCfg()`
+    只有解析出来才分得开，而这两者的差别正是"按配置跑"与"按默认跑"的差别。
+    """
+    out: list[tuple[str, int]] = []
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if not isinstance(node, ast.Call):
+            continue
+        for kw in node.keywords:
+            if kw.arg == "overlays":
+                out.append((ast.unparse(kw.value), kw.value.lineno))
+        name = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+        pos = _OVERLAYS_POSITION.get(name)
+        if pos is not None and len(node.args) > pos:
+            out.append((ast.unparse(node.args[pos]), node.args[pos].lineno))
+    return out
+
+
+@pytest.mark.parametrize("rel", ["scripts/run_backtest.py",
+                                 "scripts/run_daily_signal.py",
+                                 "scripts/run_market_scan.py"])
+def test_every_script_passes_the_overlays_from_the_loaded_settings(rel):
+    """三个可执行入口都必须把 `settings.overlays` 递下去。
+
+    这三个脚本是唯一 load_settings 的地方，也就是唯一有资格决定"这轮按什么规则跑"
+    的地方。换成 OverlaysCfg() 就是"配置写着开、实际关着"——回测/扫描/每日信号
+    照常跑完、exit 0，而每一笔的认输点全变了。
+    """
+    got = _overlays_arguments(ROOT / rel)
+    assert got, f"{rel} 一处叠加层实参都没有——它没在把配置递给 pipeline"
+    assert "settings.overlays" in [src for src, _ln in got], (
+        f"{rel} 没有把配置里的叠加层递下去，实际递的是 {got}")
+
+
+def test_no_entry_point_conjures_its_own_overlays():
+    """反向断言：入口层不许就地造 overlays。
+
+    上面那条只要求"settings.overlays 出现过"；本条管住每一处实参，
+    杜绝"一处按配置跑、另一处按默认跑"这种半漏接（那比全漏接更难发现）。
+    """
+    bad = [(p.name, src, ln) for p in ENTRY_FILES
+           for src, ln in _overlays_arguments(p)
+           if src not in _ALLOWED_OVERLAYS_ARGS]
+    assert bad == [], (
+        f"入口层就地构造了叠加层配置：{bad}。只允许 {sorted(_ALLOWED_OVERLAYS_ARGS)}——"
+        f"要么是配置里那份，要么是同名参数的转发")
+
+
 def _padded(adj_closes, base, factors=None):
     """把手算序列垫到 MIN_BARS 根之上（全市场扫描的暖机闸门要求 ≥130 根），
     返回 (df, 基础信号列表)。
@@ -401,6 +510,94 @@ def test_three_entry_points_agree_on_the_same_df_and_config(why, closes, base, t
     got, skip = classify_and_scan(df, [strat], EXPECTED, 5e7, overlays=ov)
     assert skip is None, f"这条用例不该被跳过判定拦下: {skip}"
     assert bool(got) is (tail == (0, 1))
+
+
+# ---------- 端到端：配置说开，跑出来就得是开着的那套 ----------
+#
+# 上面几条是源码级的。源码级断言的软肋是它只认表达式长相，不认运行时行为；
+# 所以再补一条真跑 main() 的：临时 config 里 atr_stop 开着 → CSV 里必须出现这次
+# 止损 SELL；同一段行情把开关关掉 → 一条信号都没有。两次跑的唯一差别就是配置里
+# 那个 enabled，于是"配置被尊重"这件事有了行为侧的证据。
+#
+# 手算（rise=10 的稳步上涨 22 根 100→310，末根跌到 260）：
+#   TR: idx0 = 0（首根退化为 high−low），idx1..21 = 10，idx22 = 50
+#   ATR(20)@idx22 = (19×10 + 50)/20 = 12 → 阈值 3×12 = 36
+#   peak = 310（idx21），回撤 = 310 − 260 = 50 > 36 → 末根止损
+#   基础信号（ma_cross 5/10）末根仍是 1：MA5 = (280+290+300+310+260)/5 = 288，
+#   MA10 = (230+…+310+260)/10 = 269 → 288 > 269。**没有任何基础卖出信号**，
+#   这条 SELL 只可能来自止损；参数选得很紧：跌幅再大一点（>3×rise=30 那档往上到
+#   6×rise）才既触发止损又不把快线打到慢线之下，所以 50 这个数字不是随手写的。
+STEP_UP = [100.0 + 10.0 * i for i in range(22)] + [260.0]
+
+_DAILY_CFG = """
+universe: ["600000"]
+benchmark: "000300"
+backtest: {start: "2024-01-01", capital: 5000000}
+costs:
+  commission_rate: 0.00025
+  commission_min: 5.0
+  stamp_tax: [{rate: 0.0005}]
+  slippage: 0.001
+strategies: {ma_cross: {fast: 5, slow: 10}}
+overlays:
+  atr_stop: {enabled: %s, n: 20, k: 3.0}
+"""
+
+
+def _run_daily_signal(tmp_path, monkeypatch, enabled: str) -> pd.DataFrame:
+    """在 tmp_path 里跑一次 run_daily_signal.main()，返回它写出的信号 CSV。
+
+    联网的两件事（交易日历、取行情）换成假的；其余全部走真代码——尤其是
+    load_settings 与 scan(..., overlays=...) 那条线，这正是要钉的东西。
+    cwd 换到 tmp_path：脚本里的 config/settings.yaml、data/cache、output/signals
+    都是相对路径，绝不可能碰到仓库里用户自己的产物。
+    """
+    (tmp_path / "config").mkdir(exist_ok=True)
+    (tmp_path / "config" / "settings.yaml").write_text(_DAILY_CFG % enabled,
+                                                       encoding="utf-8")
+    df = bars(STEP_UP)
+
+    class FakeProvider:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def get_trade_calendar(self, start, end): return [EXPECTED]
+
+    class FakeService:
+        def __init__(self, provider, cache): pass
+        def get_bars(self, symbol, start, **kw): return df.copy(), []
+
+    monkeypatch.setattr(run_daily_signal, "BaostockProvider", FakeProvider)
+    monkeypatch.setattr(run_daily_signal, "DataService", FakeService)
+    monkeypatch.chdir(tmp_path)
+    run_daily_signal.main()
+    out = tmp_path / "output" / "signals" / f"{EXPECTED}.csv"
+    assert out.exists(), f"脚本没写出 {out}"
+    return pd.read_csv(out)
+
+
+def test_run_daily_signal_actually_runs_the_stop_its_config_asks_for(tmp_path, monkeypatch):
+    """配置里 atr_stop 开着 → 每日信号必须报出这次止损 SELL。
+
+    这是本版给用户补的真缺口：此前系统等权满仓、没有任何出场保护，而基础信号
+    （均线仍多头排列）永远不会给出这条卖出。若入口把 settings.overlays 换成
+    OverlaysCfg()，脚本照样打印"今日无新信号"、照样写出只有表头的 CSV、照样 exit 0。
+    """
+    got = _run_daily_signal(tmp_path, monkeypatch, "true")
+    assert list(got.columns) == run_daily_signal.CSV_COLUMNS
+    assert got.to_dict("records") == [{
+        "date": str(EXPECTED), "symbol": 600000, "strategy": "ma_cross",
+        "action": "SELL", "close": 260.0}]
+
+
+def test_run_daily_signal_says_nothing_when_the_config_turns_the_stop_off(tmp_path,
+                                                                         monkeypatch):
+    """同一段行情、开关关掉 → 零信号。
+
+    没有这条对照，上一条测的可能只是"ma_cross 自己在末根卖出"；有了它，
+    那条 SELL 的唯一来源只能是配置里打开的 atr_stop。
+    """
+    got = _run_daily_signal(tmp_path, monkeypatch, "false")
+    assert got.empty, f"关掉止损后不该有任何信号，实际: {got.to_dict('records')}"
 
 
 def test_the_stop_overlay_neither_invents_nor_erases_a_fresh_buy():

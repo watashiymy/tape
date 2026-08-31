@@ -287,6 +287,78 @@ def test_the_overlay_dataclass_validates_on_construction():
     assert (ok.n, ok.k) == (20, 3.0)
 
 
+# ---------- 拼错的键名（不是"未知叠加层名"，是叠加层**内部**的参数名）----------
+#
+# 严格度不能自相矛盾：认不出的叠加层**名**报错，而叠加层**里面**认不出的参数名
+# 若静默忽略，后果比前者更重——`enable`（漏了 d）让止损静默关着、`kk` 让 k 悄悄
+# 回到默认 3.0，而 overlays 段的每个数字都决定每一笔交易何时认输。
+# 静默忽略的这一类正是本文件 _flag/_positive_int 一路在防的"配置写着开、实际关着"。
+
+
+@pytest.mark.parametrize("entry, needle, why", [
+    ("{enable: true, k: 2.0}", "enable",
+     "enabled 漏了 d → 止损静默关着，写进去的 k 一点用没有，回测按无止损口径跑完 exit 0"),
+    ("{enabled: true, kk: 2.0}", "kk", "k 打成 kk → k 悄悄回到默认 3.0，认输点整体变松"),
+    ("{enabled: true, N: 20}", "N", "YAML 键区分大小写：N 不是 n，窗口静默回到 20"),
+    ("{enabled: true, k: 2.0, atr_n: 10}", "atr_n", "凭印象写的参数名"),
+])
+def test_an_unknown_key_inside_an_overlay_raises_instead_of_being_ignored(
+        tmp_path, entry, needle, why):
+    with pytest.raises(ValueError) as e:
+        load_settings(_cfg(tmp_path, f"overlays:\n  atr_stop: {entry}\n"))
+    msg = str(e.value)
+    # 键名带引号比对：不带引号时 "enable" 会被 "可用: ['enabled', ...]" 里的
+    # enabled 顺带匹配上，那样这条断言对 enable 这个手误毫无分辨力。
+    assert f"'{needle}'" in msg, f"报错必须点名认不出的键（{why}）: {msg}"
+    assert "atr_stop" in msg, f"报错要说清是哪个叠加层的参数: {msg}"
+
+
+@pytest.mark.parametrize("body, needle, why", [
+    ("overlays: 5\n", "overlays", "整段写成一个标量"),
+    ("overlays:\n  atr_stop: 3.0\n", "atr_stop",
+     "把 k 直接写在叠加层名后面（很自然的手误）——旧代码在 .get 上抛 "
+     "AttributeError: 'float' object has no attribute 'get'"),
+    ("overlays:\n  atr_stop: [enabled, true]\n", "atr_stop", "写成列表"),
+    ("scan: 400\n", "scan", "整段写成一个标量——旧代码 or {} 直接把它当空段吞了"),
+])
+def test_a_non_mapping_config_section_raises_and_names_the_section(
+        tmp_path, body, needle, why):
+    """形状不对的配置段要抛**带段名与实际值的中文 ValueError**。
+
+    旧行为是 AttributeError / TypeError：响亮，但报错离病因很远
+    （用户看到的是 'float' object has no attribute 'get'，得自己回去猜是哪一段）。
+    """
+    with pytest.raises(ValueError, match=needle) as e:
+        load_settings(_cfg(tmp_path, body))
+    assert "实际" in str(e.value), f"报错必须给出实际值（{why}）: {e.value}"
+
+
+def test_an_empty_section_still_means_all_defaults(tmp_path):
+    """写了段但没给内容（YAML 读成 None）= 全默认，不是错。
+    形状校验不能顺手把这种合法写法也挡掉——`overlays:` 后面空着与整段缺失同义。"""
+    s = load_settings(_cfg(tmp_path, "overlays:\n"))
+    assert s.overlays.atr_stop.enabled is False
+    s2 = load_settings(_cfg(tmp_path, "overlays:\n  atr_stop:\n"))
+    assert (s2.overlays.atr_stop.enabled, s2.overlays.atr_stop.n,
+            s2.overlays.atr_stop.k) == (False, 20, 3.0)
+    s3 = load_settings(_cfg(tmp_path, "scan:\n"))
+    assert (s3.scan.history_days, s3.scan.min_avg_amount, s3.scan.top_n) \
+        == (400, 50_000_000, 20)
+
+
+def test_an_unknown_key_in_the_scan_section_raises(tmp_path):
+    """scan: 段同一口径（它与 overlays 是配置里唯一两处 `.get(键, 默认值)` 的段，
+    也就是唯一两处拼错键名不会 KeyError 的段）。
+
+    `min_avg_amount` 少一个 n 时门槛静默回到 5000 万，全市场扫描换出一批不同的票，
+    而终端输出里那行"流动性门槛 20日均额 ≥ 50,000,000 元"看着完全正常。
+    """
+    with pytest.raises(ValueError) as e:
+        load_settings(_cfg(tmp_path, "scan: {min_avg_amout: 80000000}\n"))
+    assert "'min_avg_amout'" in str(e.value)
+    assert "min_avg_amount" in str(e.value), "报错要列出可用的键，好让人一眼看出差在哪"
+
+
 # ---------- 本地信号池覆盖（v0.3.2 §2.2）----------
 #
 # `config/settings.yaml` 的 universe 语义降级为**种子**（新克隆的起步池子，随代码
