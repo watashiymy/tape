@@ -234,6 +234,9 @@ def _log_section(trades) -> None:
         st.write("没有符合条件的记录——把上面的筛选条件放宽些看看。")
     else:
         _editor(trades, filtered)
+    # 备份说明**不放在 if/else 里面**：一笔都还没记的时候正是用户即将大批量录入的
+    # 时刻，那时更需要知道"改错了还有救"。位置紧跟历史表（设计 §3）。
+    st.caption(guide.journal_backup_note(store.backup_path(ui.JOURNAL_PATH)))
     _exports(filtered)
 
 

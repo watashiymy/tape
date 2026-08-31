@@ -172,11 +172,13 @@ def test_scan_section_ranks_volume_ratio_above_pct_chg():
 # ================================================================ 八个小节（§3.1）
 
 EXPECTED_SECTIONS = ("tasks", "workflow", "scan", "metrics", "strategies",
-                     "limits", "safety", "cli")
+                     "limits", "userdata", "safety", "cli")
 
 
-def test_the_eight_sections_of_the_spec_are_all_there_in_order():
-    """§3.1 定了八节，顺序也是设计过的（先讲是什么，再讲怎么读，最后安全与命令行）。"""
+def test_the_sections_of_the_spec_are_all_there_in_order():
+    """§3.1 定的八节，顺序是设计过的（先讲是什么，再讲怎么读，最后安全与命令行）。
+    v0.3.2 在「已知局限」与「安全提示」之间插入「你的数据在哪」——它讲的是
+    "哪些文件是你的、不进 git、备份在哪"，与紧随其后的安全提示是同一类话题。"""
     assert tuple(s.key for s in guide.SECTIONS) == EXPECTED_SECTIONS
 
 
@@ -296,6 +298,110 @@ def test_no_user_facing_copy_claims_the_default_bind_is_safe():
         for line in README.splitlines():
             if lie in line:
                 assert "假话" in line, f"README 里有一处没标注勘误的「{lie}」: {line}"
+
+
+# ---------------------------------------------------------------- 你的数据在哪（v0.3.2 §5）
+#
+# 这一节是本次改动的**用户可见面**：两份用户数据被移出版本控制之后，用户必须知道
+# 它们在哪、不受 git 保护、备份在哪、换机器怎么带走。不写清楚的后果很具体：
+# 换电脑时只 clone 了仓库，以为"东西都在"，结果一笔交易记录都没有。
+
+def test_the_userdata_section_names_every_file_that_belongs_to_the_user():
+    """三个路径都要出现在正文里：日志、日志备份、本地信号池。
+    少写一个，用户换机器时就会漏带一个。"""
+    body = guide.section("userdata").body
+    for path in ("journal/trades.csv", "journal/trades.csv.bak",
+                 "config/universe.local.yaml"):
+        assert path in body, f"「你的数据在哪」一节没提到 {path}"
+
+
+def test_the_userdata_section_says_these_files_are_not_in_git():
+    """"git 历史等于免费撤销"这条自 v0.3.2 起对这两份文件**不再成立**。
+    用户必须知道，否则他会继续指望一个不存在的安全网。"""
+    body = guide.section("userdata").body
+    assert "版本控制" in body or "git" in body, body
+    assert "备份" in body, "没说清撤销靠的是 .bak 备份（不再是 git 历史）"
+
+
+def test_the_userdata_section_tells_you_how_to_move_to_a_new_machine():
+    """§5（E）点名要有这一条：换机器时把哪几个文件拷过去。"""
+    body = guide.section("userdata").body
+    assert "新机器" in body or "换机器" in body, body
+    assert "拷" in body or "复制" in body, body
+
+
+def test_the_userdata_section_says_settings_yaml_is_still_project_config():
+    """分离的另一半也要说：settings.yaml 仍然受版本控制（成本模型、策略参数是
+    项目决策），里面的 universe 只是**种子**。不说的话，用户会以为改它有用。"""
+    body = guide.section("userdata").body
+    assert "config/settings.yaml" in body
+    assert "种子" in body or "默认池子" in body, body
+
+
+@pytest.mark.parametrize("lie", ["写进 config/settings.yaml",
+                                 "写入 config/settings.yaml",
+                                 "写进 `config/settings.yaml`",
+                                 "写入 `config/settings.yaml`"])
+def test_no_copy_still_claims_the_pool_is_written_to_settings_yaml(lie):
+    """v0.3.2 起面板写的是本地覆盖文件。任何还说"改动写进 settings.yaml"的文案
+    都是**假话**——照它做（比如手改 settings.yaml 的 universe 期待生效）不会有任何
+    效果，也不会有任何报错。同 v0.2.1 那次"默认绑定是安全的"勘误一个套路：
+    渲染给用户看的字符串里一处都不许留。
+
+    只查字符串字面量（走 AST）与 README 正文，不查注释——注释里解释
+    "以前写的是 settings.yaml，现在改了"是正当的。
+    """
+    hits = [s for s in _app_copy_literals() if lie in s]
+    assert hits == [], f"面板文案里还有一处「{lie}」（已经不是事实）：{hits}"
+    for line in README.splitlines():
+        assert lie not in line, f"README 里还有一处「{lie}」：{line}"
+
+
+def _app_copy_literals() -> list[str]:
+    """app/ 里所有**渲染给用户看的**字符串字面量（docstring 除外）。
+
+    docstring 要排除：注释与 docstring 里解释"v0.3.2 之前写的是 settings.yaml、
+    现在改成本地文件"是正当的，那是给维护者看的。
+    每个文件**只 parse 一次**——分两次 parse 的话 `id()` 分属两棵不同的树，
+    docstring 一个都排除不掉，测试会变成"永远通过"。
+    """
+    out: list[str] = []
+    for path in sorted((ROOT / "app").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        docs = {
+            id(n.body[0].value)
+            for n in ast.walk(tree)
+            if isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef,
+                              ast.ClassDef))
+            and n.body and isinstance(n.body[0], ast.Expr)
+            and isinstance(n.body[0].value, ast.Constant)
+            and isinstance(n.body[0].value.value, str)}
+        out += [n.value for n in ast.walk(tree)
+                if isinstance(n, ast.Constant) and isinstance(n.value, str)
+                and id(n) not in docs]
+    return out
+
+
+def test_the_docstring_filter_actually_filters_something():
+    """上一条的自检：docstring 排除逻辑一旦失效（例如两次 parse 导致 id 全不匹配），
+    那条断言就会开始扫 docstring 里的勘误说明并**误红**；反过来，若它把所有字面量
+    都当 docstring 排除掉，那条断言就变成永远通过。两个方向都要有个哨兵。"""
+    literals = _app_copy_literals()
+    assert any(guide.POOL_NOTE == s for s in literals), \
+        "连 POOL_NOTE 都没扫到：字面量收集坏了，那条勘误断言已经是空跑"
+    assert not any(s.startswith("信号池的读写编排") for s in literals), \
+        "app/pool.py 的模块 docstring 没被排除：docstring 过滤失效了"
+
+
+def test_the_readme_has_the_same_userdata_section():
+    """README 是外部第一入口（也是新机器上唯一能看到的东西——面板还没起来的时候）。
+    面板里写了而 README 没写，等于对着一个打不开面板的人说"看面板"。"""
+    section = _readme_section("你的数据")
+    for path in ("journal/trades.csv", "journal/trades.csv.bak",
+                 "config/universe.local.yaml"):
+        assert path in section, f"README 的「你的数据」一节没提到 {path}"
+    assert "版本控制" in section, section
+    assert "新机器" in section or "换机器" in section, section
 
 
 def test_the_cli_section_lists_all_three_entry_scripts():

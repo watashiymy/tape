@@ -1,9 +1,16 @@
-"""信号池的读写编排（v0.2.2 §3.4）：面板上增删 `settings.yaml` 的 universe。
+"""信号池的读写编排（v0.2.2 §3.4）：面板上增删信号池。
+
+**写的是 `config/universe.local.yaml`，不是 `config/settings.yaml`**（v0.3.2 §2.2）：
+池子是用户状态（随交易变化、暴露关注标的），项目配置是项目决策。改一次自己的池子
+不该让一个受版本控制的文件变脏（那会天天提示提交一份与代码无关的 diff）。
+调用方传进来的仍然是 settings.yaml 的路径——本地文件的位置由它推导，
+"内部写哪个文件"是实现细节。
 
 **分工**（校验与写盘的真正逻辑都在 src/，这里只是编排 + Streamlit 接线）：
 - `quant.universe`：代码格式、去重、"是否在扫描池内"、至少留 1 只；
-- `quant.config_edit`：只重写 universe 块的外科式改写 + 原子写 + 写后复核回滚；
-- 本模块：读当前池子 → 调上面两个 → 把结果变成一句人话，外加扫描池清单的缓存。
+- `quant.config_edit`：本地文件的整份重写 + 原子写 + 写后复核回滚；
+- `quant.config`：合并（本地覆盖 > 种子）与"当前池子来自哪个文件"；
+- 本模块：读当前池子 → 调上面几个 → 把结果变成一句人话，外加扫描池清单的缓存。
 
 **本模块刻意不 import 任何 app 内部模块**（ui / theme / guide）：配置路径一律由
 调用方传进来。这样它能在没有 Streamlit 运行时的情况下被直接加载单测——而"写坏
@@ -20,8 +27,8 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 import yaml
-from quant.config import load_settings
-from quant.config_edit import write_universe
+from quant.config import load_settings, local_universe_path, universe_source
+from quant.config_edit import write_local_universe
 from quant.data.cache import BarCache
 # 取函数而不是 `from quant.data import symbols`：本模块里 `symbols` 已经是好几个
 # 函数的形参名（pool_table / on_remove / on_add 的那一轮行序），模块名会被就地遮住。
@@ -79,8 +86,23 @@ FETCH_ERRORS = Exception
 
 
 def current(config_path: str | Path) -> tuple[str, ...]:
-    """当前信号池。异常一律交给调用方（页面要按 CONFIG_ERRORS 降级）。"""
+    """当前信号池（本地覆盖优先，没有才是种子）。
+    异常一律交给调用方（页面要按 CONFIG_ERRORS 降级）。"""
     return tuple(load_settings(config_path).universe)
+
+
+def source(config_path: str | Path) -> Path | None:
+    """当前池子来自哪个文件：本地覆盖文件，或 None（= settings.yaml 里的种子）。
+
+    页面必须说得出来。两个文件都有 universe，看不出用的是哪个的话，用户会以为自己
+    在跟踪 A 池子，而三个脚本每天在跑 B 池子——没有任何一处会报错。
+    """
+    return universe_source(config_path)
+
+
+def local_path(config_path: str | Path) -> Path:
+    """增删会写到哪个文件（不管它此刻在不在）。"""
+    return local_universe_path(config_path)
 
 
 def add(symbol: str, *, config_path: str | Path,
@@ -94,14 +116,14 @@ def add(symbol: str, *, config_path: str | Path,
     if symbol in existing:
         return f"{symbol} 已在信号池中（共 {len(existing)} 只）"
     wanted = add_symbol(existing, symbol, allowed)      # 池外/格式不对在这里抛
-    write_universe(config_path, wanted)                 # 原子写 + 写后复核回滚
+    write_local_universe(config_path, wanted)           # 原子写 + 写后复核回滚
     return f"已加入 {symbol}，信号池现有 {len(wanted)} 只"
 
 
 def remove(symbol: str, *, config_path: str | Path) -> str:
     """把 symbol 移出池子并落盘。清空到 0 只 / 不在池中都会抛 ValueError。"""
     wanted = remove_symbol(current(config_path), symbol)
-    write_universe(config_path, wanted)
+    write_local_universe(config_path, wanted)
     return f"已移除 {symbol}，信号池现有 {len(wanted)} 只"
 
 

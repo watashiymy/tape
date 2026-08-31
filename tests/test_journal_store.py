@@ -318,10 +318,13 @@ def test_unparsable_date_column_raises_loudly(tmp_path):
         store.load_trades(path)
 
 
-def test_corruption_message_points_at_git_not_at_deleting_the_file(tmp_path):
+def test_corruption_message_points_at_the_backup_not_at_deleting_the_file(tmp_path):
     """与行情缓存的最大区别：这份文件**不可再生**。
     照抄 cache.py 那句"删除该文件后重跑即可自动重拉"会直接毁掉用户的全部交易记录。
-    正确的自愈办法是 git 找回（设计 §2.1 把日志纳入版本控制，图的就是这个）。"""
+
+    v0.3.2 起自愈办法也换了：日志移出版本控制之后 `git checkout` 是**假出路**
+    （文件根本没被跟踪，那条命令只会报错），提示必须指向上一版备份 .bak。
+    留着一句过时的自救指令比不给指令更坏——用户照做，然后以为数据真的没了。"""
     path = tmp_path / "trades.csv"
     path.write_text("symbol,price\n000333,71.5\n", encoding="utf-8")
 
@@ -329,7 +332,8 @@ def test_corruption_message_points_at_git_not_at_deleting_the_file(tmp_path):
         store.load_trades(path)
 
     msg = str(ei.value)
-    assert "git checkout" in msg
+    assert str(store.backup_path(path)) in msg, msg
+    assert "git checkout" not in msg, f"日志已不在版本控制里，这是假出路：{msg}"
     assert "删除该文件" not in msg
 
 
@@ -352,22 +356,130 @@ def test_save_writes_columns_in_the_declared_order(tmp_path):
     assert path.read_text(encoding="utf-8-sig").splitlines()[0] == ",".join(schema.COLUMNS)
 
 
-# ================================================================ 仓库里的那份（设计 §2.1：纳入 git）
+# ================================================================ 上一版备份（v0.3.2 §3）
+#
+# 日志自 v0.3.2 起**移出版本控制**（它是用户数据，且是一份完整的真实交易记录，
+# 仓库一推到远端就全公开了）。那等于拿掉了"git 历史 = 免费撤销"这层保护，
+# 而这份文件不可再生、面板的 data_editor 又支持批量编辑——一次误操作可以抹掉多行。
+# 所以落盘前先把上一版另存为 `trades.csv.bak`（单层，不做轮转）。
 
-def test_repo_journal_file_exists_and_loads():
-    """journal/trades.csv 必须随仓库存在（哪怕只有表头）：
-    它同时也是"这个目录要进 git"的载体——空目录 git 根本不跟踪。"""
+def test_the_first_save_creates_no_backup_and_does_not_complain(tmp_path):
+    """第一次记账时没有"上一版"可备份。这不是异常，是每个新用户的第一笔——
+    既不许报错，也不许留下一个空的 .bak（那会被当成"上一版是空的"）。"""
+    path = tmp_path / "trades.csv"
+
+    store.append_trade(_row(reason="第一笔"), path, now=NOW)
+
+    assert path.exists()
+    assert not store.backup_path(path).exists(), "无中生有造了一份备份"
+
+
+def test_the_second_save_keeps_the_previous_version_byte_for_byte(tmp_path):
+    """备份必须是**上一版**，不是刚写的这一版——存成新版等于没有备份。"""
+    path = tmp_path / "trades.csv"
+    store.append_trade(_row(reason="第一笔"), path, now=NOW)
+    first = path.read_bytes()
+
+    store.append_trade(_row(reason="第二笔"), path, now=NOW)
+
+    bak = store.backup_path(path)
+    assert bak.read_bytes() == first
+    assert bak.read_bytes() != path.read_bytes()
+    assert len(store.load_trades(path)) == 2
+    assert len(store.load_trades(bak)) == 1, "备份必须还是一份能直接读回的日志"
+
+
+def test_the_backup_sits_next_to_the_journal(tmp_path):
+    """路径写死成 `<日志名>.bak`：用户要能在同一个目录里一眼看到它，
+    页面上那行小字说的也是这个位置。"""
+    path = tmp_path / "journal" / "trades.csv"
+    assert store.backup_path(path) == tmp_path / "journal" / "trades.csv.bak"
+    assert store.backup_path(str(path)) == tmp_path / "journal" / "trades.csv.bak"
+
+
+def test_a_third_save_overwrites_the_backup_with_the_second_version(tmp_path):
+    """单层备份（设计 §3 明确不做轮转）：.bak 永远是**紧邻的上一版**。"""
+    path = tmp_path / "trades.csv"
+    store.append_trade(_row(reason="第一笔"), path, now=NOW)
+    store.append_trade(_row(reason="第二笔"), path, now=NOW)
+    second = path.read_bytes()
+
+    store.append_trade(_row(reason="第三笔"), path, now=NOW)
+
+    assert store.backup_path(path).read_bytes() == second
+
+
+def test_a_failed_backup_is_not_swallowed(tmp_path):
+    """备份失败必须**响亮**：悄悄跳过的话，用户以为有一层保护，其实没有
+    ——而他只会在真的需要它的那一天才发现。那时已经晚了。
+
+    这里用"备份路径被一个目录占着"制造失败（真实场景：用户手工建了个同名目录，
+    或某次同步工具留下的残骸），不 monkeypatch 内部函数。
+    """
+    path = tmp_path / "trades.csv"
+    store.append_trade(_row(reason="第一笔"), path, now=NOW)
+    before = path.read_bytes()
+    store.backup_path(path).mkdir()
+
+    with pytest.raises(OSError):
+        store.append_trade(_row(reason="第二笔"), path, now=NOW)
+
+    assert path.read_bytes() == before, "备份失败时不许把新版写进日志"
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_the_backup_leaves_no_tmp_files(tmp_path):
+    """备份走与落盘同一套原子替换：中途断电不会留下半截 .bak。"""
+    path = tmp_path / "trades.csv"
+    store.append_trade(_row(reason="第一笔"), path, now=NOW)
+    store.append_trade(_row(reason="第二笔"), path, now=NOW)
+
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["trades.csv", "trades.csv.bak"]
+
+
+def test_editing_the_whole_table_still_leaves_the_previous_version_behind(tmp_path):
+    """面板「保存修改」那条路（整表重写）才是最危险的一条：勾错几行删除、
+    或把一列改花，一次就没了。它必须同样留下上一版。"""
+    path = tmp_path / "trades.csv"
+    store.append_trade(_row(reason="第一笔"), path, now=NOW)
+    before = path.read_bytes()
+
+    store.save_trades(store.empty_trades(), path)      # 极端情况：整本被清空
+
+    assert len(store.load_trades(path)) == 0
+    assert store.backup_path(path).read_bytes() == before
+    assert len(store.load_trades(store.backup_path(path))) == 1
+
+
+# ================================================================ 仓库里的那份（v0.3.2 §2.1：移出版本控制）
+
+def test_the_repo_journal_still_loads_if_this_machine_has_one():
+    """v0.3.2 起 `journal/trades.csv` 不再随仓库分发（它是用户数据，已 gitignore），
+    所以不能再断言"文件必须存在"——新克隆就是没有，而且开箱即用（load 空表）。
+    但本机若有（多数情况：这就是用户的真实日志），它必须仍然读得动：
+    读不动意味着某次改动毁了一份不可再生的文件。"""
     path = ROOT / "journal" / "trades.csv"
-    assert path.exists(), "缺少 journal/trades.csv（带表头的初始空文件）"
+    if not path.exists():
+        pytest.skip("本机还没记过任何一笔（新克隆的正常状态）")
 
     df = store.load_trades(path)
     assert list(df.columns) == list(schema.COLUMNS)
 
 
-def test_journal_is_not_gitignored():
-    """交易记录不可再生，git 历史就是免费的审计轨迹与撤销能力（设计 §2.1）。
-    被 .gitignore 掉的话，用户误删一行永远找不回来——而且不会有任何提示。"""
-    proc = subprocess.run(["git", "check-ignore", "journal/trades.csv"],
-                          cwd=ROOT, capture_output=True, text=True)
+def test_a_fresh_clone_without_any_journal_file_works_out_of_the_box(tmp_path):
+    """把上一条的另一半钉住：没有 journal/trades.csv 时不需要任何占位文件——
+    读是空表，写会自己建目录。这是"日志可以直接 gitignore"的前提。"""
+    path = tmp_path / "journal" / "trades.csv"
 
-    assert proc.returncode != 0, "journal/trades.csv 被 .gitignore 掉了：用户数据必须进版本控制"
+    assert len(store.load_trades(path)) == 0
+    store.append_trade(_row(), path, now=NOW)
+    assert len(store.load_trades(path)) == 1
+
+
+def test_the_journal_and_its_backup_are_gitignored():
+    """交易记录是用户数据：仓库一旦推到任何远端，一份完整的真实交易记录就公开了。
+    这条断言防的是将来有人"顺手"把 .gitignore 里那两行删掉。"""
+    for rel in ("journal/trades.csv", "journal/trades.csv.bak"):
+        proc = subprocess.run(["git", "check-ignore", rel],
+                              cwd=ROOT, capture_output=True, text=True)
+        assert proc.returncode == 0, f"{rel} 没有被 .gitignore 掉：用户数据不该进版本控制"

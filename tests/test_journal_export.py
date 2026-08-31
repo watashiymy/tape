@@ -379,9 +379,10 @@ def test_delete_of_an_unknown_id_is_refused():
         store.apply_edits(_sample(), pd.DataFrame(), delete_ids=["T99"])
 
 
-def test_row_order_is_preserved_so_the_git_diff_stays_small():
-    """日志纳入版本控制（设计 §2.1），git 历史就是审计轨迹。
-    每次保存都重排行序的话，改一个字的 diff 是整个文件，审计轨迹形同虚设。"""
+def test_row_order_is_preserved_so_the_diff_against_the_backup_stays_small():
+    """行序稳定 = 改动看得出来。日志自 v0.3.2 起不在版本控制里（它是用户数据），
+    但对比的对象只是从"git 上一次提交"换成了 `trades.csv.bak`（上一版备份）：
+    每次保存都重排行序的话，那个对比是整个文件，等于看不出到底改了什么。"""
     df = _sample()
     out = store.apply_edits(df, pd.DataFrame([{"trade_id": "T4", "reason": "止损"}]))
     assert ids(out) == ids(df)

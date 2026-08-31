@@ -607,6 +607,49 @@ def test_an_unreadable_config_disables_only_the_entry_form(tmp_path):
     assert "3,425.87" in _texts(at), "配置坏了不该连盈亏一起藏起来"
 
 
+# ================================================ 备份兜底（v0.3.2 §3）
+#
+# 日志移出版本控制之后，"误删一行用 git 找回"这条路没了。替代品是每次写盘前
+# 自动另存的 `journal/trades.csv.bak`。**用户必须知道它存在**——一个没人知道的
+# 备份文件等于没有备份：真出事的那一刻，他只会以为数据没了。
+
+def test_the_entry_page_says_where_the_backup_file_is(tmp_path):
+    root = _root(tmp_path)
+    _journal(root, _buy(), _sell())
+    at = _page(root)
+
+    assert not at.exception, at.exception
+    text = _texts(at)
+    assert "trades.csv.bak" in text, f"记账页没说备份文件在哪：{text}"
+    assert "上一版" in text, f"没说清 .bak 里是什么（紧邻的上一版）：{text}"
+
+
+def test_the_backup_note_is_there_before_the_first_trade_too(tmp_path):
+    """一笔都没记过的时候也要说：那正是用户会大批量录入的时刻。"""
+    root = _root(tmp_path)
+    at = _page(root)
+
+    assert not at.exception, at.exception
+    assert "trades.csv.bak" in _texts(at)
+
+
+def test_saving_edits_really_leaves_a_backup_behind(tmp_path):
+    """端到端：在页面上删掉一行并保存 → 上一版仍然躺在 .bak 里。
+    这条走的是最危险的那条路（整表重写），也是页面上那行小字承诺的东西。"""
+    root = _root(tmp_path)
+    path = _journal(root, _buy(), _sell())
+    before = path.read_bytes()
+    at = _page(root)
+
+    at = edit_table(at, {1: {jui.DELETE_COLUMN: True}},
+                    dataframe=_log_table_index(at), click=jui.SAVE_KEY)
+
+    assert not at.exception, at.exception
+    assert len(store.load_trades(path)) == 1, "删除没生效，这条测的就不是备份了"
+    assert store.backup_path(path).read_bytes() == before
+    assert len(store.load_trades(store.backup_path(path))) == 2
+
+
 # ================================================================ 筛选与导出（§5.2 / §5.5）
 
 def _spy_downloads(monkeypatch) -> list[dict]:

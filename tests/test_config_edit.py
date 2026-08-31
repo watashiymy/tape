@@ -4,6 +4,7 @@
 "新 universe 写进去了没"，而是**其余字节一个都没动**：注释（印花税分段依据、
 各参数含义）丢失是静默灾难——脚本照样跑得通，人却再也不知道那些数字的由来。
 """
+import hashlib
 import os
 import stat
 from pathlib import Path
@@ -11,7 +12,10 @@ from pathlib import Path
 import pytest
 import yaml
 
-from quant.config_edit import replace_universe_block, write_universe
+from quant import config
+from quant.config import load_settings
+from quant.config_edit import (replace_universe_block, write_local_universe,
+                               write_universe)
 
 # 与 test_config.py 同样从 __file__ 推导：相对路径依赖 cwd。
 REAL_CONFIG = Path(__file__).resolve().parent.parent / "config" / "settings.yaml"
@@ -324,3 +328,157 @@ def test_write_universe_accepts_str_path(cfg):
     """面板与脚本传的都是字符串路径（'config/settings.yaml'）。"""
     write_universe(str(cfg), ["600519"])
     assert yaml.safe_load(cfg.read_text(encoding="utf-8"))["universe"] == ["600519"]
+
+
+# ================================================ 本地覆盖文件的整份重写（v0.3.2 §2.2）
+#
+# 面板「信号池」页自 v0.3.2 起写的是 `config/universe.local.yaml`（gitignore），
+# 不再动 settings.yaml。这里的断言重点因此换了一个：
+#   1. **settings.yaml 一个字节都不许动**（sha256 对账）——种子是项目决策，
+#      用户改自己的池子不该让 git 脏一次；
+#   2. 本地文件无注释可保，整份重写即可（不必再走外科式改写那套复杂度）；
+#   3. 写后复核与回滚照旧，且"回滚"对**首次写**意味着把文件删掉——
+#      留下一个坏文件会让此后每次启动都抛错，而用户根本不知道它是哪来的。
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_write_local_universe_creates_the_file_and_leaves_settings_yaml_alone(cfg):
+    before = _sha256(cfg)
+
+    got = write_local_universe(cfg, ["002241", "002837"])
+
+    assert got == ("002241", "002837")
+    assert _sha256(cfg) == before, "写本地池子时 settings.yaml 被动了"
+    assert load_settings(cfg).universe == ("002241", "002837")
+    assert config.universe_source(cfg) == config.local_universe_path(cfg)
+
+
+def test_the_local_file_says_what_it_is_and_how_to_get_rid_of_it(cfg):
+    """这个文件会静静地改变三个脚本的行为，而它不在 git 里、没人 review 过。
+    打开它的人必须一眼看懂：这是什么、谁写的、删了会怎样。"""
+    write_local_universe(cfg, ["002241"])
+    text = config.local_universe_path(cfg).read_text(encoding="utf-8")
+
+    assert "universe" in text
+    assert "版本控制" in text, f"没写明它不受版本控制：{text}"
+    assert "settings.yaml" in text and "删" in text, f"没写明删掉它会回到种子：{text}"
+    assert '"002241"' in text, f"代码必须带引号，否则 000333 会被读成 219：{text}"
+
+
+def test_write_local_universe_rewrites_the_whole_file(cfg):
+    """整份重写而不是外科式改写：这个文件没有注释要保（每次都由这里生成），
+    多留一份旧内容就是多一处"到底哪一行生效"的疑问。"""
+    write_local_universe(cfg, ["002241", "002837"])
+    write_local_universe(cfg, ["600519"])
+
+    text = config.local_universe_path(cfg).read_text(encoding="utf-8")
+    assert "002241" not in text and "002837" not in text, text
+    assert load_settings(cfg).universe == ("600519",)
+
+
+def test_write_local_universe_is_atomic_and_leaves_no_tmp_files(cfg):
+    write_local_universe(cfg, ["002241"])
+    assert list(cfg.parent.glob("*.tmp")) == []
+
+
+def test_a_brand_new_local_file_is_private(cfg):
+    """这个文件暴露关注标的，新建时应当只有自己能读。走 mkstemp 拿到的 0600
+    正好如此，而且与 `journal/trades.csv` 一致（同为用户数据）；
+    它不跟随 umask，所以这条是确定的行为，不是碰巧。"""
+    write_local_universe(cfg, ["002241"])
+    assert stat.S_IMODE(config.local_universe_path(cfg).stat().st_mode) == 0o600
+
+
+def test_rewriting_an_existing_local_file_keeps_its_mode(cfg):
+    """用户手工 chmod 过（例如放进某个同步目录）之后，重写不该把权限换回去
+    ——这是 _atomic_write 既有的约定（mkstemp 给的是 0600）。"""
+    write_local_universe(cfg, ["002241"])
+    local = config.local_universe_path(cfg)
+    os.chmod(local, 0o644)
+
+    write_local_universe(cfg, ["002837"])
+
+    assert stat.S_IMODE(local.stat().st_mode) == 0o644
+
+
+def test_write_local_universe_rejects_bad_input_before_creating_anything(cfg):
+    """坏输入不许留下一个半成品文件：一个空的/错的本地覆盖会让此后每次启动都抛错。"""
+    before = _sha256(cfg)
+    for bad in (["60051"], [], ["茅台"]):
+        with pytest.raises(ValueError):
+            write_local_universe(cfg, bad)
+    assert not config.local_universe_path(cfg).exists()
+    assert _sha256(cfg) == before
+
+
+def test_a_failed_recheck_on_the_first_write_removes_the_local_file(cfg, monkeypatch):
+    """首次写的"回滚"= 把文件删掉，回到"没有本地覆盖"那个状态。
+    留着一个复核没过的文件，等于给用户留了一颗定时炸弹：他不知道它哪来的，
+    只知道从此打不开面板。"""
+    before = _sha256(cfg)
+
+    def boom(_path):
+        raise ValueError("模拟解析失败")
+
+    monkeypatch.setattr("quant.config_edit.load_settings", boom)
+    with pytest.raises(RuntimeError, match="回滚"):
+        write_local_universe(cfg, ["002241"])
+
+    assert not config.local_universe_path(cfg).exists(), "复核没过却留下了本地文件"
+    assert _sha256(cfg) == before
+    assert list(cfg.parent.glob("*.tmp")) == []
+
+
+def test_a_failed_recheck_restores_the_previous_local_file(cfg, monkeypatch):
+    """已经有本地池子时，复核失败必须把**上一版**原样放回去。"""
+    write_local_universe(cfg, ["002241", "002837"])
+    local = config.local_universe_path(cfg)
+    before = local.read_bytes()
+
+    def boom(_path):
+        raise ValueError("模拟解析失败")
+
+    monkeypatch.setattr("quant.config_edit.load_settings", boom)
+    with pytest.raises(RuntimeError, match="回滚"):
+        write_local_universe(cfg, ["600519"])
+
+    assert local.read_bytes() == before
+    assert load_settings(cfg).universe == ("002241", "002837")
+
+
+def test_a_mismatching_recheck_rolls_back_too(cfg, monkeypatch):
+    """能 load 不等于写对了：读回来的池子不是刚写的那份，同样要回滚。"""
+    import dataclasses
+
+    import quant.config_edit as ce
+    real = ce.load_settings
+
+    def wrong(path):
+        return dataclasses.replace(real(path), universe=("999999",))
+
+    monkeypatch.setattr(ce, "load_settings", wrong)
+    with pytest.raises(RuntimeError, match="回滚"):
+        write_local_universe(cfg, ["002241"])
+    assert not config.local_universe_path(cfg).exists()
+
+
+def test_write_local_universe_accepts_str_path(cfg):
+    """面板传进来的是 ui.CONFIG_PATH（settings.yaml 的路径），可能是字符串。"""
+    write_local_universe(str(cfg), ["002241"])
+    assert load_settings(cfg).universe == ("002241",)
+
+
+def test_no_settings_yaml_means_no_leftover_local_file(tmp_path):
+    """复核这条防线不靠 monkeypatch 也要成立：settings.yaml 根本不在
+    （面板被复制到别处、没带配置）时，写下去的本地文件必须被收回——
+    否则那台机器上会多出一个孤儿覆盖文件，谁也说不清它是哪来的。"""
+    cfg = tmp_path / "settings.yaml"          # 刻意不创建
+
+    with pytest.raises(RuntimeError, match="回滚"):
+        write_local_universe(cfg, ["002241"])
+
+    assert not config.local_universe_path(cfg).exists()
+    assert list(tmp_path.glob("*.tmp")) == []

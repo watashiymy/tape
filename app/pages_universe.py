@@ -24,13 +24,19 @@ def page_universe() -> None:
     pool.show_flash()          # 上一轮按钮回调留下的 toast / 错误
     try:
         symbols = pool.current(ui.CONFIG_PATH)
+        # 来源与池子在同一个 try 里取：两处各判一次的话，本地文件坏掉时会出现
+        # "错误提示说读不到、下面又画着一张默认池子的表"这种自相矛盾的版面。
+        source = pool.source(ui.CONFIG_PATH)
     except pool.CONFIG_ERRORS as e:
         # 路径要写出来：面板可能被复制到别处运行，"读不到"最常见的原因就是 cwd/位置不对。
+        # e 自己会指名到底是哪个文件坏了（种子还是本地覆盖）并给出脱身办法，原样转述。
         st.error(f"读不到信号池配置 `{ui.CONFIG_PATH}`（{type(e).__name__}: {e}）。"
-                 "请确认 config/settings.yaml 存在且 universe 至少有 1 只标的；"
+                 "请确认 config/settings.yaml 存在、且它或 config/universe.local.yaml "
+                 "里的 universe 至少有 1 只标的（上面的原因里写着到底是哪个文件）；"
                  "本页在此期间不做任何修改。")
         return
     st.html(theme.section(f"当前信号池（{len(symbols)} 只）"))
+    st.caption(guide.pool_source_note(source, pool.local_path(ui.CONFIG_PATH)))
     ui.data_table(pool.pool_table(symbols, ui.symbol_names(), ui.CACHE_DIR),
                   _pool_columns(symbols), "信号池是空的",
                   hint=guide.TABLE_HINTS["universe"])
@@ -53,7 +59,7 @@ def _pool_columns(symbols: tuple[str, ...]) -> dict:
         pool.ACTION_COLUMN: st.column_config.ButtonColumn(
             pool.ACTION_COLUMN, on_click=pool.on_remove,
             args=(symbols, ui.CONFIG_PATH), key=pool.REMOVE_CLICK_KEY,
-            help="把这只标的移出信号池（写入 config/settings.yaml）。"
+            help="把这只标的移出信号池（写入本地 config/universe.local.yaml）。"
                  "至少要留 1 只；移错了在下面搜名字加回来即可。"),
     }
 

@@ -41,7 +41,7 @@ def _scan_columns(df: pd.DataFrame, symbols: tuple[str, ...],
             pool.ADD_COLUMN, on_click=pool.on_add,
             args=(symbols, ui.CONFIG_PATH, frozenset(symbols)),
             key=pool.ADD_CLICK_KEY,
-            help="把这一行的标的加进信号池（写入 config/settings.yaml），"
+            help="把这一行的标的加进信号池（写入本地 config/universe.local.yaml），"
                  "此后「每日信号」会替你盯它的卖出信号。已在池中的行不可点。"),
         **_record_column(df, names, journal_ui.SCAN_CLICK_KEY),
     }

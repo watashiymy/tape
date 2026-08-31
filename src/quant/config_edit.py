@@ -1,4 +1,12 @@
-"""config/settings.yaml 的外科式改写（v0.2.2 设计 §3.2）：只重写 universe 块。
+"""信号池的落盘：本地覆盖文件的整份重写 + settings.yaml 的外科式改写。
+
+**面板走的是 `write_local_universe`**（v0.3.2 §2.2）：写 `config/universe.local.yaml`
+（gitignore 的用户数据），settings.yaml 一个字节都不动。那个文件由本模块生成、
+没有注释要保，所以整份重写即可——外科式改写那套复杂度是为保住 settings.yaml 的
+中文注释而生的，对一个自动生成的两行文件是多余的。
+
+`replace_universe_block` / `write_universe` 保留：settings.yaml 里的种子
+（新克隆的起步池子）仍然可能被手改或被脚本改，那时注释还是不能丢。
 
 为什么不用 `yaml.safe_dump` 回写整份文件：它会重排键序、**删光全部注释**——
 而这个文件里的注释记着印花税分段的依据、各参数的含义与量纲。改完照样能 load，
@@ -18,8 +26,17 @@ import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
-from quant.config import load_settings
+from quant.config import load_settings, local_universe_path
 from quant.universe import normalize_universe
+
+#: 本地覆盖文件的抬头。这个文件不在 git 里、没人 review 过，却会静静地改变
+#: 三个脚本每天扫哪批标的——打开它的人必须一眼看懂：谁写的、删了会怎样。
+LOCAL_HEADER = (
+    "# 本地信号池（v0.3.2）：**不受版本控制**，只属于这台机器。\n"
+    "# 由面板「信号池」页整份重写，也可以手改（代码要带引号，"
+    "否则 000333 会被 YAML 读成 219）。\n"
+    "# 删掉这个文件即可回到 config/settings.yaml 里的默认池子。\n"
+)
 
 # 只认顶层键（行首、无缩进）。`scan:` 底下若有同名子键，那是别人的东西。
 _KEY_RE = re.compile(r"\Auniverse[ \t]*:")
@@ -119,6 +136,56 @@ def _atomic_write(path: Path, data: bytes) -> None:
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
+
+
+def render_local_universe(symbols: Sequence[str]) -> str:
+    """本地覆盖文件的全文。格式与面板改写 settings.yaml 时一致（每行一只、带引号）：
+    两个文件长得一样，手改时不必记两套写法。"""
+    body = ",\n".join(f'{_INDENT}"{s}"' for s in symbols)
+    return f"{LOCAL_HEADER}universe: [\n{body}\n]\n"
+
+
+def write_local_universe(settings_path: str | Path,
+                         symbols: Sequence[str]) -> tuple[str, ...]:
+    """把新池子写进 `config/universe.local.yaml`（原子写），返回规范化后的池子。
+
+    入参是 **settings.yaml 的路径**（面板与脚本手里拿的就是它），本地文件的位置由
+    `config.local_universe_path` 推导——调用方不必知道这个文件叫什么。
+
+    写完**立即 load_settings 复核**（复核的是合并之后的结果，也就是三个脚本真正
+    会读到的池子）。解析失败或池子不等于预期 → 恢复原状并抛 RuntimeError：
+    - 之前有本地文件：把上一版原样放回去；
+    - 之前没有：**把文件删掉**，回到"没有本地覆盖"。留下一个复核没过的文件，
+      等于给用户留一颗定时炸弹——他不知道它哪来的，只知道从此每次启动都报错。
+
+    新建出来的文件是 0600（mkstemp 的默认，不跟随 umask）：它暴露关注标的，
+    默认只有自己能读正合适，也与 `journal/trades.csv` 一致。已存在的文件重写时
+    权限原样保留（见 `_atomic_write`）。
+    """
+    wanted = normalize_universe(symbols)          # 空池子与坏代码在动文件之前就拦掉
+    path = local_universe_path(settings_path)
+    original = path.read_bytes() if path.exists() else None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write(path, render_local_universe(wanted).encode("utf-8"))
+    try:
+        got = tuple(load_settings(settings_path).universe)
+    except Exception as e:
+        _restore(path, original)
+        raise RuntimeError(
+            f"写入后复核失败，已回滚 {path}：{type(e).__name__}: {e}") from e
+    if got != wanted:
+        _restore(path, original)
+        raise RuntimeError(
+            f"写入后复核不符，已回滚 {path}：期望 {list(wanted)}，实际 {list(got)}")
+    return wanted
+
+
+def _restore(path: Path, original: bytes | None) -> None:
+    """回滚到写之前的状态：有上一版就放回去，本来没有这个文件就删掉。"""
+    if original is None:
+        path.unlink(missing_ok=True)
+    else:
+        _atomic_write(path, original)
 
 
 def write_universe(path: str | Path, symbols: Sequence[str]) -> tuple[str, ...]:

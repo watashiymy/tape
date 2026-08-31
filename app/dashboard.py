@@ -6,9 +6,11 @@
 使用说明是**默认落地页**，纯文档（文案全在 app/guide.py）；
 三张只读页展示 output/ 与 data/cache/ 里的产物，顶部各有一条精简控制条（§4.2）；
 控制台页可在**本机**起三个入口脚本并看进度、日志与结果；
-信号池页增删 config/settings.yaml 的 universe（v0.2.2 §3）；
+信号池页增删 universe（v0.2.2 §3；v0.3.2 起写本地 config/universe.local.yaml）；
 记账页读写 journal/trades.csv —— 面板上唯一会改**不可再生**文件的地方
 （v0.3.0 §5），持仓与盈亏页展示由它算出来的结果。
+后两个文件都是**用户数据、不受版本控制**（v0.3.2 §2），见 app/guide.py 的
+「你的数据在哪」一节。
 
 **本文件只做装配**（设计 §4）：页面函数在 app/pages_*.py，共享件在 app/ui.py，
 文案在 app/guide.py，视觉在 app/theme.py，业务逻辑全在 src/quant/。

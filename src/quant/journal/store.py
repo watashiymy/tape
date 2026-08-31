@@ -7,8 +7,13 @@
   磁盘写满，磁盘上要么是旧的完整文件、要么是新的完整文件，绝不会是半截；
   临时名必须进程唯一——面板与脚本共用同一份日志是常态。
 - **坏文件响亮报错**，但**自愈办法不是"删掉重建"**：那句话照抄过来会直接毁掉
-  用户的全部交易记录。这里提示的是 `git checkout`——日志纳入版本控制
-  （设计 §2.1）图的就是这个：git 历史等于免费的审计轨迹与撤销能力。
+  用户的全部交易记录。这里提示的是 `journal/trades.csv.bak`（上一版备份）。
+  v0.3.2 之前提示的是 `git checkout`，日志移出版本控制之后那条已经是**假出路**
+  （文件根本没被跟踪，命令只会报错），留着比不给更坏——用户照做，然后以为数据没了。
+- **落盘前先把上一版另存为 `.bak`**（单层，不轮转，见 `backup_path`）：gitignore
+  日志等于拿掉了"git 历史 = 免费撤销"那层保护，而面板的 data_editor 支持批量编辑，
+  一次误操作可以抹掉多行。备份走同样的原子替换，**失败一律抛出**——悄悄跳过的话，
+  用户以为有一层保护，只会在真需要它的那天才发现没有。
 - **`dtype={"symbol": str}` 全程强制**：本项目已两次踩过 `000333` → `333`，
   表现只是"名称又空了""持仓对不上"，不会有任何报错。读、写、追加三条路径
   都必须走同一个 `_coerce`，漏一条就等于没做。
@@ -28,14 +33,29 @@ from quant.journal import schema
 
 #: 默认落点，相对仓库根（同 symbols.SYMBOLS_PATH 的约定）。
 #: 刻意不放 data/：那里混着 cache/ 与 symbols.parquet（都已 gitignore），
-#: 而这份是**用户数据，要留住**。
+#: 而这份是**用户数据，要留住**——v0.3.2 起它自己也 gitignore（不进版本控制，
+#: 但也不许被任何清理逻辑当成缓存删掉）。
 TRADES_PATH = Path("journal") / "trades.csv"
+
+#: 上一版备份的后缀。拼在完整文件名后面（`trades.csv` → `trades.csv.bak`）而不是
+#: 换掉扩展名（`trades.bak`）：前者一眼看得出它是谁的备份，也不会被误当成别的东西。
+BACKUP_SUFFIX = ".bak"
 
 #: 写盘编码固定带 BOM。设计 §2.1 选 CSV 的理由之一就是"可直接用 Excel 打开"，
 #: 没有 BOM 的话 Excel 按 GBK 解，中文理由全是乱码。读盘用同一个编码名
 #: （utf-8-sig 解码时 BOM 可有可无），于是用户用 vim/git 手改过、存回来没有 BOM
 #: 的文件照样打得开。
 ENCODING = "utf-8-sig"
+
+
+def backup_path(path: str | Path = TRADES_PATH) -> Path:
+    """上一版备份的位置：日志旁边的 `<文件名>.bak`。
+
+    与日志同目录是刻意的——用户要能在同一个地方一眼看到它（面板上那行小字说的
+    也是这个位置）。放到某个隐藏目录里的备份，等于没有备份。
+    """
+    path = Path(path)
+    return path.with_name(path.name + BACKUP_SUFFIX)
 
 
 def empty_trades() -> pd.DataFrame:
@@ -74,16 +94,23 @@ def load_trades(path: str | Path = TRADES_PATH) -> pd.DataFrame:
     except Exception as e:
         raise RuntimeError(
             f"交易日志文件损坏: {path}（{type(e).__name__}: {e}）。"
-            f"这份文件不可再生，**不要删**——先用 `git checkout -- {path}` 找回上一次提交的版本，"
+            f"这份文件不可再生，**不要删**——上一版在 {backup_path(path)}"
+            f"（每次写盘前自动另存的备份），确认里面是你要的内容后改名回来即可；"
+            f"也可以用面板导出过的 CSV 放回来（格式与日志完全相同），"
             f"或用文本编辑器按表头（{','.join(schema.COLUMNS)}）修好后重试。"
         ) from e
 
 
 def save_trades(df: pd.DataFrame, path: str | Path = TRADES_PATH) -> None:
-    """整表原子落盘。列不对一律拒写（沿用 save_symbols 的约定）。
+    """整表原子落盘，**落盘前先把上一版另存为 `.bak`**。列不对一律拒写。
 
     拒写而不是"尽力而为"：列不对的表写进去，就是把一个坏文件留给下一次启动，
     而那时用户已经不记得是哪一步弄坏的。
+
+    备份的顺序是刻意的：**先备份、再写正式文件**。反过来的话，"写坏了"与
+    "备份没做成"会同时发生，那一刻磁盘上就只剩坏数据了。备份失败一律抛出
+    （不 try/except 吞掉）：日志已移出版本控制，这是唯一的撤销手段，
+    悄悄没做等于骗用户说有保护。
     """
     missing = [c for c in schema.COLUMNS if c not in df.columns]
     extra = [c for c in df.columns if c not in schema.COLUMNS]
@@ -93,6 +120,7 @@ def save_trades(df: pd.DataFrame, path: str | Path = TRADES_PATH) -> None:
     out = serialize(df)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    _backup(path)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
     os.close(fd)
     try:
@@ -101,6 +129,27 @@ def save_trades(df: pd.DataFrame, path: str | Path = TRADES_PATH) -> None:
         os.replace(tmp, path)
     finally:
         Path(tmp).unlink(missing_ok=True)   # 写失败时不留垃圾（成功后已被 replace 走）
+
+
+def _backup(path: Path) -> None:
+    """把当前的日志另存为 `path.bak`（原子替换）。文件还不存在就什么都不做。
+
+    "还没有上一版"是每个新用户的第一笔，不是异常；但也**不许造一份空的 .bak**
+    ——那会被下一次看它的人读成"上一版是空的"，比没有备份更误导。
+
+    单层，不做轮转（设计 §3 的 YAGNI）：长期备份靠面板的 CSV/Excel 导出。
+    """
+    if not path.exists():
+        return
+    bak = backup_path(path)
+    fd, tmp = tempfile.mkstemp(dir=bak.parent, prefix=bak.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(path.read_bytes())
+        os.replace(tmp, bak)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 def append_trade(row: Mapping, path: str | Path = TRADES_PATH, *,
@@ -139,8 +188,9 @@ def apply_edits(trades: pd.DataFrame, edited: pd.DataFrame, *,
     - **认不出的主键一律拒绝**（改与删都是）。静默 append 会凭空多出一笔交易，
       "删了但其实没删"则让用户以为那笔不算了而盈亏还在算它。这份文件不可再生，
       两种都是没法事后判断真假的错。
-    - **行序原样保留**。日志纳入版本控制（设计 §2.1），git 历史就是审计轨迹；
-      每次保存都重排行序的话，改一个字的 diff 是整个文件，审计轨迹形同虚设。
+    - **行序原样保留**。日志自 v0.3.2 起不在版本控制里，但行序稳定的价值没变：
+      改一个字之后，用 diff 工具跟 `.bak`（上一版）对一眼就能看出到底改了什么；
+      每次保存都重排行序的话，那个对比是整个文件，等于看不出来。
 
     `edited` 只需带 `trade_id` + 想覆盖的那几列（编辑区会禁用一部分列，
     交回来的就是子集）。同一个 id 同时出现在 `edited` 与 `delete_ids` 里时删除生效

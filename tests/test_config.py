@@ -1,8 +1,10 @@
+import dataclasses
 from datetime import date
 from pathlib import Path
 
 import pytest
 
+from quant import config
 from quant.config import load_settings
 
 # 必须从 __file__ 推导仓库根：相对路径 "config/settings.yaml" 依赖 cwd，
@@ -192,3 +194,136 @@ def test_scan_section_parsed(tmp_path):
     assert s.scan.history_days == 500
     assert s.scan.min_avg_amount == 80_000_000
     assert s.scan.top_n == 20  # 未显式给出 → 默认
+
+
+# ---------- 本地信号池覆盖（v0.3.2 §2.2）----------
+#
+# `config/settings.yaml` 的 universe 语义降级为**种子**（新克隆的起步池子，随代码
+# 提交）；用户真正在跟踪的那批标的落在 `config/universe.local.yaml`（gitignore）。
+# 这一组测试守的是同一件事的两面：
+#   1. 有本地文件就必须**用它**（否则用户以为在跟踪 A 池子，脚本在跑 B 池子）；
+#   2. 本地文件坏了/空了/写法不对，一律**响亮抛错并指名路径**，
+#      **绝不静默回退到种子值**——那正是本项目一路在防的"不报错但结论错"。
+
+def _seeded(tmp_path, seed='["600519", "000333"]') -> Path:
+    """在 tmp_path/config/ 放一份带种子 universe 的 settings.yaml，返回它的路径。"""
+    cfg = tmp_path / "config" / "settings.yaml"
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text(_BODY % (seed, "5000000"), encoding="utf-8")
+    return cfg
+
+
+def _local(cfg: Path, text: str) -> Path:
+    path = config.local_universe_path(cfg)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_local_universe_path_sits_next_to_settings_yaml(tmp_path):
+    """路径由 settings.yaml 推导，不写死"config/"：脚本可以 --config 指到别处，
+    那时本地覆盖也该跟着走（否则改了个副本却影响不了它）。"""
+    cfg = _seeded(tmp_path)
+    assert config.local_universe_path(cfg) == cfg.parent / "universe.local.yaml"
+    assert config.local_universe_path(str(cfg)) == cfg.parent / "universe.local.yaml"
+
+
+def test_without_a_local_file_the_seed_is_used(tmp_path):
+    """新克隆的样子：没有本地文件 → 用 settings.yaml 里的种子，且来源看得出来。"""
+    cfg = _seeded(tmp_path)
+    assert load_settings(cfg).universe == ("600519", "000333")
+    assert config.load_local_universe(cfg) is None
+    assert config.universe_source(cfg) is None
+
+
+def test_a_local_file_overrides_the_seed(tmp_path):
+    """有本地文件就必须用它——种子只是"还没选过池子"时的起步值。"""
+    cfg = _seeded(tmp_path)
+    local = _local(cfg, 'universe: ["002241", "002837"]\n')
+
+    s = load_settings(cfg)
+
+    assert s.universe == ("002241", "002837")
+    assert config.load_local_universe(cfg) == ("002241", "002837")
+    assert config.universe_source(cfg) == local
+
+
+def test_the_override_touches_nothing_but_the_universe(tmp_path):
+    """只覆盖 universe：成本模型、策略参数、scan 段是**项目决策**，
+    仍然只由受版本控制的 settings.yaml 说话。"""
+    cfg = _seeded(tmp_path)
+    before = load_settings(cfg)
+    _local(cfg, 'universe: ["002241"]\n')
+
+    assert load_settings(cfg) == dataclasses.replace(before, universe=("002241",))
+
+
+@pytest.mark.parametrize("text, why", [
+    ("universe: [\n", "YAML 语法坏了（手改到一半存盘）"),
+    ("universe: []\n", "空列表"),
+    ('universe: "002241"\n', "写成了字符串，不是列表"),
+    ("universe: {a: 1}\n", "写成了字典"),
+    ("pool: [\"002241\"]\n", "键名拼错，没有 universe"),
+    ("", "文件是空的"),
+])
+def test_a_broken_local_file_raises_and_names_the_path(tmp_path, text, why):
+    """**绝不静默回退到种子值**：那会让用户以为在跟踪本地池子，而系统在跑种子池子
+    ——盯着 7 只自选股，实际每天扫的是 10 只白马，且永远不报错。
+
+    错误信息必须做到两件事：指名是哪个文件，给出可执行的出路。
+    """
+    cfg = _seeded(tmp_path)
+    local = _local(cfg, text)
+
+    for call in (lambda: load_settings(cfg), lambda: config.load_local_universe(cfg),
+                 lambda: config.universe_source(cfg)):
+        with pytest.raises(ValueError) as ei:
+            call()
+        msg = str(ei.value)
+        assert str(local) in msg, f"{why}：报错没指名路径：{msg}"
+        assert "删除" in msg and "settings.yaml" in msg, \
+            f"{why}：报错没给出路（删掉它就回到种子池子）：{msg}"
+
+
+def test_a_broken_local_file_never_yields_the_seed(tmp_path):
+    """把上一条反过来钉一遍：坏文件那条路径上，种子值**一个都不许**冒出来。
+    变异实验（v0.3.2）：把抛错改成 `return seed`，只看"抛了 ValueError"的断言
+    仍然会红，但只看"universe 非空"的断言会全绿——所以这里直接钉住取值。"""
+    cfg = _seeded(tmp_path, seed='["600519"]')
+    _local(cfg, "universe: []\n")
+
+    with pytest.raises(ValueError):
+        load_settings(cfg)
+    # 真正的危险是"没抛错、拿到了 600519"。上一行已经保证抛错，这一行保证
+    # 将来有人把它改成静默回退时，这个文件里至少有一条测试直指那个值。
+    assert "600519" not in config.local_universe_path(cfg).read_text(encoding="utf-8")
+
+
+def test_an_octal_looking_code_in_the_local_file_raises(tmp_path):
+    """本地文件是可以手改的，于是 YAML 1.1 那个老坑又回来了：裸写的 `000333`
+    被解析成八进制 219，`str()` 之后是 "219" —— 一个格式合法、看着像模像样、
+    其实完全错误的代码。种子那边由 test_real_config_file 钉着 6 位数字，
+    本地这边必须自己拦。"""
+    cfg = _seeded(tmp_path)
+    _local(cfg, "universe: [000333]\n")
+
+    with pytest.raises(ValueError, match="219"):
+        load_settings(cfg)
+
+
+def test_duplicates_in_the_local_file_are_collapsed(tmp_path):
+    """手改时复制粘贴出重复项是常事。去重按首次出现的位置（与面板写入同一套规则），
+    不排序——排序会让每次改动的 diff 跳来跳去。"""
+    cfg = _seeded(tmp_path)
+    _local(cfg, 'universe: ["002241", "002837", "002241"]\n')
+
+    assert load_settings(cfg).universe == ("002241", "002837")
+
+
+def test_the_real_repo_config_loads_with_whatever_local_file_is_here():
+    """本机那份（可能有、可能没有本地覆盖）必须都能加载：这条是"用户改了本地池子
+    之后整套东西还跑得起来"的最低保证。"""
+    s = load_settings(REAL_CONFIG)
+    assert len(s.universe) >= 1
+    assert all(len(c) == 6 and c.isdigit() for c in s.universe)
+    source = config.universe_source(REAL_CONFIG)
+    assert source is None or source == config.local_universe_path(REAL_CONFIG)

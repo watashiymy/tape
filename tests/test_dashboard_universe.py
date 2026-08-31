@@ -387,8 +387,8 @@ def test_the_universe_page_lists_the_pool_with_a_remove_button(tmp_path):
         "移除列没注册成按钮列（on_click 不会被调用）"
     assert str(len(pool.current(path))) in _texts(at), \
         "底部没说当前池子有多少只（§3.4 A）"
-    assert "settings.yaml" in _texts(at), \
-        "底部没说改动会写进 config/settings.yaml（命令行同样生效）"
+    assert "universe.local.yaml" in _texts(at), \
+        "底部没说改动会写进 config/universe.local.yaml（v0.3.2 起写的是本地文件）"
 
 
 def test_clicking_remove_rewrites_the_config_and_toasts(tmp_path):
@@ -691,6 +691,107 @@ def test_the_add_box_reports_the_rollback_instead_of_crashing_the_page(tmp_path,
     assert not at.exception, at.exception
     assert path.read_bytes() == before
     assert "回滚" in _errors(at), f"失败提示必须是留在页面上的 st.error：{_texts(at)}"
+
+
+# ================================ 写的是本地文件，不是 settings.yaml（v0.3.2 §2.2）
+#
+# 这一组守的是本次改动的**全部要点**：用户改自己的池子，不该让一个受版本控制的
+# 项目配置文件变脏（每改一次池子 git 就提示提交、而那份 diff 与代码无关）。
+# 断言用 sha256 而不是"内容看起来没变"：种子块本来就长得和写入格式很像，
+# 肉眼比对与 yaml 取值比对都可能把"改了又改回来"当成没改。
+
+def _sha256(path: Path) -> str:
+    import hashlib
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _local(path: Path) -> Path:
+    from quant.config import local_universe_path
+    return local_universe_path(path)
+
+
+def test_removing_a_symbol_leaves_settings_yaml_byte_identical(tmp_path):
+    """点 − 之后：池子少一只、settings.yaml 的 sha256 一模一样、本地文件里是新池子。"""
+    path = _config(tmp_path, ("600519", "000333", "601318"))
+    before = _sha256(path)
+    at = _at(tmp_path)
+
+    at = click_row_button(at, pool.ACTION_COLUMN, 1, pool.REMOVE_LABEL)
+
+    assert not at.exception, at.exception
+    assert _sha256(path) == before, "改池子却动了受版本控制的 config/settings.yaml"
+    assert _local(path).exists(), "没有写本地覆盖文件"
+    assert load_settings(path).universe == ("600519", "601318")
+
+
+def test_adding_from_the_scan_table_leaves_settings_yaml_byte_identical(tmp_path):
+    path = _config(tmp_path, ("600519",))
+    _scan_csv(tmp_path,
+              "2026-08-27,000333,美的集团,ma_cross,72.5,3.1,1200000000,2.4\n")
+    before = _sha256(path)
+    at = _at(tmp_path, SIGNALS_PAGE)
+
+    at = click_row_button(at, pool.ADD_COLUMN, 0, pool.ADD_LABEL)
+
+    assert not at.exception, at.exception
+    assert _sha256(path) == before
+    assert load_settings(path).universe == ("600519", "000333")
+    assert "000333" in _local(path).read_text(encoding="utf-8")
+
+
+def test_adding_from_the_search_box_leaves_settings_yaml_byte_identical(tmp_path,
+                                                                       fake_provider):
+    path = _config(tmp_path, ("600519",))
+    before = _sha256(path)
+    at = _at(tmp_path)
+    at = at.button(key=pool.LOAD_BUTTON_KEY).click().run()
+
+    at.selectbox(key=pool.PICK_KEY).set_value("000333 美的集团")
+    at = at.button(key=pool.ADD_BUTTON_KEY).click().run()
+
+    assert not at.exception, at.exception
+    assert _sha256(path) == before
+    assert load_settings(path).universe == ("600519", "000333")
+
+
+def test_the_page_says_the_pool_comes_from_the_local_file(tmp_path):
+    """来源必须写在脸上：两个文件都有 universe，看不出用的是哪个的话，
+    用户会以为自己在跟踪 A 池子而脚本每天在跑 B 池子。"""
+    path = _config(tmp_path, ("600519",))
+    pool.add("000333", config_path=path, allowed={"000333"})   # 造出本地覆盖
+    at = _at(tmp_path)
+
+    assert not at.exception, at.exception
+    text = _texts(at)
+    assert "本地" in text and "universe.local.yaml" in text, text
+    assert list(_table(at)["代码"]) == ["600519", "000333"]
+
+
+def test_the_page_says_the_pool_is_the_default_when_there_is_no_local_file(tmp_path):
+    """新克隆的样子：还没有本地文件 → 说清"这是默认池子"，别让人以为这就是他自己的。"""
+    _config(tmp_path, ("600519", "000333"))
+    at = _at(tmp_path)
+
+    assert not at.exception, at.exception
+    text = _texts(at)
+    assert "默认" in text, text
+    assert "settings.yaml" in text, text
+
+
+def test_a_broken_local_file_degrades_the_page_and_names_it(tmp_path):
+    """本地文件被手改坏 → 整页降级为一句明确的错误（连"当前池子"都无从显示），
+    而且必须指名是**哪个**文件、怎么脱身。悄悄回退到默认池子是最坏的结果。"""
+    path = _config(tmp_path, ("600519",))
+    _local(path).write_text("universe: []\n", encoding="utf-8")
+    at = _at(tmp_path)
+
+    assert not at.exception, at.exception
+    text = _errors(at)
+    assert "universe.local.yaml" in text, f"没指名坏的是哪个文件：{text}"
+    assert "删除" in text, f"没给出路（删掉它就回到默认池子）：{text}"
+    # 不许"降级"成一张默认池子的表：那等于悄悄回退，用户会以为自己的池子还在。
+    assert not at.get("dataframe"), \
+        f"坏本地文件时还画了池子表格（画的必然是默认池子）：{list(_table(at)['代码'])}"
 
 
 # ================================================================ README（外部第一入口）
