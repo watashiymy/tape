@@ -70,7 +70,7 @@ def main() -> None:
             print(f"  {s}: 最新 {d}")
         bars = {s: df for s, df in bars.items() if s not in stale}
 
-    signals = scan(bars, strategies)
+    signals = scan(bars, strategies, overlays=settings.overlays)
     print(f"\n===== {expected} 信号 =====（扫描 {len(bars)} 只 × {len(strategies)} 个策略）")
     if not signals:
         print("今日无新信号")

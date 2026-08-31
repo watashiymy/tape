@@ -14,6 +14,10 @@ costs:
 strategies:
   ma_cross: {fast: 20, slow: 60}
   donchian: {entry_n: 20, exit_n: 10, amount_n: 20, amount_ratio: 1.5}
+overlays:                          # 叠加层：对全部策略生效（v0.4.0；无此段 = 全部禁用）
+  # ATR 追踪止损：adj_close < 入场以来最高 adj_close − k×ATR(n) 即 T+1 开盘离场；
+  # k=3 而非海龟经典的 2——实测证明"出场太急、一次正常回调就被甩下车"是唐奇安跑输主因
+  atr_stop: {enabled: true, n: 20, k: 3.0}
 scan:                              # 全市场扫描（v0.1.1）
   history_days: 400                # 拉取历史窗口（自然日），约 270 根 K 线 > MA60 两倍
   min_avg_amount: 50000000         # 20 日均成交额门槛（元）：流动性差的票信号无意义且滑点假设失效

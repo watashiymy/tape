@@ -16,13 +16,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from quant.backtest.engine import Backtester
 from quant.backtest.portfolio import BacktestResult, Trade
-from quant.config import Settings, load_settings
+from quant.config import OverlaysCfg, Settings, load_settings
 from quant.data.baostock_provider import BaostockProvider
 from quant.data.cache import BarCache
 from quant.data.service import DataService
 from quant.report.charts import equity_chart, kline_chart
 from quant.report.metrics import compute_metrics
 from quant.strategy import build_strategies
+from quant.strategy.base import Strategy
+from quant.strategy.pipeline import target_positions
 
 OUTPUT = Path("output")
 
@@ -48,6 +50,17 @@ def equal_weight_hold(bars: dict[str, pd.DataFrame]) -> pd.Series:
     ffill 补的是中段 NaN（停牌日），必须在 fillna 之前。"""
     norm = [df["adj_close"] / df["adj_close"].iloc[0] for df in bars.values()]
     return pd.concat(norm, axis=1).ffill().fillna(1.0).mean(axis=1)
+
+
+def strategy_positions(strat: Strategy, bars: dict[str, pd.DataFrame],
+                       overlays: OverlaysCfg) -> dict[str, pd.Series]:
+    """整个回测入口的目标仓位出口：逐标的经 pipeline.target_positions（v0.4.0 M2）。
+
+    此前这里直调 strat.generate_positions —— 三个入口各自直调时，叠加层（止损/趋势
+    过滤）漏接任何一处都是静默分叉：扫描说买、回测按另一套规则算，谁也不报错。
+    tests/test_strategy_pipeline.py 的源码级断言钉着 scripts/ 下不许再出现那种直调。
+    """
+    return {sym: target_positions(df, strat, overlays) for sym, df in bars.items()}
 
 
 def config_snapshot(settings: Settings) -> dict:
@@ -113,7 +126,7 @@ def main() -> None:
     snapshot = config_snapshot(settings)
 
     for strat in strategies:
-        positions = {s: strat.generate_positions(df) for s, df in bars.items()}
+        positions = strategy_positions(strat, bars, settings.overlays)
         result = Backtester(bars, positions, settings).run()
         metrics = compute_metrics(result.equity, result.trades)
 

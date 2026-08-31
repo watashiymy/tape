@@ -181,6 +181,19 @@ def test_config_snapshot_serializes_dates_and_costs(tmp_path):
     json.dumps(snap, ensure_ascii=False)           # 整体必须可直接序列化
 
 
+def test_config_snapshot_carries_the_overlays(tmp_path):
+    """叠加层必须进快照（v0.4.0 M2 设计 §2.3）：不然回测产物无法解释自己是在
+    什么规则下跑出来的——同一个策略、同一段行情，止损开与关是两条完全不同的曲线，
+    而目录名里只有策略名和时间戳。"""
+    cfg = tmp_path / "s.yaml"
+    cfg.write_text(_CFG_BODY % "{ma_cross: {fast: 20, slow: 60}}"
+                   + "overlays:\n  atr_stop: {enabled: true, n: 20, k: 3.0}\n",
+                   encoding="utf-8")
+    snap = run_backtest.config_snapshot(load_settings(cfg))
+    assert snap["overlays"] == {"atr_stop": {"enabled": True, "n": 20, "k": 3.0}}
+    json.dumps(snap, ensure_ascii=False)
+
+
 def test_equal_weight_hold_normalizes_each_symbol_to_one():
     """基准是"等权买入持有"：每只先按各自首日归一再取均值。
     直接对价格取均值会让高价股主导基准，贵州茅台一只就能决定曲线形状。"""

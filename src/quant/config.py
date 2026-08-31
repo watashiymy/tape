@@ -15,7 +15,7 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import date, datetime
 from pathlib import Path
 
@@ -66,6 +66,86 @@ class Costs:
         raise ValueError(f"没有覆盖 {d} 的印花税规则")
 
 
+def _positive_int(name: str, v) -> int:
+    """窗口长度：必须是 ≥1 的真整数。
+
+    `isinstance(True, int)` 为真，所以 bool 要单独挡掉——YAML 里 `n: true` 会静默
+    变成 `rolling(1)`，一个"能跑、但完全不是你要的规则"的止损。
+    浮点/字符串窗口若放行，要等到 `rolling()` 里才崩，报错离病因很远。
+    """
+    if isinstance(v, bool) or not isinstance(v, int) or v < 1:
+        raise ValueError(f"参数 {name} 必须是不小于 1 的整数，实际为 {v!r}")
+    return v
+
+
+def _positive_float(name: str, v) -> float:
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0:
+        raise ValueError(f"参数 {name} 必须是大于 0 的数，实际为 {v!r}")
+    return float(v)
+
+
+def _flag(name: str, v) -> bool:
+    """开关必须是真 bool。
+
+    字符串 `"false"` 与整数 1 都是真值：放行的下场是"配置里写着关，实际一直开着"，
+    而回测照常完成、零告警。YAML 的 `true/false/yes/no` 本来就解析成 bool，
+    写出别的形态就是写错了，当场说破。
+    """
+    if not isinstance(v, bool):
+        raise ValueError(f"参数 {name} 必须是布尔值（true/false），实际为 {v!r}")
+    return v
+
+
+@dataclass(frozen=True)
+class AtrStopCfg:
+    """ATR 追踪止损（v0.4.0 M2 设计 §2.2）。默认 n=20, k=3.0，但**默认关闭**。
+
+    k 取 3 而非海龟经典的 2：既有实测已证明唐奇安"出场太急、一次正常回调就被甩
+    下车"是它跑输的主因，蓝筹波动下 2×ATR 过紧。
+    """
+    enabled: bool = False
+    n: int = 20
+    k: float = 3.0
+
+    def __post_init__(self) -> None:
+        # 校验落在 dataclass 自身而不只在 load_settings 里：测试与脚本会直接构造它，
+        # 那条路径若不校验，坏参数就只在 YAML 那一侧被挡住。
+        _flag("atr_stop.enabled", self.enabled)
+        _positive_int("atr_stop.n", self.n)
+        _positive_float("atr_stop.k", self.k)
+
+
+@dataclass(frozen=True)
+class OverlaysCfg:
+    """叠加层总配置：对**全部策略**生效（v0.4.0）。
+
+    默认全关。"配置无 overlays 段 = 全部禁用"是向后兼容契约：v0.4.0 之前的全部
+    结论（README 的实测数字、既有回测产物、用户手上的 config 副本）都是无叠加层
+    口径，缺省若变成开启，老配置一升级就换了一套交易规则且无人知晓。
+    """
+    atr_stop: AtrStopCfg = AtrStopCfg()
+
+
+def _load_overlays(raw: dict | None) -> OverlaysCfg:
+    """解析 overlays 段。认不出的叠加层名**报错**，绝不忽略。
+
+    静默忽略的下场很具体：趋势过滤要到 M3 才实现，若现在往配置里写 trend_filter
+    就被无声吞掉，用户看着"开着"的配置、跑的是没有过滤的规则，零告警。
+    """
+    raw = raw or {}
+    known = {f.name for f in fields(OverlaysCfg)}
+    unknown = [k for k in raw if k not in known]
+    if unknown:
+        raise ValueError(f"未知叠加层 {', '.join(map(str, unknown))}，可用: {sorted(known)}")
+    atr_raw = raw.get("atr_stop") or {}
+    d = AtrStopCfg()                    # 默认值只在 dataclass 声明处维护一份
+    return OverlaysCfg(atr_stop=AtrStopCfg(
+        enabled=atr_raw.get("enabled", d.enabled),
+        n=atr_raw.get("n", d.n),
+        k=atr_raw.get("k", d.k),
+    ))
+
+
 @dataclass(frozen=True)
 class ScanConfig:
     """全市场扫描（v0.1.1 §3.2）。默认值即设计值，旧配置无 scan: 段时全部生效。"""
@@ -85,6 +165,8 @@ class Settings:
     # 带默认值（且必须放末位）：既容旧 YAML 无 scan: 段，也容测试/脚本里
     # 直接 Settings(...) 构造的既有调用点——缺省即设计默认。
     scan: ScanConfig = ScanConfig()
+    #: 叠加层（v0.4.0）。缺省全关 = 与 v0.4.0 之前逐位一致的旧口径。
+    overlays: OverlaysCfg = OverlaysCfg()
 
 
 def local_universe_path(settings_path: str | Path) -> Path:
@@ -182,4 +264,5 @@ def load_settings(path: str | Path) -> Settings:
         costs=costs,
         strategies={k: dict(v) for k, v in (raw.get("strategies") or {}).items()},
         scan=scan,
+        overlays=_load_overlays(raw.get("overlays")),
     )

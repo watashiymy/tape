@@ -226,7 +226,8 @@ def main() -> None:
                 df, _warns = fetch_with_retry(service, sym, start, expected)
                 df.attrs["symbol"], df.attrs["name"] = sym, name
                 sigs, skip = classify_and_scan(df, strategies, expected,
-                                               scan_cfg.min_avg_amount)
+                                               scan_cfg.min_avg_amount,
+                                               overlays=settings.overlays)
             except Exception as e:
                 failures.append((sym, f"{type(e).__name__}: {e}"))
             else:

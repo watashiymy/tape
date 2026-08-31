@@ -166,6 +166,12 @@ def test_real_config_file():
     assert s.costs.stamp_rate(date(2023, 8, 27)) == 0.001
     assert s.costs.stamp_rate(date(2023, 8, 28)) == 0.0005
     assert set(s.strategies) == {"ma_cross", "donchian"}
+    # v0.4.0 M2：ATR 追踪止损默认**开启**（k=3 而非海龟经典的 2，理由见设计 §2.2：
+    # 既有实测已证明"出场太急、一次正常回调就被甩下车"是唐奇安跑输的主因）。
+    # 钉住它是因为这三个数字决定每一笔交易何时认输，手改配置打错字必须当场红。
+    assert s.overlays.atr_stop.enabled is True
+    assert s.overlays.atr_stop.n == 20
+    assert s.overlays.atr_stop.k == 3.0
     assert s.scan.history_days == 400
     assert s.scan.min_avg_amount == 50_000_000
     assert s.scan.top_n == 20
@@ -194,6 +200,91 @@ def test_scan_section_parsed(tmp_path):
     assert s.scan.history_days == 500
     assert s.scan.min_avg_amount == 80_000_000
     assert s.scan.top_n == 20  # 未显式给出 → 默认
+
+
+# ---------- overlays 段（v0.4.0 M2 设计 §2.3）----------
+#
+# 叠加层（ATR 追踪止损，M3 再加趋势过滤）对**全部策略**生效，因此它的参数和
+# strategies 段一样属于"改了就会改变每一笔交易"的东西：解析必须严格，
+# 错的写法要当场报错，不能等到回测跑完才发现规则不是自己想的那套。
+
+
+def _cfg(tmp_path, extra: str = "") -> Path:
+    cfg = tmp_path / "s.yaml"
+    cfg.write_text(_BODY % ('["600519"]', "5000000") + extra, encoding="utf-8")
+    return cfg
+
+
+def test_overlays_default_to_all_disabled_when_the_section_is_missing(tmp_path):
+    """无 overlays 段 = 全部禁用。
+
+    向后兼容不是客气：v0.4.0 之前的全部结论（README 实测数字、既有回测产物、
+    用户手上的 config 副本）都是无叠加层口径。缺省若变成"开启"，
+    老配置一升级就悄悄换了一套交易规则。
+    """
+    s = load_settings(_cfg(tmp_path))
+    assert s.overlays.atr_stop.enabled is False
+
+
+def test_the_overlays_section_is_parsed(tmp_path):
+    s = load_settings(_cfg(tmp_path, "overlays:\n  atr_stop: {enabled: true, n: 10, k: 2.5}\n"))
+    assert s.overlays.atr_stop.enabled is True
+    assert s.overlays.atr_stop.n == 10
+    assert s.overlays.atr_stop.k == 2.5
+
+
+def test_a_partial_overlay_entry_keeps_the_designed_defaults(tmp_path):
+    """部分覆盖是配置文件的常态：只写 enabled 也该拿到设计默认 n=20, k=3.0。"""
+    s = load_settings(_cfg(tmp_path, "overlays:\n  atr_stop: {enabled: true}\n"))
+    assert (s.overlays.atr_stop.enabled, s.overlays.atr_stop.n, s.overlays.atr_stop.k) \
+        == (True, 20, 3.0)
+
+
+@pytest.mark.parametrize("entry, needle, why", [
+    ("{enabled: true, n: 0}", "atr_stop.n", "rolling(0) 无警告地返回全 NaN → 止损永不触发"),
+    ("{enabled: true, n: -5}", "atr_stop.n", "负窗口"),
+    ("{enabled: true, n: 2.5}", "atr_stop.n", "浮点窗口迟到 rolling 才崩且报错误导"),
+    ("{enabled: true, n: \"20\"}", "atr_stop.n", "字符串窗口"),
+    ("{enabled: true, n: true}", "atr_stop.n",
+     "YAML 的 true 是 bool，而 isinstance(True, int) 为真——会静默变成 rolling(1)"),
+    ("{enabled: true, k: 0}", "atr_stop.k", "k=0 → 阈值就是 peak，任何回撤都止损"),
+    ("{enabled: true, k: -3.0}", "atr_stop.k", "负 k → 阈值在 peak 之上，一入场就止损"),
+    ("{enabled: true, k: \"3.0\"}", "atr_stop.k", "字符串 k 会在乘法处才崩"),
+    ("{enabled: \"false\"}", "atr_stop.enabled",
+     "字符串 \"false\" 是真值——本想关掉的叠加层会静默开着"),
+    ("{enabled: 1}", "atr_stop.enabled", "1/0 不是 bool，语义靠猜"),
+])
+def test_bad_overlay_params_raise_and_name_the_parameter(tmp_path, entry, needle, why):
+    """一律 raise ValueError（不用 assert，-O 会剥除），报错带参数名与实际值。"""
+    with pytest.raises(ValueError, match=needle) as e:
+        load_settings(_cfg(tmp_path, f"overlays:\n  atr_stop: {entry}\n"))
+    assert "实际" in str(e.value), f"报错必须给出实际值（{why}）: {e.value}"
+
+
+def test_an_unknown_overlay_name_raises_instead_of_being_ignored(tmp_path):
+    """认不出的叠加层名必须报错。
+
+    静默忽略的下场很具体：M3 才实现趋势过滤，用户（或未来的我）提前在 config 里
+    写上 trend_filter，配置看着开着、代码里根本没这回事，回测结论与配置不符且零告警。
+    """
+    with pytest.raises(ValueError, match="trend_filter") as e:
+        load_settings(_cfg(tmp_path, "overlays:\n  trend_filter: {enabled: true, n: 200}\n"))
+    assert "atr_stop" in str(e.value), "报错要列出可用的叠加层名"
+
+
+def test_overlay_params_are_validated_even_when_disabled(tmp_path):
+    """关着也要校验：留在配置里的坏参数会在某天被"打开开关"的那个人踩到，
+    而那时的报错离改动点已经很远了。"""
+    with pytest.raises(ValueError, match="atr_stop.n"):
+        load_settings(_cfg(tmp_path, "overlays:\n  atr_stop: {enabled: false, n: 0}\n"))
+
+
+def test_the_overlay_dataclass_validates_on_construction():
+    """校验落在 dataclass 自身，不只在 load_settings 里：测试与脚本会直接构造它。"""
+    with pytest.raises(ValueError, match="atr_stop.k"):
+        config.AtrStopCfg(enabled=True, n=20, k=0.0)
+    ok = config.AtrStopCfg(enabled=True, n=20, k=3.0)
+    assert (ok.n, ok.k) == (20, 3.0)
 
 
 # ---------- 本地信号池覆盖（v0.3.2 §2.2）----------
