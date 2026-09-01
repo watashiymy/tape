@@ -143,12 +143,22 @@ class FakeProvider:
         return pd.DataFrame(FAKE_ROWS, columns=["symbol", "name"])
 
 
+#: 「历史齐全」用的 bar 数。两个边界都是有意的（v0.4.0 M3）：
+#:   下界 200 —— 真配置默认开着 200 日趋势过滤，MA(200) 未成形时 gate 恒为 False，
+#:     130 根（MIN_BARS，只够过 insufficient_history 那道闸门）一条 BUY 都报不出来；
+#:     线上一趟扫描取 scan.history_days=400 自然日 ≈ 270 根，所以 240 与线上同量级。
+#:   上界 250 —— 刻意停在 tsmom 的 250 根暖机期**之内**，这套 fixture 因此仍然只有
+#:     ma_cross 一个策略报信号，下面那些"每只票恰好一条信号"的断言才继续说得准。
+HEALTHY_BARS = 240
+
+
 def fake_bars(end: date, n: int = 1) -> pd.DataFrame:
     """n 根工作日 bar（过 prepare_bars，与线上编排一致），最后一根落在 end。
 
-    末根收盘 +5%：n ≥ MIN_BARS 时 MA20 恰好在最后一天上穿 MA60（前面全平 → 两线相等
-    → 仓位 0），于是真配置的 ma_cross 会给出一条**新 BUY**——"正常情形照常产出"
-    这条断言得真的有信号落进 CSV，否则它与"闸门误伤"根本区分不开。
+    末根收盘 +5%：n ≥ HEALTHY_BARS 时 MA20 恰好在最后一天上穿 MA60（前面全平 →
+    两线相等 → 仓位 0）且收盘站上 MA200（前面全平 → 均线就是 10.0），于是真配置的
+    ma_cross 会给出一条**新 BUY**——"正常情形照常产出"这条断言得真的有信号落进
+    CSV，否则它与"闸门误伤"根本区分不开。
     5% < prepare_bars 的 11% 跳变阈值，不会带出告警。
     """
     dates = pd.bdate_range(end=pd.Timestamp(end), periods=n)
@@ -480,7 +490,7 @@ def test_a_healthy_run_still_produces_the_csv(tmp_path, monkeypatch, cached, cap
     信号照常打印、CSV 照常落盘、正常退出。闸门只该拦住"没有结论"的那几种情形。"""
     if cached:
         _seed_fresh_listing(tmp_path)
-    monkeypatch.setattr(FakeService, "bars_per_symbol", MIN_BARS)
+    monkeypatch.setattr(FakeService, "bars_per_symbol", HEALTHY_BARS)
 
     _run_scan(tmp_path, monkeypatch, [])
 
@@ -493,12 +503,42 @@ def test_a_healthy_run_still_produces_the_csv(tmp_path, monkeypatch, cached, cap
     assert "ma_cross" in set(df["strategy"])
 
 
+def _scan_symbols(tmp_path) -> set[str]:
+    df = pd.read_csv(tmp_path / "output" / "scan" / f"{BASE_DAY}.csv", dtype={"symbol": str})
+    return set(df["symbol"])
+
+
+def test_the_real_configs_trend_filter_reaches_this_entry_point(tmp_path, monkeypatch):
+    """端到端：真配置里那层 200 日趋势过滤**确实**作用到了全市场扫描这个入口。
+
+    这是设计 §2.1 末段欠下的那条行为断言。M2 时办不到：ATR 止损对"新 BUY"恒等
+    （入场当根不可能被止损），所以扫描入口是否接上叠加层，行为上分辨不出，
+    只能靠源码级的实参断言。趋势过滤打破了这条恒等——
+
+    同一段行情跑两趟，唯一差别是历史长度：
+      130 根（MIN_BARS，刚够过 insufficient_history）→ MA(200) 还没成形，
+        gate 恒为 False → 一条 BUY 都不该有；
+      240 根 → MA(200) 成形且收盘站上它 → 每只票照常报出 ma_cross 的新 BUY。
+    若入口把 settings.overlays 换成 OverlaysCfg()（或压根不走 pipeline），
+    第一趟会照常报出 4 条 BUY，而扫描脚本 exit 0、CSV 看着完全正常。
+    """
+    monkeypatch.setattr(FakeService, "bars_per_symbol", MIN_BARS)
+    _run_scan(tmp_path, monkeypatch, [])
+    assert _scan_symbols(tmp_path) == set(), \
+        "MA(200) 暖机期内不该有任何 BUY——趋势过滤没接上这个入口"
+
+    monkeypatch.setattr(FakeService, "bars_per_symbol", HEALTHY_BARS)
+    _run_scan(tmp_path, monkeypatch, [])
+    assert _scan_symbols(tmp_path) == {s for s, _ in FAKE_ROWS}, \
+        "历史够长时必须照常报 BUY，否则上面那条断言测的只是「这套行情从来没信号」"
+
+
 def test_a_stale_symbol_among_healthy_ones_is_a_suspension_not_an_outage(tmp_path,
                                                                          monkeypatch,
                                                                          capsys):
     """部分 stale 是个股停牌，**不是**数据未就绪：照常扫其余标的并落盘
     （run_daily_signal 的语义也是"全部落后才退出"）。"""
-    monkeypatch.setattr(FakeService, "bars_per_symbol", MIN_BARS)
+    monkeypatch.setattr(FakeService, "bars_per_symbol", HEALTHY_BARS)
     monkeypatch.setattr(FakeService, "last_bars",
                         {FAKE_ROWS[0][0]: PREV_DAY, FAKE_ROWS[1][0]: PREV_DAY})
 
@@ -536,7 +576,7 @@ def test_a_trial_run_never_clobbers_the_full_scan_of_the_same_day(tmp_path, monk
     隔离靠路径、不靠约定：试跑落在 `<date>_limit1.csv`，两份结果各自成文件，
     文件系统层面就不可能互相覆盖。
     """
-    monkeypatch.setattr(FakeService, "bars_per_symbol", MIN_BARS)
+    monkeypatch.setattr(FakeService, "bars_per_symbol", HEALTHY_BARS)
     _run_scan(tmp_path, monkeypatch, [])
     full = _scan_csv(tmp_path, f"{BASE_DAY}.csv")
     before = full.read_bytes()
@@ -557,7 +597,7 @@ def test_the_two_products_carry_their_own_scope(tmp_path, monkeypatch):
     meta 必须**单独成文件**而不是塞进 CSV：信号数为 0 时 CSV 只有表头，
     没有任何地方能承载"我扫了 3010 只"这个事实——而那正是要区分的核心。
     """
-    monkeypatch.setattr(FakeService, "bars_per_symbol", MIN_BARS)
+    monkeypatch.setattr(FakeService, "bars_per_symbol", HEALTHY_BARS)
     _run_scan(tmp_path, monkeypatch, [])
     _run_scan(tmp_path, monkeypatch, ["--limit", "1"])
 
@@ -574,7 +614,7 @@ def test_the_two_products_carry_their_own_scope(tmp_path, monkeypatch):
 def test_the_meta_records_the_skip_breakdown_and_failures(tmp_path, monkeypatch):
     """meta 要能替代终端汇总那一行：跳过明细、失败数、耗时、起始时刻。
     终端输出会滚走，这份文件是事后唯一的第一手证据。"""
-    monkeypatch.setattr(FakeService, "bars_per_symbol", MIN_BARS)
+    monkeypatch.setattr(FakeService, "bars_per_symbol", HEALTHY_BARS)
     monkeypatch.setattr(FakeService, "fail_symbols", (FAKE_ROWS[0][0],))
     monkeypatch.setattr(FakeService, "last_bars", {FAKE_ROWS[1][0]: PREV_DAY})
 
@@ -616,7 +656,7 @@ def test_the_saved_path_printed_for_the_panel_is_the_real_one(tmp_path, monkeypa
     而且**只能有一行** `已保存:`：meta 的路径若也用这个前缀打出来，
     面板会把那份 JSON 当成 CSV 去读，直接一句"产物读取失败"。
     """
-    monkeypatch.setattr(FakeService, "bars_per_symbol", MIN_BARS)
+    monkeypatch.setattr(FakeService, "bars_per_symbol", HEALTHY_BARS)
     _run_scan(tmp_path, monkeypatch, ["--limit", "2"])
 
     out = capsys.readouterr().out

@@ -187,10 +187,15 @@ def test_config_snapshot_carries_the_overlays(tmp_path):
     而目录名里只有策略名和时间戳。"""
     cfg = tmp_path / "s.yaml"
     cfg.write_text(_CFG_BODY % "{ma_cross: {fast: 20, slow: 60}}"
-                   + "overlays:\n  atr_stop: {enabled: true, n: 20, k: 3.0}\n",
+                   + "overlays:\n  atr_stop: {enabled: true, n: 20, k: 3.0}\n"
+                   + "  trend_filter: {enabled: true, n: 200}\n",
                    encoding="utf-8")
     snap = run_backtest.config_snapshot(load_settings(cfg))
-    assert snap["overlays"] == {"atr_stop": {"enabled": True, "n": 20, "k": 3.0}}
+    # 逐字对账**整个** overlays 字典（不是只查其中一层）：漏进快照的那一层
+    # 事后无从追认——同一个策略、同一段行情，止损/过滤开与关是四条完全不同的曲线，
+    # 而目录名里只有策略名和时间戳。
+    assert snap["overlays"] == {"trend_filter": {"enabled": True, "n": 200},
+                                "atr_stop": {"enabled": True, "n": 20, "k": 3.0}}
     json.dumps(snap, ensure_ascii=False)
 
 

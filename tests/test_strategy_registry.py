@@ -43,9 +43,21 @@ def test_every_registered_strategy_has_a_unique_nonempty_label():
 
 
 def test_builtin_labels_use_the_industry_standard_chinese_names():
-    """行业通行译名，不自创（设计 §1.2 指名的两个）。"""
+    """行业通行译名，不自创（设计 §1.2 指名的两个 + M3 的时序动量）。"""
     assert strategy_label("ma_cross") == "双均线交叉"
     assert strategy_label("donchian") == "唐奇安通道突破"
+    assert strategy_label("tsmom") == "时序动量"
+
+
+def test_the_time_series_momentum_strategy_is_registered_under_its_key():
+    """v0.4.0 M3：tsmom 进注册表。键是 `tsmom`（会落进扫描 CSV、回测目录名与
+    journal 的 source，**永不改**）；构造走 REGISTRY，参数名与 settings.yaml 对齐。"""
+    from quant.strategy.tsmom import TSMomentum
+
+    assert REGISTRY["tsmom"] is TSMomentum
+    built = build_strategies({"tsmom": {"lookback": 250}})
+    assert [s.name for s in built] == ["tsmom"]
+    assert built[0].lookback == 250
 
 
 def test_strategy_label_returns_unknown_keys_verbatim():

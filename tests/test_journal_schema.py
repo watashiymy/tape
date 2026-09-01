@@ -68,7 +68,11 @@ def test_sources_are_derived_from_the_strategy_registry():
     from quant.strategy import REGISTRY
 
     assert schema.SOURCES == tuple(REGISTRY) + ("discretionary", "other")
-    assert "ma_cross" in schema.SOURCES and "donchian" in schema.SOURCES
+    # v0.4.0 M3 的验收点：第三个策略**不改一行 schema 代码**就拿到了自己的座位。
+    # 少了它，"照 tsmom 信号做的交易"会被 journal_ui.prefills 兜底成 other，
+    # 「按来源对比谁更赚钱」于是静默丢掉这一整类交易，页面不报错。
+    for key in ("ma_cross", "donchian", "tsmom"):
+        assert key in schema.SOURCES, f"SOURCES 缺 {key}"
 
 
 def test_sources_follow_a_new_strategy_registration():

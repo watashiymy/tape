@@ -14,14 +14,15 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from quant.config import AtrStopCfg, OverlaysCfg
-from quant.indicators import atr
+from quant.config import AtrStopCfg, OverlaysCfg, TrendFilterCfg
+from quant.indicators import atr, ma
 from quant.signal.market_scan import MIN_BARS, classify_and_scan
 from quant.signal.scan import scan
 from quant.strategy.base import Strategy
 from quant.strategy.donchian import Donchian
 from quant.strategy.ma_cross import MaCross
-from quant.strategy.pipeline import target_positions
+from quant.strategy.pipeline import atr_trailing_stop, target_positions, trend_gate
+from quant.strategy.tsmom import TSMomentum
 from tests.conftest import make_bars
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -45,6 +46,16 @@ OFF = OverlaysCfg()                            # 无 overlays 段 = 全部禁用
 
 def stop(n: int = 4, k: float = 3.0) -> OverlaysCfg:
     return OverlaysCfg(atr_stop=AtrStopCfg(enabled=True, n=n, k=k))
+
+
+def gate(n: int = 4) -> OverlaysCfg:
+    """只开趋势过滤（v0.4.0 M3）。窗口取 4 而不是默认 200：手算表要能写下来。"""
+    return OverlaysCfg(trend_filter=TrendFilterCfg(enabled=True, n=n))
+
+
+def both(gate_n: int = 4, stop_n: int = 4, k: float = 3.0) -> OverlaysCfg:
+    return OverlaysCfg(trend_filter=TrendFilterCfg(enabled=True, n=gate_n),
+                       atr_stop=AtrStopCfg(enabled=True, n=stop_n, k=k))
 
 
 def bars(adj_closes, factors=None, end="2024-06-28") -> pd.DataFrame:
@@ -343,6 +354,262 @@ def test_the_output_contract_is_int_0_1_on_the_same_index():
     assert pos.index.equals(df.index)
 
 
+# ============================================================ 趋势过滤（M3 设计 §3.1）
+#
+# gate = adj_close > MA(n)，最终仓位 = base AND gate（Faber 风格）。语义是"价格在长期
+# 均线下方时不持有多头"：**既挡入场也强制出场**。下面每个数字都手算，MA 用 n=4
+# 的小窗口（默认 200 根写不下来，而窗口长度不改变语义）。
+#
+#   idx        0     1     2     3      4     5      6      7      8
+#   adj_close 10    20    30    40     20    50     30     34     38
+#   MA(4)    NaN   NaN   NaN  25.0   27.5  35.0   35.0   33.5   38.0
+#   gate       F     F     F     T      F     T      F      T      F
+#            暖机 ——————————→   ↑高于  ↑跌破  ↑重回  ↑跌破  ↑高于  ↑**恰好等于**
+# MA(4) 逐根：idx3 (10+20+30+40)/4=25、idx4 (20+30+40+20)/4=27.5、
+#            idx5 (30+40+20+50)/4=35、idx6 (40+20+50+30)/4=35、
+#            idx7 (20+50+30+34)/4=33.5、idx8 (50+30+34+38)/4=38。
+GATE_CLOSES = [10.0, 20.0, 30.0, 40.0, 20.0, 50.0, 30.0, 34.0, 38.0]
+GATE_WANT = [0, 0, 0, 1, 0, 1, 0, 1, 0]
+#: idx4 起 10 送 10 除权（因子 1→2）：raw 价腰斩，均线比较不再是尺度不变的
+#: （窗口跨除权日时 raw 的四根价来自两个尺度），"gate 误用原始价"才测得出来。
+GATE_FACTORS = [1.0] * 4 + [2.0] * 5
+
+
+def test_the_trend_gate_is_hand_computable():
+    """gate 就是"收盘价高于 MA(n)"这一句，逐根手算钉住（表见上）。
+
+    暖机期是 MA 未成形的前 n−1 根（与 MaCross 的暖机口径一致：rolling(n) 的前
+    n−1 根是 NaN）。判据是**严格 >**：idx8 收盘与 MA 逐分不差 → 不持有。
+    """
+    df = bars(GATE_CLOSES)
+    m = ma(df["adj_close"], 4)
+    assert m.iloc[:3].isna().all(), "MA(4) 前 3 根必须是 NaN，否则下面的暖机断言没意义"
+    assert list(m.iloc[3:]) == [25.0, 27.5, 35.0, 35.0, 33.5, 38.0]
+    assert df["adj_close"].iloc[8] == m.iloc[8] == 38.0, "手算前提：末根收盘恰好等于 MA"
+    g = trend_gate(df, 4)
+    assert list(g.astype(int)) == GATE_WANT
+
+
+def test_the_final_position_is_the_base_signal_and_the_gate():
+    """最终仓位 = base AND gate：两侧都要能把 1 压成 0。
+
+    base 在 idx3/idx7 是 0 而 gate 是 True（AND 由 base 侧压掉——写成 `gate` 直接
+    当仓位就会凭空造出两次入场），idx4/idx6 反过来（AND 由 gate 侧压掉）。
+    """
+    base = [1, 1, 1, 0, 1, 1, 1, 0, 1]
+    pos = target_positions(bars(GATE_CLOSES), Fixed(base), gate())
+    assert list(pos) == [0, 0, 0, 0, 0, 1, 0, 0, 0]
+    assert list(trend_gate(bars(GATE_CLOSES), 4).astype(int)) == GATE_WANT, \
+        "gate 本身在 idx3/idx7 是 True，被 base 压掉才是 AND 的证据"
+
+
+def test_a_base_signal_that_never_leaves_is_gated_bar_by_bar():
+    """base 恒为 1 时最终仓位**逐位等于** gate——过滤层自己说了算的那一面。"""
+    pos = target_positions(bars(GATE_CLOSES), Fixed([1] * 9), gate())
+    assert list(pos) == GATE_WANT
+
+
+#: 连涨到 50 之后一根跌回 20：base 一直是 1，只有 gate 会让它离场
+FORCED_EXIT = [10.0, 20.0, 30.0, 40.0, 50.0, 20.0]
+
+#: 横盘 100 之后末根跌到 60，基础策略恰在末根给出一次干净的 0→1 入场。
+#: 末根 MA(4) = (100+100+100+60)/4 = 90 > 收盘 60 → gate 挡住这次入场。
+#: 这条序列是"趋势过滤会改变全市场扫描的新 BUY 判据"（设计 §2.1 末段）的载体。
+GATE_BLOCK = [100.0, 100.0, 100.0, 100.0, 60.0]
+GATE_BLOCK_BASE = [0, 0, 0, 0, 1]
+
+
+def test_the_gate_forces_an_exit_when_the_price_drops_below_the_ma():
+    """"跌破长期均线就离场"是这层过滤的一半价值（另一半是挡入场）。
+
+    手算：idx3 MA=(10+20+30+40)/4=25 → 40>25 持有；idx4 MA=(20+30+40+50)/4=35 →
+    50>35 持有；idx5 MA=(30+40+50+20)/4=35 → 20<35 → **离场**。
+    基础信号全程是 1，这次卖出只可能来自 gate——写成"只挡入场、不管出场"
+    （例如只在 base 的 0→1 那根查 gate）时，末根会留着一个 1，而回测只表现为
+    "回撤深了一点"，没有任何报错。
+    """
+    pos = target_positions(bars(FORCED_EXIT), Fixed([1] * 6), gate())
+    assert list(pos) == [0, 0, 0, 1, 1, 0]
+
+
+def test_the_warmup_gate_holds_nothing_even_in_a_screaming_uptrend():
+    """MA 还没成形就不持有——算不出来就不装算得出来（与 ATR 暖机同一纪律）。
+
+    前缀刻意取连涨（10→40）：横盘时"暖机为 False"与"暖机照常判定"都给 False，
+    断言会退化成永真。这里若把 NaN 当 0（fillna）或用 min_periods=1，
+    idx1 就会变成持有（MA(10,20)=15 < 20）。
+    """
+    df = bars([10.0, 20.0, 30.0, 40.0])
+    assert list(trend_gate(df, 4).astype(int)) == [0, 0, 0, 1]
+    assert ma(df["adj_close"], 4).iloc[:3].isna().all()
+    pos = target_positions(df, Fixed([1, 1, 1, 1]), gate())
+    assert list(pos) == [0, 0, 0, 1], "暖机三根必须空仓，第 4 根 MA 成形后才谈得上持有"
+
+
+def test_the_gate_reads_the_adjusted_close_not_the_raw_close():
+    """gate 的两侧（当日价与均线）都用后复权价。
+
+    因子在 idx4 从 1 跳到 2（10 送 10 除权），raw 价腰斩。均线比较本身是尺度不变的，
+    但**窗口跨除权日**时 raw 的四根价来自两个尺度：手算 idx5 的 raw 口径
+    MA=(30+40+10+25)/4=26.25 > 收盘 25 → 误判为"在均线下方"，凭空少一次持有。
+    """
+    df = bars(GATE_CLOSES, factors=GATE_FACTORS)
+    assert df["close"].iloc[4] == pytest.approx(10.0), "raw 确实腰斩了"
+    assert list(trend_gate(df, 4).astype(int)) == GATE_WANT
+    raw_gate = (df["close"] > ma(df["close"], 4)).astype(int)
+    assert list(raw_gate) != GATE_WANT, "原始价口径必须给出不同答案，否则测不出误用"
+
+
+def test_a_disabled_trend_filter_is_the_identity_transform():
+    """关掉过滤 → 逐位回到基础信号（含 dtype 与 name）。
+
+    与 atr 那条恒等测试同一理由（向后兼容），但这条要**自证有分辨力**：
+    先证明同一段行情开着过滤确实会改变结果，恒等才是"开关被尊重"的功劳。
+    """
+    df = bars(GATE_CLOSES)
+    strat = Fixed([1] * 9)
+    assert list(target_positions(df, strat, gate())) == GATE_WANT != [1] * 9
+    pd.testing.assert_series_equal(target_positions(df, strat, OFF),
+                                   strat.generate_positions(df))
+
+
+# ---------- 顺序：先 gate 后 atr_stop（本里程碑最容易写反的一条）----------
+#
+# 手算序列（gate n=4、atr n=4、k=3.0；bars() 里 TR = |Δadj_close|，首根退化为 0）：
+#   idx        0     1     2     3     4     5     6      7      8
+#   adj      100   102   100   102    60    58    59     95    130
+#   TR         0     2     2     2    42     2     1     36     35
+#   ATR(4)   NaN   NaN   NaN   1.5  12.0  12.0 11.75  20.25   18.5
+#   MA(4)    NaN   NaN   NaN 101.0  91.0  80.0 69.75   68.0   85.5
+#   gate       F     F     F     T     F     F     F      T      T
+#
+# 先 gate 后 atr（正确）：atr 收到的输入是 [0,0,0,1,0,0,0,1,1]——
+#   idx3 入场（peak=102，回撤 0）；idx4 gate 关门 → 输入 0 → 离场且封锁作废；
+#   idx7 gate 重新放行 → 以 95 **重新入场**（peak=95，回撤 0）；idx8 继续持有。
+#   → [0,0,0,1,0,0,0,1,1]
+# 先 atr 后 gate（错误）：atr 收到的是恒为 1 的 base——
+#   idx0 就入场，peak 抬到 102；idx4 回撤 102−60=42 > 3×12=36 → **止损并封锁**；
+#   而封锁只解除于 base 回 0，base 永远是 1 → 此后全 0，再 AND gate 还是全 0。
+#   → [0,0,0,1,0,0,0,0,0]
+# 差别落在 idx7/idx8：**趋势恢复后的那次入场被静默吞掉**。
+ORDER = [100.0, 102.0, 100.0, 102.0, 60.0, 58.0, 59.0, 95.0, 130.0]
+ORDER_WANT = [0, 0, 0, 1, 0, 0, 0, 1, 1]
+ORDER_IF_REVERSED = [0, 0, 0, 1, 0, 0, 0, 0, 0]
+
+
+def test_the_gate_is_applied_before_the_stop_not_after():
+    """顺序是语义：先决定"这个环境能不能持有"，再管"持有之后何时认输"（设计 §3.1）。
+
+    反过来（先算止损、再 AND gate）时，止损的状态机会把一次**本来不该持有**的下跌
+    当成一笔真实持仓来认输，而"止损后保持空仓直到基础策略新的 0→1"这条封锁只看
+    base——base 恒为 1 的策略（均线仍多头排列）从此永久被拉黑，趋势恢复后的入场
+    再也不会出现。两种顺序都输出一串合法仓位，没有任何一处报错。
+    """
+    df = bars(ORDER)
+    strat = Fixed([1] * len(ORDER))
+    got = target_positions(df, strat, both())
+    assert list(got) == ORDER_WANT
+
+    # 反序的结果在这里**真算一遍**（用同两个纯函数），证明这条测试分得开顺序：
+    # 不同才说明上面那个断言钉住的是顺序，而不是"两种顺序恰好一样"。
+    g = trend_gate(df, 4)
+    reversed_order = (atr_trailing_stop(df, strat.generate_positions(df), n=4, k=3.0)
+                      .astype(bool) & g).astype(int)
+    assert list(reversed_order) == ORDER_IF_REVERSED
+    assert list(got) != list(reversed_order), "顺序反了结果必须不同，否则这条测试是空的"
+
+
+def test_the_gate_blocking_an_entry_leaves_the_stop_with_nothing_to_trigger_on():
+    """同一段行情：**只开** gate 与**两个都开**逐位相同。
+
+    因为 gate 挡住的那段下跌根本没进过仓，止损"无从触发"。这条与上一条互为犄角：
+    上一条证明顺序反了会多一次止损（并永久封锁），这条证明正确顺序下止损在这段
+    行情里一次都不该说话——如果 both() 的结果比 gate() 少了一个 1，
+    就说明止损在替 gate 已经处理掉的下跌重复认输。
+    """
+    df = bars(ORDER)
+    strat = Fixed([1] * len(ORDER))
+    assert list(target_positions(df, strat, gate())) == ORDER_WANT
+    assert list(target_positions(df, strat, both())) == ORDER_WANT
+
+
+def test_the_stop_still_works_on_top_of_an_open_gate():
+    """反向：gate 一路放行时止损照常触发——两层叠加不是互相抵消。
+
+    用 STEP_UP（22 根每根涨 10，末根跌到 260；见文件末尾那段手算）：
+      末根 MA(20) = (130+140+…+310+260)/20 = 4440/20 = **222** → 260 > 222，gate 放行；
+      末根 ATR(20) = (19×10+50)/20 = 12 → 阈值 36，回撤 310−260 = 50 > 36 → 止损。
+    所以末根那个 0 只能来自止损：若把两层写成"任一层挡住就归零"之外的什么东西
+    （例如后一层覆盖前一层的结论），这里会留下一个 1。
+    """
+    df = bars(STEP_UP)
+    strat = Fixed([1] * len(STEP_UP))
+    assert float(ma(df["adj_close"], 20).iloc[-1]) == pytest.approx(222.0)
+    assert int(trend_gate(df, 20).iloc[-1]) == 1, "末根必须在均线上方（gate 放行）"
+    pos = target_positions(df, strat, both(gate_n=20, stop_n=20, k=3.0))
+    assert int(pos.iloc[-2]) == 1
+    assert int(pos.iloc[-1]) == 0, "gate 放行，末根这次 0 只能来自 ATR 止损"
+
+
+# ---------- 三策略 × overlay 开/关 的组合冒烟（设计 §3.3）----------
+
+#: 涨 → 跌 → 涨 → 跌，35 根：三个策略在这段里都真的有进有出（下面有断言钉着）
+COMBO = ([100.0 + 2.0 * i for i in range(12)]          # 100 → 122
+         + [120.0 - 2.0 * i for i in range(8)]         # 120 → 106
+         + [108.0 + 2.4 * i for i in range(10)]        # 108 → 129.6
+         + [128.0 - 4.0 * i for i in range(5)])        # 128 → 112
+
+COMBO_STRATEGIES = [
+    MaCross(fast=2, slow=4),
+    Donchian(entry_n=3, exit_n=2, amount_n=3, amount_ratio=0.5),
+    TSMomentum(lookback=3),
+]
+COMBO_OVERLAYS = [("全关", OFF), ("只开趋势过滤", gate(5)),
+                  ("只开止损", stop(4, 3.0)), ("两个都开", both(5, 4, 3.0))]
+
+
+@pytest.mark.parametrize("why, ov", COMBO_OVERLAYS)
+@pytest.mark.parametrize("strat", COMBO_STRATEGIES, ids=lambda s: s.name)
+def test_every_strategy_overlay_combination_keeps_the_output_contract(why, ov, strat):
+    """三策略 × 四种叠加层组合：契约（int {0,1}、同 index）+ **叠加层只减不增**。
+
+    "只减不增"是这两层 overlay 共同的语义（gate 是 AND、止损只把 1 压成 0）：
+    任何一处写成"或"、或把 gate 直接当仓位用，都会凭空造出基础策略从没给过的入场，
+    而回测照常完成——多出来的那些交易看起来和真信号一模一样。
+    """
+    df = bars(COMBO)
+    base = strat.generate_positions(df)
+    assert 0 < int(base.sum()) < len(df), f"{strat.name} 在这段行情里必须有进有出"
+    pos = target_positions(df, strat, ov)
+    assert pd.api.types.is_integer_dtype(pos) and set(pos.unique()) <= {0, 1}
+    assert pos.index.equals(df.index)
+    assert (pos <= base).all(), f"{why}：叠加层把 0 变成了 1（只该只减不增）"
+
+
+@pytest.mark.parametrize("why, ov", COMBO_OVERLAYS)
+@pytest.mark.parametrize("strat", COMBO_STRATEGIES, ids=lambda s: s.name)
+def test_every_strategy_overlay_combination_survives_a_truncated_replay(why, ov, strat):
+    """截断重放：任何策略 × 任何叠加层组合都不许偷看未来。
+    这是本项目对每个信号生成器的固定体检，叠加层加进来之后一样要过。"""
+    df = bars(COMBO)
+    full = list(target_positions(df, strat, ov))
+    for cut in range(1, len(COMBO) + 1):
+        trunc = target_positions(bars(COMBO[:cut]), strat, ov)
+        assert list(trunc) == full[:cut], f"{strat.name}/{why} 截断到 {cut} 根后历史被改写"
+
+
+@pytest.mark.parametrize("strat", COMBO_STRATEGIES, ids=lambda s: s.name)
+def test_the_trend_filter_actually_changes_every_strategy(strat):
+    """反向断言：这三个策略在这段行情里都**确实**被趋势过滤改变了结果。
+
+    没有这条，上面那两条"契约 + 只减不增"对一个把 gate 整段忽略的实现同样全绿。
+    """
+    df = bars(COMBO)
+    base = list(strat.generate_positions(df))
+    assert list(target_positions(df, strat, gate(5))) != base, \
+        f"{strat.name} 的结果没被趋势过滤改变，这组冒烟测试对它没有分辨力"
+
+
 # ============================================================ 三入口收拢（设计 §2.1）
 
 
@@ -512,6 +779,43 @@ def test_three_entry_points_agree_on_the_same_df_and_config(why, closes, base, t
     assert bool(got) is (tail == (0, 1))
 
 
+# (用例名, 收盘价路径, 基础信号, 叠加层, pipeline 末两根期望)
+GATE_CONSISTENCY_CASES = [
+    ("趋势过滤挡住入场", GATE_BLOCK, GATE_BLOCK_BASE, gate(), (0, 0)),
+    ("同一序列关掉过滤就放行", GATE_BLOCK, GATE_BLOCK_BASE, OFF, (0, 1)),
+    ("跌破均线强制离场", FORCED_EXIT, [1] * len(FORCED_EXIT), gate(), (1, 0)),
+    ("两层叠加：gate 重新放行才入场", ORDER[:8], [1] * 8, both(), (0, 1)),
+]
+
+
+@pytest.mark.parametrize("why, closes, base, ov, tail", GATE_CONSISTENCY_CASES)
+def test_three_entry_points_agree_with_the_trend_filter_too(why, closes, base, ov, tail):
+    """趋势过滤开启后，三个入口仍然逐位相同（收拢的行为侧证明，覆盖到 M3 的新叠加层）。
+
+    看「跌破均线强制离场」一行：基础信号末两根是 (1,1)，没有任何卖出信号；
+    这条 SELL 只可能来自 gate。看「趋势过滤挡住入场」一行：基础信号给了一次干净的
+    0→1，而三个入口都不该报出这次 BUY——**这正是 M2 时办不到的那条行为断言**
+    （见 §2.1：atr_stop 对"新 BUY"恒等，趋势过滤打破了它）。
+    """
+    df, base = _padded(closes, base)
+    strat = Fixed(base)
+    want = target_positions(df, strat, ov)
+    assert (int(want.iloc[-2]), int(want.iloc[-1])) == tail, "手算的末两根先对上"
+
+    pd.testing.assert_series_equal(
+        run_backtest.strategy_positions(strat, {"600000": df}, ov)["600000"], want)
+
+    sigs = scan({"600000": df}, [strat], overlays=ov)
+    if tail[0] == tail[1]:
+        assert sigs == []
+    else:
+        assert [s["action"] for s in sigs] == ["BUY" if tail[1] > tail[0] else "SELL"]
+
+    got, skip = classify_and_scan(df, [strat], EXPECTED, 5e7, overlays=ov)
+    assert skip is None, f"这条用例不该被跳过判定拦下: {skip}"
+    assert bool(got) is (tail == (0, 1))
+
+
 # ---------- 端到端：配置说开，跑出来就得是开着的那套 ----------
 #
 # 上面几条是源码级的。源码级断言的软肋是它只认表达式长相，不认运行时行为；
@@ -606,7 +910,7 @@ def test_the_stop_overlay_neither_invents_nor_erases_a_fresh_buy():
     于是 0→1 既不会被抹掉，也不会被凭空造出来。
 
     钉住它的用处：M3 的趋势过滤**会**改变 BUY 判据（gate 挡住入场），
-    届时这条必须显式改动，而不是悄悄变了没人发现。
+    见下一条——那条恒等在趋势过滤这一层**不成立**，而且不该成立。
     """
     for closes, base in ((TRIGGERED, ENTER_AT_2),
                          (BLOCKED, [0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1])):
@@ -614,3 +918,22 @@ def test_the_stop_overlay_neither_invents_nor_erases_a_fresh_buy():
         on, _ = classify_and_scan(df, [Fixed(base)], EXPECTED, 5e7, overlays=stop())
         off, _ = classify_and_scan(df, [Fixed(base)], EXPECTED, 5e7, overlays=OFF)
         assert [s["strategy"] for s in on] == [s["strategy"] for s in off]
+
+
+def test_the_trend_filter_does_erase_a_fresh_buy_in_a_downtrend():
+    """全市场扫描的行为侧接线证明（补上设计 §2.1 末段欠的那条）。
+
+    M2 时这个入口只能靠源码级实参断言：atr_stop 对"新 BUY"恒等（入场当根不可能
+    被止损），所以任何行为测试都分不开"接了"与"没接"。趋势过滤打破了这条恒等——
+    价格在长期均线下方时 gate 直接挡掉入场，于是"配置里开着过滤"这件事在
+    classify_and_scan 的输出上**看得见**：同一段行情、同一个基础策略，
+    开着过滤零信号，关掉过滤报一条 BUY。
+    """
+    df, base = _padded(GATE_BLOCK, GATE_BLOCK_BASE)
+    strat = Fixed(base)
+    on, skip_on = classify_and_scan(df, [strat], EXPECTED, 5e7, overlays=gate())
+    off, skip_off = classify_and_scan(df, [strat], EXPECTED, 5e7, overlays=OFF)
+    assert (skip_on, skip_off) == (None, None), "两趟都该完成判定，不该被跳过闸门拦下"
+    assert off and [s["strategy"] for s in off] == ["fixed_stub"], \
+        "关掉过滤必须报出这条 BUY，否则本测试没有分辨力"
+    assert on == [], "价格在 MA(4) 下方，开着趋势过滤就不该报这次入场"

@@ -235,6 +235,22 @@ def test_the_strategy_section_contrasts_both_built_ins():
         "没用交易次数说明「一个迟钝一个急躁」"
 
 
+def test_the_strategy_section_marks_the_evidence_strength():
+    """v0.4.0 M3（设计 §3.2）：对比表要**标注证据强度**——时序动量 ★★★，
+    双均线与唐奇安是经典教学样品。
+
+    这不是排版讲究：三个策略并排列出来，用户默认会以为它们地位相同，
+    于是把"教科书上有"当成"有效"。同一节还要写明为什么 MACD/KDJ/RSI 不做，
+    否则"少了功能"与"故意不做"分不开。
+    """
+    body = guide.section("strategies").body
+    assert "证据强度" in body, "策略对比表没有证据强度这一行"
+    assert "★★★" in body, "没标出时序动量的证据强度最强"
+    assert "教学样品" in body, "没说清双均线与唐奇安只是经典教学样品"
+    for absent in ("MACD", "KDJ", "RSI"):
+        assert absent in body, f"没交代为什么不做 {absent}"
+
+
 def test_the_limits_section_lists_the_five_named_approximations():
     """§3.1 第 6 条点名的五项：涨跌停近似、除权按分红再投资、夏普 rf=0、
     沪深300 不含分红、扫描池仅主板非 ST。"""

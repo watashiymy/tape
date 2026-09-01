@@ -150,34 +150,70 @@ class AtrStopCfg:
 
 
 @dataclass(frozen=True)
+class TrendFilterCfg:
+    """200 日趋势过滤（v0.4.0 M3 设计 §3.1，Faber 风格）。默认 n=200，**默认关闭**。
+
+    语义是"价格在长期均线下方时不持有多头"：`gate = adj_close > MA(n)`，
+    最终仓位 = 基础信号 AND gate——既挡入场，也强制出场。
+    用个股自身的 200 日线而不是指数（设计 §6：不引入指数对齐的复杂度）。
+    """
+    enabled: bool = False
+    n: int = 200
+
+    def __post_init__(self) -> None:
+        # 与 AtrStopCfg 同一理由：测试与脚本会直接构造它，校验必须在 dataclass 自身。
+        _flag("trend_filter.enabled", self.enabled)
+        _positive_int("trend_filter.n", self.n)
+
+
+@dataclass(frozen=True)
 class OverlaysCfg:
     """叠加层总配置：对**全部策略**生效（v0.4.0）。
 
     默认全关。"配置无 overlays 段 = 全部禁用"是向后兼容契约：v0.4.0 之前的全部
     结论（README 的实测数字、既有回测产物、用户手上的 config 副本）都是无叠加层
     口径，缺省若变成开启，老配置一升级就换了一套交易规则且无人知晓。
+
+    字段顺序 = **叠加顺序**（先 trend_filter 再 atr_stop，见 pipeline.target_positions
+    的文档串）：先决定"这个环境能不能持有"，再管"持有之后何时认输"。
     """
+    trend_filter: TrendFilterCfg = TrendFilterCfg()
     atr_stop: AtrStopCfg = AtrStopCfg()
 
 
 def _load_overlays(raw: dict | None) -> OverlaysCfg:
     """解析 overlays 段。认不出的叠加层名**和**叠加层内部认不出的参数名都报错。
 
-    静默忽略的下场很具体：趋势过滤要到 M3 才实现，若现在往配置里写 trend_filter
-    就被无声吞掉，用户看着"开着"的配置、跑的是没有过滤的规则，零告警。
+    静默忽略的下场很具体：设计 §6 明说本版不做的 `vol_target`（波动率目标仓位）
+    若被无声吞掉，用户看着"开着"的配置、跑的是没有那层的规则，零告警。
     严格度不能只做一半——叠加层**里面**的参数名同样要认（`enable`/`kk` 这种手误
     比未知叠加层名更常见，后果也更重：它决定每一笔交易何时认输）。
+
+    每加一个叠加层就要在这里加三行（取段、认键、构造），因此 known 集合一律从
+    `fields()` 派生：漏改一处的下场是"配置里写着的那层被静默忽略"。
     """
     raw = _mapping("overlays", raw)
     _reject_unknown("overlays", raw, {f.name for f in fields(OverlaysCfg)})
+
+    trend_raw = _mapping("overlays.trend_filter", raw.get("trend_filter"))
+    _reject_unknown("overlays.trend_filter", trend_raw,
+                    {f.name for f in fields(TrendFilterCfg)})
+    td = TrendFilterCfg()               # 默认值只在 dataclass 声明处维护一份
+
     atr_raw = _mapping("overlays.atr_stop", raw.get("atr_stop"))
     _reject_unknown("overlays.atr_stop", atr_raw, {f.name for f in fields(AtrStopCfg)})
-    d = AtrStopCfg()                    # 默认值只在 dataclass 声明处维护一份
-    return OverlaysCfg(atr_stop=AtrStopCfg(
-        enabled=atr_raw.get("enabled", d.enabled),
-        n=atr_raw.get("n", d.n),
-        k=atr_raw.get("k", d.k),
-    ))
+    d = AtrStopCfg()
+    return OverlaysCfg(
+        trend_filter=TrendFilterCfg(
+            enabled=trend_raw.get("enabled", td.enabled),
+            n=trend_raw.get("n", td.n),
+        ),
+        atr_stop=AtrStopCfg(
+            enabled=atr_raw.get("enabled", d.enabled),
+            n=atr_raw.get("n", d.n),
+            k=atr_raw.get("k", d.k),
+        ),
+    )
 
 
 @dataclass(frozen=True)

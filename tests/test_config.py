@@ -165,13 +165,18 @@ def test_real_config_file():
     assert s.costs.slippage == 0.001
     assert s.costs.stamp_rate(date(2023, 8, 27)) == 0.001
     assert s.costs.stamp_rate(date(2023, 8, 28)) == 0.0005
-    assert set(s.strategies) == {"ma_cross", "donchian"}
+    # v0.4.0 M3：第三个策略 tsmom（时序动量）进种子配置。
+    assert set(s.strategies) == {"ma_cross", "donchian", "tsmom"}
+    assert s.strategies["tsmom"] == {"lookback": 250}, "≈12 个月，见设计 §3.2"
     # v0.4.0 M2：ATR 追踪止损默认**开启**（k=3 而非海龟经典的 2，理由见设计 §2.2：
     # 既有实测已证明"出场太急、一次正常回调就被甩下车"是唐奇安跑输的主因）。
     # 钉住它是因为这三个数字决定每一笔交易何时认输，手改配置打错字必须当场红。
     assert s.overlays.atr_stop.enabled is True
     assert s.overlays.atr_stop.n == 20
     assert s.overlays.atr_stop.k == 3.0
+    # v0.4.0 M3：200 日趋势过滤默认**开启**（Faber 风格，设计 §3.1）。
+    assert s.overlays.trend_filter.enabled is True
+    assert s.overlays.trend_filter.n == 200
     assert s.scan.history_days == 400
     assert s.scan.min_avg_amount == 50_000_000
     assert s.scan.top_n == 20
@@ -224,6 +229,7 @@ def test_overlays_default_to_all_disabled_when_the_section_is_missing(tmp_path):
     """
     s = load_settings(_cfg(tmp_path))
     assert s.overlays.atr_stop.enabled is False
+    assert s.overlays.trend_filter.enabled is False
 
 
 def test_the_overlays_section_is_parsed(tmp_path):
@@ -231,6 +237,21 @@ def test_the_overlays_section_is_parsed(tmp_path):
     assert s.overlays.atr_stop.enabled is True
     assert s.overlays.atr_stop.n == 10
     assert s.overlays.atr_stop.k == 2.5
+
+
+def test_the_trend_filter_overlay_is_parsed(tmp_path):
+    """趋势过滤（v0.4.0 M3 设计 §3.1）：与 atr_stop 同一套解析口径。"""
+    s = load_settings(_cfg(tmp_path,
+                           "overlays:\n  trend_filter: {enabled: true, n: 120}\n"))
+    assert s.overlays.trend_filter.enabled is True
+    assert s.overlays.trend_filter.n == 120
+    assert s.overlays.atr_stop.enabled is False, "只写一个叠加层，另一个保持默认关闭"
+
+
+def test_a_partial_trend_filter_entry_keeps_the_designed_default_window(tmp_path):
+    """只写 enabled 也该拿到设计默认 n=200（Faber 的 200 日线，设计 §3.1）。"""
+    s = load_settings(_cfg(tmp_path, "overlays:\n  trend_filter: {enabled: true}\n"))
+    assert (s.overlays.trend_filter.enabled, s.overlays.trend_filter.n) == (True, 200)
 
 
 def test_a_partial_overlay_entry_keeps_the_designed_defaults(tmp_path):
@@ -264,12 +285,58 @@ def test_bad_overlay_params_raise_and_name_the_parameter(tmp_path, entry, needle
 def test_an_unknown_overlay_name_raises_instead_of_being_ignored(tmp_path):
     """认不出的叠加层名必须报错。
 
-    静默忽略的下场很具体：M3 才实现趋势过滤，用户（或未来的我）提前在 config 里
-    写上 trend_filter，配置看着开着、代码里根本没这回事，回测结论与配置不符且零告警。
+    静默忽略的下场很具体：`vol_target`（波动率目标仓位）是设计 §6 明说**本版不做**
+    的候选项，用户（或未来的我）提前在 config 里写上它，配置看着开着、代码里根本
+    没这回事，回测结论与配置不符且零告警。
     """
-    with pytest.raises(ValueError, match="trend_filter") as e:
-        load_settings(_cfg(tmp_path, "overlays:\n  trend_filter: {enabled: true, n: 200}\n"))
-    assert "atr_stop" in str(e.value), "报错要列出可用的叠加层名"
+    with pytest.raises(ValueError, match="vol_target") as e:
+        load_settings(_cfg(tmp_path, "overlays:\n  vol_target: {enabled: true}\n"))
+    for name in ("atr_stop", "trend_filter"):
+        assert name in str(e.value), f"报错要列出可用的叠加层名，缺 {name}"
+
+
+@pytest.mark.parametrize("entry, needle, why", [
+    ("{enabled: true, n: 0}", "trend_filter.n",
+     "rolling(0) 无警告地返回全 NaN → gate 恒为 False，策略从此一次都不入场"),
+    ("{enabled: true, n: -5}", "trend_filter.n", "负窗口"),
+    ("{enabled: true, n: 200.0}", "trend_filter.n", "浮点窗口迟到 rolling 才崩且报错误导"),
+    ("{enabled: true, n: \"200\"}", "trend_filter.n", "字符串窗口"),
+    ("{enabled: true, n: true}", "trend_filter.n",
+     "YAML 的 true 是 bool，而 isinstance(True, int) 为真——会静默变成 MA(1)，"
+     "而 MA(1) 就是收盘价本身，gate 恒为 False（判据是严格 >）"),
+    ("{enabled: \"false\"}", "trend_filter.enabled",
+     "字符串 \"false\" 是真值——本想关掉的过滤会静默开着，信号凭空少一批"),
+    ("{enabled: 1}", "trend_filter.enabled", "1/0 不是 bool，语义靠猜"),
+])
+def test_bad_trend_filter_params_raise_and_name_the_parameter(tmp_path, entry, needle, why):
+    """趋势过滤的参数校验与 atr_stop 同一纪律：raise ValueError，带参数名与实际值。"""
+    with pytest.raises(ValueError, match=needle) as e:
+        load_settings(_cfg(tmp_path, f"overlays:\n  trend_filter: {entry}\n"))
+    assert "实际" in str(e.value), f"报错必须给出实际值（{why}）: {e.value}"
+
+
+@pytest.mark.parametrize("entry, needle, why", [
+    ("{enable: true}", "enable", "enabled 漏了 d → 过滤静默关着，回测按无过滤口径跑完 exit 0"),
+    ("{enabled: true, nn: 200}", "nn", "n 打成 nn → 窗口悄悄回到默认 200"),
+    ("{enabled: true, N: 200}", "N", "YAML 键区分大小写：N 不是 n"),
+    ("{enabled: true, ma_n: 200}", "ma_n", "凭印象写的参数名"),
+    ("{enabled: true, k: 3.0}", "k", "把 atr_stop 的参数写到 trend_filter 里"),
+])
+def test_an_unknown_key_inside_the_trend_filter_raises(tmp_path, entry, needle, why):
+    """严格度不许只做一半：叠加层里面认不出的参数名同样报错（设计 §2.3 的同一口径）。"""
+    with pytest.raises(ValueError) as e:
+        load_settings(_cfg(tmp_path, f"overlays:\n  trend_filter: {entry}\n"))
+    msg = str(e.value)
+    assert f"'{needle}'" in msg, f"报错必须点名认不出的键（{why}）: {msg}"
+    assert "trend_filter" in msg, f"报错要说清是哪个叠加层的参数: {msg}"
+
+
+def test_the_trend_filter_dataclass_validates_on_construction():
+    """校验落在 dataclass 自身，不只在 load_settings 里：测试与脚本会直接构造它。"""
+    with pytest.raises(ValueError, match="trend_filter.n"):
+        config.TrendFilterCfg(enabled=True, n=0)
+    ok = config.TrendFilterCfg(enabled=True, n=200)
+    assert (ok.enabled, ok.n) == (True, 200)
 
 
 def test_overlay_params_are_validated_even_when_disabled(tmp_path):
@@ -277,6 +344,8 @@ def test_overlay_params_are_validated_even_when_disabled(tmp_path):
     而那时的报错离改动点已经很远了。"""
     with pytest.raises(ValueError, match="atr_stop.n"):
         load_settings(_cfg(tmp_path, "overlays:\n  atr_stop: {enabled: false, n: 0}\n"))
+    with pytest.raises(ValueError, match="trend_filter.n"):
+        load_settings(_cfg(tmp_path, "overlays:\n  trend_filter: {enabled: false, n: 0}\n"))
 
 
 def test_the_overlay_dataclass_validates_on_construction():
@@ -319,6 +388,8 @@ def test_an_unknown_key_inside_an_overlay_raises_instead_of_being_ignored(
      "把 k 直接写在叠加层名后面（很自然的手误）——旧代码在 .get 上抛 "
      "AttributeError: 'float' object has no attribute 'get'"),
     ("overlays:\n  atr_stop: [enabled, true]\n", "atr_stop", "写成列表"),
+    ("overlays:\n  trend_filter: 200\n", "trend_filter",
+     "把 n 直接写在叠加层名后面（同 atr_stop 的那种手误）"),
     ("scan: 400\n", "scan", "整段写成一个标量——旧代码 or {} 直接把它当空段吞了"),
 ])
 def test_a_non_mapping_config_section_raises_and_names_the_section(
@@ -338,9 +409,11 @@ def test_an_empty_section_still_means_all_defaults(tmp_path):
     形状校验不能顺手把这种合法写法也挡掉——`overlays:` 后面空着与整段缺失同义。"""
     s = load_settings(_cfg(tmp_path, "overlays:\n"))
     assert s.overlays.atr_stop.enabled is False
-    s2 = load_settings(_cfg(tmp_path, "overlays:\n  atr_stop:\n"))
+    assert s.overlays.trend_filter.enabled is False
+    s2 = load_settings(_cfg(tmp_path, "overlays:\n  atr_stop:\n  trend_filter:\n"))
     assert (s2.overlays.atr_stop.enabled, s2.overlays.atr_stop.n,
             s2.overlays.atr_stop.k) == (False, 20, 3.0)
+    assert (s2.overlays.trend_filter.enabled, s2.overlays.trend_filter.n) == (False, 200)
     s3 = load_settings(_cfg(tmp_path, "scan:\n"))
     assert (s3.scan.history_days, s3.scan.min_avg_amount, s3.scan.top_n) \
         == (400, 50_000_000, 20)

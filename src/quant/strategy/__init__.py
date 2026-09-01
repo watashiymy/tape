@@ -1,9 +1,16 @@
-"""策略注册表：配置名 → 策略类（Task 7 加入 donchian）。"""
+"""策略注册表：配置名 → 策略类（Task 7 加入 donchian，v0.4.0 M3 加入 tsmom）。
+
+注册表是**唯一**的策略清单：settings.yaml 的合法策略名、面板的策略下拉、
+journal 的 source 合法值（schema.SOURCES）、guide 的对比表断言全部从它派生。
+加一个策略只改这里一行（v0.4.0 M1 的派生化就是为了这一天）。
+"""
 from quant.strategy.base import Strategy
 from quant.strategy.donchian import Donchian
 from quant.strategy.ma_cross import MaCross
+from quant.strategy.tsmom import TSMomentum
 
-REGISTRY: dict[str, type[Strategy]] = {"ma_cross": MaCross, "donchian": Donchian}
+REGISTRY: dict[str, type[Strategy]] = {
+    "ma_cross": MaCross, "donchian": Donchian, "tsmom": TSMomentum}
 
 
 def strategy_label(key: str) -> str:

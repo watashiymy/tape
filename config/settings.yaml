@@ -14,7 +14,14 @@ costs:
 strategies:
   ma_cross: {fast: 20, slow: 60}
   donchian: {entry_n: 20, exit_n: 10, amount_n: 20, amount_ratio: 1.5}
+  # 时序动量（Moskowitz/Ooi/Pedersen 2012）：过去 lookback 根收益为正就持有。
+  # 250 ≈ 12 个月，即论文里最经典的那个窗口；三个策略里证据最强的一个
+  tsmom: {lookback: 250}
 overlays:                          # 叠加层：对全部策略生效（v0.4.0；无此段 = 全部禁用）
+  # 叠加顺序写在这里没用，代码里定死"先趋势过滤再止损"（pipeline.target_positions）
+  # 200 日趋势过滤（Faber 风格）：adj_close 在 MA(n) 下方就不持有多头——既挡入场，
+  # 也强制出场。暖机期（MA 未成形）不入场；上市不足 n 根的新股因此扫不出 BUY
+  trend_filter: {enabled: true, n: 200}
   # ATR 追踪止损：adj_close < 入场以来最高 adj_close − k×ATR(n) 即 T+1 开盘离场；
   # k=3 而非海龟经典的 2——实测证明"出场太急、一次正常回调就被甩下车"是唐奇安跑输主因
   atr_stop: {enabled: true, n: 20, k: 3.0}

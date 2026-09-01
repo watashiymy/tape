@@ -12,7 +12,7 @@ from __future__ import annotations
 import pandas as pd
 
 from quant.config import OverlaysCfg
-from quant.indicators import atr
+from quant.indicators import atr, ma
 from quant.strategy.base import Strategy
 
 
@@ -24,13 +24,42 @@ def target_positions(df: pd.DataFrame, strategy: Strategy,
     消灭的分叉——某个入口漏传，它就悄悄跑着另一套规则。要关就显式传
     `OverlaysCfg()`（全关，且此时本函数是恒等变换）。
 
-    叠加顺序（M3 加入趋势过滤后）：**先 trend_filter 再 atr_stop**——先决定"这个
-    环境能不能持有"，再管"持有之后何时认输"。
+    叠加顺序：**先 trend_filter 再 atr_stop**——先决定"这个环境能不能持有"，
+    再管"持有之后何时认输"。顺序不是口味问题（tests 里有专测钉着）：反过来的话，
+    止损的状态机会替一段**本来就不该持有**的下跌认一次输，而"止损后保持空仓直到
+    基础策略新的 0→1"这条封锁只看基础信号——基础信号一直是 1 的策略（均线仍多头
+    排列）从此被永久拉黑，趋势恢复后 gate 重新放行的那次入场再也不会出现。
+    两种顺序都输出一串合法仓位，没有任何一处报错。
     """
     pos = strategy.generate_positions(df)
+    if overlays.trend_filter.enabled:
+        pos = (pos.astype(bool) & trend_gate(df, overlays.trend_filter.n)).astype(int) \
+            .rename(pos.name)
     if overlays.atr_stop.enabled:
         pos = atr_trailing_stop(df, pos, n=overlays.atr_stop.n, k=overlays.atr_stop.k)
     return pos
+
+
+def trend_gate(df: pd.DataFrame, n: int) -> pd.Series:
+    """趋势过滤闸门（v0.4.0 M3 设计 §3.1，Faber 风格）：`adj_close > MA(n)`。
+
+    返回布尔序列，`target_positions` 用它与基础信号取 AND。语义是"价格在长期均线
+    下方时不持有多头"——**既挡入场也强制出场**（跌破就离场，不等基础策略反应）。
+
+    三个细节，每个都有专测：
+
+    1. 判据是**严格 >**：收盘恰好等于均线不算站上去。
+    2. 一律用后复权价 `adj_close`（与两个策略、与止损同一口径）。均线比较本身是
+       尺度不变的，但窗口**跨除权日**时 raw 的几根价来自两个尺度，会凭空判出
+       "跌破均线"。
+    3. 暖机期（`rolling(n)` 还给不出值的前 n−1 根）gate=False——算不出来就不装
+       算得出来，策略自然不入场。这里显式判 `notna` 而不是依赖"NaN 参与比较恒为
+       False"的副作用：后者一旦被改写成等价的否定形式（`~(close <= ma)`）就会
+       静默反转成"暖机期全程放行"，而那正是历史最短、最不该放行的一段。
+    """
+    close = df["adj_close"]
+    line = ma(close, n)
+    return (line.notna() & (close > line)).rename("trend_gate")
 
 
 def atr_trailing_stop(df: pd.DataFrame, base: pd.Series, *, n: int, k: float) -> pd.Series:
