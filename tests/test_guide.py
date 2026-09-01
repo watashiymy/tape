@@ -94,7 +94,20 @@ BACKTEST_FACTS = ("ma_total", "ma_cagr", "ma_dd", "ma_sharpe", "ma_trades",
                   "dc_total", "dc_cagr", "dc_dd", "dc_sharpe", "dc_trades",
                   "hold_total", "hold_cagr", "hold_dd",
                   "csi300_total", "csi300_cagr", "csi300_dd",
-                  "backtest_start", "backtest_end", "capital", "universe_n")
+                  "backtest_start", "backtest_end", "capital", "universe_n",
+                  # —— v0.4 当前默认口径（三策略 + 双叠加层）与叠加层归因（M4）。
+                  #    基线那组永不重算；这组随"真实重跑"更新，两套都得钉在
+                  #    README「① 回测」一节里，防止说明页与 README 各说一套。
+                  "v4_end",
+                  "v4_ma_total", "v4_ma_cagr", "v4_ma_dd", "v4_ma_sharpe", "v4_ma_trades",
+                  "v4_dc_total", "v4_dc_cagr", "v4_dc_dd", "v4_dc_sharpe", "v4_dc_trades",
+                  "v4_ts_total", "v4_ts_cagr", "v4_ts_dd", "v4_ts_sharpe", "v4_ts_trades",
+                  "v4_hold_total", "v4_hold_cagr", "v4_hold_dd",
+                  "v4_csi300_total", "v4_csi300_cagr", "v4_csi300_dd",
+                  "v4_ma_base", "v4_ma_gate", "v4_ma_stop",
+                  "v4_dc_base", "v4_dc_gate", "v4_dc_stop",
+                  "v4_ts_base", "v4_ts_gate", "v4_ts_stop",
+                  "v4_ts_base_dd", "v4_lockout_max")
 
 
 @pytest.mark.parametrize("key", BACKTEST_FACTS)
@@ -126,20 +139,51 @@ def _pct(text: str) -> float:
 
 def test_both_strategies_really_do_lose_to_buy_and_hold():
     """说明页写着"两个策略都大幅跑输躺平"。这是**推导出来的**结论，
-    换测试池/换数据之后可能不再成立——那时这条断言会红，逼人改文案而不是留着假话。"""
+    换测试池/换数据之后可能不再成立——那时这条断言会红，逼人改文案而不是留着假话。
+    v0.4 口径（三策略 + 叠加层）跑输得更狠，一并验算。"""
     hold = _pct(guide.FACTS["hold_total"])
     for key in ("ma_total", "dc_total"):
         assert _pct(guide.FACTS[key]) < hold, \
             f"{key} 已经不再跑输等权买入持有（{guide.FACTS[key]} vs {guide.FACTS['hold_total']}）"
+    v4_hold = _pct(guide.FACTS["v4_hold_total"])
+    for key in ("v4_ma_total", "v4_dc_total", "v4_ts_total"):
+        assert _pct(guide.FACTS[key]) < v4_hold, \
+            f"{key} 已经不再跑输等权买入持有（{guide.FACTS[key]} vs {guide.FACTS['v4_hold_total']}）"
 
 
 def test_the_drawdown_is_really_about_one_third():
-    """同理验算"回撤只有它的约 1/3"。落在 1/5 ~ 1/2 之间才说得上"约 1/3"。"""
+    """同理验算"回撤只有它的约 1/3"。落在 1/5 ~ 1/2 之间才说得上"约 1/3"。
+    v0.4 口径的三个回撤同样落在这个带内（0.35 ~ 0.43），文案沿用同一句话。"""
     hold = abs(_pct(guide.FACTS["hold_dd"]))
     for key in ("ma_dd", "dc_dd"):
         ratio = abs(_pct(guide.FACTS[key])) / hold
         assert 0.2 <= ratio <= 0.5, \
             f"{key} 的回撤是躺平的 {ratio:.0%}，「约 1/3」这句话该改了"
+    v4_hold = abs(_pct(guide.FACTS["v4_hold_dd"]))
+    for key in ("v4_ma_dd", "v4_dc_dd", "v4_ts_dd"):
+        ratio = abs(_pct(guide.FACTS[key])) / v4_hold
+        assert 0.2 <= ratio <= 0.5, \
+            f"{key} 的回撤是躺平的 {ratio:.0%}，回撤对比的文案该改了"
+
+
+def test_the_overlay_attribution_table_is_self_consistent():
+    """归因表的核心结论是**推导**出来的，逐条验算，防止哪次重跑后文案变成假话：
+
+    1. 双开 < 无叠加层（"叠加层在这个池子上是纯代价"）——三个策略都成立才许这么写；
+    2. tsmom 的"只开止损"是全表最小值（"对慢信号是灾难"那段的数字支撑）；
+    3. donchian 的"只开止损"≈ 无叠加层（差距 < 2 个百分点，"止损对它几乎无感"）。
+    """
+    for s in ("ma", "dc", "ts"):
+        both, base = _pct(guide.FACTS[f"v4_{s}_total"]), _pct(guide.FACTS[f"v4_{s}_base"])
+        assert both < base, \
+            f"{s}: 双开（{both}%）不再低于无叠加层（{base}%），「纯代价」的文案该改了"
+    all_cells = [_pct(guide.FACTS[f"v4_{s}_{c}"])
+                 for s in ("ma", "dc", "ts") for c in ("base", "gate", "stop")]
+    assert _pct(guide.FACTS["v4_ts_stop"]) == min(all_cells), \
+        "tsmom 只开止损不再是全表最小，「对慢信号是灾难」的文案该改了"
+    dc_gap = abs(_pct(guide.FACTS["v4_dc_stop"]) - _pct(guide.FACTS["v4_dc_base"]))
+    assert dc_gap < 2.0, \
+        f"donchian 开止损与否差了 {dc_gap:.1f} 个百分点，「几乎无感」的文案该改了"
 
 
 def test_the_honest_conclusion_is_actually_written_down():
@@ -172,13 +216,14 @@ def test_scan_section_ranks_volume_ratio_above_pct_chg():
 # ================================================================ 八个小节（§3.1）
 
 EXPECTED_SECTIONS = ("tasks", "workflow", "scan", "metrics", "strategies",
-                     "limits", "userdata", "safety", "cli")
+                     "custom", "limits", "userdata", "safety", "cli")
 
 
 def test_the_sections_of_the_spec_are_all_there_in_order():
     """§3.1 定的八节，顺序是设计过的（先讲是什么，再讲怎么读，最后安全与命令行）。
     v0.3.2 在「已知局限」与「安全提示」之间插入「你的数据在哪」——它讲的是
-    "哪些文件是你的、不进 git、备份在哪"，与紧随其后的安全提示是同一类话题。"""
+    "哪些文件是你的、不进 git、备份在哪"，与紧随其后的安全提示是同一类话题。
+    v0.4.0 在「策略对比」之后插入「自定义策略」——先看懂内置的，再写自己的。"""
     assert tuple(s.key for s in guide.SECTIONS) == EXPECTED_SECTIONS
 
 
@@ -194,6 +239,43 @@ def test_section_lookup_rejects_an_unknown_key():
     （那会在面板上渲染出一片空白，谁都注意不到）。"""
     with pytest.raises(KeyError):
         guide.section("no-such-section")
+
+
+def test_custom_section_has_the_two_steps_and_three_hard_rules():
+    """「自定义策略」一节（v0.4.0 M4）：两步注册 + 三条硬规则，缺一条都等于没讲——
+    这三条恰好都是"违反了不报错、只给假回测"的坑，文档是唯一的防线。"""
+    body = guide.section("custom").body
+    assert "REGISTRY" in body, "没讲注册那一步（REGISTRY 加一行）"
+    assert "label" in body and "name" in body, "没讲内部键与显示名的分工"
+    assert "adj_close" in body, "没讲「价格一律用后复权」这条硬规则"
+    assert "shift(1)" in body, "没讲「前 N 日窗口自己 shift(1)」这条硬规则"
+    assert "未来函数" in body, "没讲「只用当日及以前数据」这条硬规则"
+    assert "死信号" in body, "没引用唐奇安全 0 死信号的教训"
+
+
+def test_custom_section_code_template_actually_works(tmp_path):
+    """模板代码不许烂：把正文里的 python 代码块存成临时模块**真实导入**，
+    造一段行情验证它真能出仓位。文档里的示例代码没有测试就会腐烂成"照抄就报错"。"""
+    import importlib.util
+
+    import pandas as pd
+    body = guide.section("custom").body
+    m = re.search(r"```python\n(.*?)```", body, re.S)   # 第一个块就是完整模板（含 import）
+    assert m, "自定义一节里没有策略类的 python 代码块"
+    path = tmp_path / "my_break_template.py"
+    path.write_text(m.group(1), encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("my_break_template", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)               # 模板类定义必须原样可执行
+    strat = mod.MyBreak(n=3)
+    close = [10.0, 11.0, 12.0, 11.0, 13.0, 12.0]
+    df = pd.DataFrame({"adj_close": close},
+                      index=pd.bdate_range("2026-01-05", periods=len(close)))
+    pos = strat.generate_positions(df)
+    # 手算：前 3 日最高（不含当日），第 5 根 13 > max(11,12,11)=12 → 1，其余 0
+    assert list(pos) == [0, 0, 0, 0, 1, 0]
+    with pytest.raises(ValueError):
+        mod.MyBreak(n=0)                       # 校验模板必须真的在校验
 
 
 def test_the_task_section_draws_the_closed_loop():

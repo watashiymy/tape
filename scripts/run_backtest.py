@@ -22,7 +22,7 @@ from quant.data.cache import BarCache
 from quant.data.service import DataService
 from quant.report.charts import equity_chart, kline_chart
 from quant.report.metrics import compute_metrics
-from quant.strategy import build_strategies
+from quant.strategy import REGISTRY, build_strategies
 from quant.strategy.base import Strategy
 from quant.strategy.pipeline import target_positions
 
@@ -49,7 +49,9 @@ def equal_weight_hold(bars: dict[str, pd.DataFrame]) -> pd.Series:
     缺席标的——先涨的标的把基准顶高，晚来的一出现又拽回来，凭空一段虚高。
     ffill 补的是中段 NaN（停牌日），必须在 fillna 之前。"""
     norm = [df["adj_close"] / df["adj_close"].iloc[0] for df in bars.values()]
-    return pd.concat(norm, axis=1).ffill().fillna(1.0).mean(axis=1)
+    # sort=True 显式钉住现行为（各标的上市日不同，索引并集必须按日期序，否则 ffill
+    # 会拿"未来"补"过去"）；不写会吃 Pandas4Warning，pandas 4 缺省将翻成 False。
+    return pd.concat(norm, axis=1, sort=True).ffill().fillna(1.0).mean(axis=1)
 
 
 def strategy_positions(strat: Strategy, bars: dict[str, pd.DataFrame],
@@ -93,7 +95,8 @@ def write_run_outputs(run_dir: Path, metrics: dict, result: BacktestResult,
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config/settings.yaml")
-    ap.add_argument("--strategy", default=None, help="只跑指定策略，默认全部")
+    ap.add_argument("--strategy", default=None,
+                    help=f"只跑指定策略（{' / '.join(REGISTRY)}），默认全部")
     ap.add_argument("--refresh", action="store_true", help="强制全量刷新行情缓存")
     args = ap.parse_args()
 
