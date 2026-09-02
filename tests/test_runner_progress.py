@@ -335,3 +335,42 @@ def test_progress_is_frozen():
     with pytest.raises(Exception):
         p.current = 5  # type: ignore[misc]
     assert isinstance(p, Progress)
+
+
+# ================================================================ 拉清单的中间态（v0.5.0）
+
+def test_fetching_the_listing_says_what_it_is_waiting_for():
+    """拉全市场清单那 2–4 分钟（约每 7 天一次）过去只显示「启动中」。
+    它恰好是整趟里最长的一段静默，而用户对着一个不动的卡片最容易按下停止。"""
+    log = ("login success!\n"
+           "本地清单已过期（as_of=2026-08-20），重新拉取全市场清单…\n")
+    p = parse_market_scan(log)
+    assert "全市场清单" in p.phase, p.phase
+    # 不确定态：不许凭空造出百分比或 ETA
+    assert p.current is None and p.total is None and p.eta_s is None
+
+
+def test_the_listing_phase_gives_way_once_the_listing_is_in():
+    """拉到了就该让位——否则整趟扫描都写着"正在拉清单"。"""
+    log = ("本地清单已过期（as_of=2026-08-20），重新拉取全市场清单…\n"
+           "已拉取全市场清单 3012 只并保存到 data/symbols.parquet（as_of=2026-09-01）\n"
+           "基准日 2026-09-01，扫描池 3012 只，策略: ['ma_cross']\n")
+    p = parse_market_scan(log)
+    assert "全市场清单" not in p.phase, p.phase
+    assert p.total == 3012
+
+
+@pytest.mark.parametrize("first_line", [
+    "本地无全市场清单（data/symbols.parquet），首次拉取全市场清单…",
+    "本地清单已过期（as_of=2026-08-20），重新拉取全市场清单…",
+    "按 --refresh-symbols 重新拉取全市场清单…",
+])
+def test_all_three_listing_entry_points_are_recognised(first_line):
+    """三条入口（首次 / 过期 / --refresh-symbols）都要认得出。
+    首次那条以前脚本里**根本不打印**，日志是彻底空的，正则救不了。"""
+    assert "全市场清单" in parse_market_scan(first_line + "\n").phase
+
+
+def test_an_empty_log_is_still_just_starting():
+    """空日志仍是「启动中」——别让新加的正则把它误判成在拉清单。"""
+    assert parse_market_scan("").phase == progress_module.STARTING

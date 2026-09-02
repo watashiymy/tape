@@ -620,3 +620,24 @@ def test_a_corrupt_scan_meta_does_not_take_the_whole_page_down(tmp_path):
         assert at.button(f"stop_{name}"), f"{name} 的停止按钮不见了"
     warnings = [w.value for w in at.main.warning]
     assert any("损坏" in w for w in warnings), f"没有如实说文件坏了：{warnings}"
+
+
+def test_the_rerun_button_carries_a_help_that_names_the_parameters(tmp_path):
+    """「↻ 重跑」的参数只存在磁盘那份 JSON 里，页面上过去一个字不显示——
+    本机那份 argv 就带着 --date，点一下白扫昨天十几分钟。
+
+    这里钉住"按钮真挂上了 help"这条接线（漏挂不会报错，只是 tooltip 永远不出现），
+    文案本身由 tests/test_runner_view.py 的 rerun_hint 用例覆盖。
+    """
+    _fake_run(tmp_path, "market_scan", "success",
+              argv=[sys.executable, "-u", jobs.JOBS["market_scan"].script,
+                    "--date", "2026-09-01"],
+              log=SCAN_LOG)
+    at = _console(tmp_path)
+    assert not at.exception, at.exception
+
+    btn = at.button("rerun_market_scan")
+    assert btn.help, "重跑按钮没挂 help"
+    assert "2026-09-01" in btn.help, f"help 没说清要重跑哪一天：{btn.help}"
+    # 没跑过的那两个任务：也得有句人话，不许是空 tooltip
+    assert at.button("rerun_backtest").help, "没跑过的任务也该有句说明"

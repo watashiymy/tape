@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from quant.runner import jobs
 from quant.runner.jobs import JOBS
 from quant.runner.process import FAILED, RUNNING, STOPPED, SUCCESS, RunState
 from quant.runner.progress import CRASHED, DONE, Progress
@@ -196,3 +197,33 @@ def no_output_note(p: Progress, *, status: str) -> str:
     return ("本次**没有产物**：结果整轮跑完才落盘，上面那些计数没有写进任何文件。"
             "页尾/「今日信号」页看到的是上一次的结果（注意标题里的日期）。"
             "重跑是从第 1 只开始，不接着跑——缓存省的是流量不是时间。")
+
+
+def rerun_hint(job_name: str, argv: list[str]) -> str:
+    """「↻ 重跑」按钮的 tooltip：它到底要重跑什么。
+
+    三个按钮并排，前两个的行为看得见（参数控件就在上面，留空 = 全量 / 最近交易日），
+    而**第三个的参数只存在磁盘上那份 JSON 里**，页面上一个字不显示。
+    真实后果不是理论：本机 `output/runs/market_scan.json` 的 argv 带着
+    `--date 2026-09-01`（那趟是次日上午补扫的），今天点一下就是花十几分钟
+    重扫昨天——而屏幕上没有任何东西提示过这件事。
+
+    argv 已经被改坏时给一句"点下去会被拒"：真正的拦截在 `ui.rerun_job`
+    （build_argv(parse_argv(...)) 往返那道闸门），这里只负责别把话说满。
+    """
+    job = JOBS.get(job_name)
+    if job is None:                                     # pragma: no cover - 排班校验在前
+        return ""
+    if not job.params:
+        return "这个任务没有参数，重跑就是再跑一次。"
+    try:
+        values = jobs.parse_argv(job_name, argv)
+    except ValueError:
+        return "上次那条命令行已被改坏（点下去会被拒绝）。用上面的控件重新起一次。"
+    parts = []
+    for spec in job.params:
+        got = values.get(spec.name)
+        if got is None or got is False:
+            continue
+        parts.append(f"{spec.label.split('（')[0].strip()} = {got}")
+    return "沿用上次参数：" + ("、".join(parts) if parts else "全部留空（默认）")

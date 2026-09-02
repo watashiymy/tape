@@ -936,8 +936,12 @@ def test_the_scan_table_still_prefills_the_key_when_the_pool_config_is_broken(tm
     改坏了不会红。
 
     这一路上录入表单本身是关着的（拿不到成本模型就不给录入，免得把 0 元费用写进
-    日志），所以断言落在预填那句 caption 上——它在 `apply_prefill()` 之后、
-    读成本模型之前就渲染了，正好能读出预填的 source 是键还是显示名。
+    日志），所以探针落在 **session_state** 上——`apply_prefill()` 就在那句
+    caption 之前把预填写进 session_state，那才是"存进去的是什么"的第一手证据。
+
+    v0.5.0 之前这条读的是 caption 里的文字，而那句话现在显示**中文来源名**
+    （内部键甩到用户脸上是另一个体验问题，已改）。显示与存储从此分开：
+    这条只管存储，别再拿显示文字当探针。
     """
     root = _root(tmp_path)
     # 坏在**本地池子**文件上：settings.yaml 本身是好的，坏文件不许被悄悄绕过
@@ -954,8 +958,11 @@ def test_the_scan_table_still_prefills_the_key_when_the_pool_config_is_broken(tm
 
     at = click_row_button(at, jui.RECORD_COLUMN, 0, jui.RECORD_LABEL, dataframe=0)
     assert not at.exception, at.exception
-    said = _texts(at)
-    assert "已按「ma_cross" in said, f"预填的 source 不是内部键：{said}"
+    assert at.session_state[jui.SOURCE_KEY] == "ma_cross", \
+        (f"预填的 source 必须是内部键，实际 {at.session_state.get(jui.SOURCE_KEY)!r}："
+         f"显示名不在 schema.SOURCES 里，会被兜底成 other")
+    # 显示层则该是中文（同一份预填的两面）
+    assert "已按「双均线交叉信号" in _texts(at), _texts(at)[:200]
 
 
 # ================================================================ 纯函数（可脱离 Streamlit 测）

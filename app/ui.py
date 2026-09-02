@@ -388,6 +388,10 @@ def control_bar(*job_names: str) -> None:
     for text in dict.fromkeys(notices):
         st.caption(text)
     st.caption(CONSOLE_HINT)
+    # 灰字换成真链接（v0.5.0）：点完 ▶ 之后这一页 15 分钟不会自己动一下，
+    # 而"该去哪看进度"过去只是一句话。一步到位。
+    st.page_link(page_ref("console"), label="去「任务控制台」看实时进度与日志",
+                 icon=":material/play_circle:")
     st.divider()
 
 

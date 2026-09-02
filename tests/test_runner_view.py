@@ -2,7 +2,7 @@
 #
 # 面板本身写不了单测（顶层执行 UI 代码），所以"显示什么字"这件事必须挤到纯函数里来测：
 # 徽标要不要带退出码、ETA 该不该显示、百分比怎么算，错了都是用户直接看到的假信息。
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import pytest
@@ -333,3 +333,33 @@ def test_no_output_note_stays_quiet_when_there_is_something_to_show():
                                 extras={}, outputs=())
     assert view.no_output_note(running, status=RUNNING) == "", \
         "还在跑的时候说这句话等于劝人别等了"
+
+
+# ================================================================ 重跑说清它要跑什么（v0.5.0）
+
+def test_rerun_hint_names_the_parameters_it_will_reuse():
+    """三个按钮并排，前两个的参数就在上面的控件里看得见，而「↻ 重跑」的参数
+    **只存在磁盘那份 JSON 里**。真实后果：本机那份 argv 带着 --date，
+    今天点一下就是花十几分钟重扫昨天，而屏幕上没有任何东西提示过。"""
+    from quant.runner import jobs
+    hint = view.rerun_hint("market_scan", jobs.build_argv("market_scan", {"limit": 300}))
+    assert "300" in hint and "沿用" in hint, hint
+
+    day = view.rerun_hint("market_scan",
+                          jobs.build_argv("market_scan", {"date": date(2026, 9, 1)}))
+    assert "2026-09-01" in day, day
+
+
+def test_rerun_hint_says_so_when_there_is_nothing_to_reuse():
+    """全默认时别写成空话；没有参数的任务（每日信号）也要有句人话。"""
+    from quant.runner import jobs
+    assert "默认" in view.rerun_hint("market_scan", jobs.build_argv("market_scan", {}))
+    assert "没有参数" in view.rerun_hint("daily_signal",
+                                      jobs.build_argv("daily_signal", {}))
+
+
+def test_rerun_hint_does_not_promise_a_run_that_will_be_refused():
+    """argv 被手改坏时不许说"沿用上次参数"——真正的拦截在 ui.rerun_job 的
+    build_argv(parse_argv(...)) 往返闸门，这里只负责别把话说满。"""
+    hint = view.rerun_hint("market_scan", ["随便", "改", "过"])
+    assert "改坏" in hint and "沿用" not in hint, hint

@@ -19,6 +19,11 @@ TRACEBACK = "Traceback (most recent call last):"    # 崩溃痕迹，process.py 
 _SCAN_HEADER = re.compile(r"^基准日 \S+，扫描池 (\d+) 只", re.M)
 _SCAN_PROGRESS = re.compile(
     r"^\[(\d+)/(\d+)\] 信号 (\d+) 条，失败 (\d+) 只，耗时 (\d+)s$", re.M)
+# 拉全市场清单那 2–4 分钟（约每 7 天一次）。之前这段时间主状态一直写「启动中」，
+# 没有任何东西告诉用户在等什么——而它恰好是整趟里最长的一段静默。
+# 三条入口（首次 / 过期 / --refresh-symbols）都以「拉取全市场清单…」收尾，一条正则够。
+_FETCH_LISTING = re.compile(r"拉取全市场清单…$", re.M)
+_GOT_LISTING = re.compile(r"^已拉取全市场清单", re.M)
 # run_daily_signal.py
 _STALE = re.compile(r"^全部标的数据均未更新到 (\S+?)，", re.M)
 _SIGNAL_HEADER = re.compile(r"^===== \S+ 信号 =====", re.M)
@@ -108,6 +113,12 @@ def parse_market_scan(log_text: str) -> Progress:
         current, total, elapsed = int(cur), int(tot), float(secs)
         extras = {"信号": f"{sigs} 条", "失败": f"{fails} 只"}
     phase = "扫描中" if (total is not None or current is not None) else STARTING
+    # 拉清单的中间态：开始拉了、还没拉到 → 说清在等什么。
+    # **刻意不给 current/total**，所以不会凭空造出百分比或 ETA（同 parse_daily_signal
+    # 对不确定态的处理）。分钟数不在这里写死：那个值的唯一出处是
+    # guide.FACTS["pool_fetch"]，而本模块是纯函数层、不许 import app。
+    if _FETCH_LISTING.search(log_text) and not _GOT_LISTING.search(log_text):
+        phase = "拉取全市场清单（首次或过期时才有，比扫描本身慢）"
     phase, extras, outputs = _saved_terminal(log_text, phase, extras)
     return Progress(current=current, total=total, elapsed_s=elapsed,
                     eta_s=_eta(current, total, elapsed), phase=phase, extras=extras,

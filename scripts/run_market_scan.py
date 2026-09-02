@@ -170,7 +170,11 @@ def load_universe(provider: BaostockProvider, expected: date, *,
                 print(f"复用本地清单（as_of={as_of}，{len(listing)} 只，{SYMBOLS_PATH}）；"
                       f"省下拉取全市场清单的 2-4 分钟，要强制重拉加 --refresh-symbols")
                 return listing
-            print(f"本地清单已过期（as_of={as_of}），重新拉取…")
+            print(f"本地清单已过期（as_of={as_of}），重新拉取全市场清单…")
+        else:
+            print(f"本地无全市场清单（{SYMBOLS_PATH}），首次拉取全市场清单…")
+    else:
+        print("按 --refresh-symbols 重新拉取全市场清单…")
     listing = provider.get_all_symbols(expected)     # ValueError 交给调用方（非交易日等）
     symbols.save_symbols(listing, expected, SYMBOLS_PATH)
     print(f"已拉取全市场清单 {len(listing)} 只并保存到 {SYMBOLS_PATH}（as_of={expected}）")

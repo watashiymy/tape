@@ -89,6 +89,8 @@ GUIDE_PAGE_OBJS = {
 }
 # 控制台的流水线区要用 st.page_link 指向这两页，所以它们得有名字（同 ENTRY_PAGE
 # 的既有理由：按下标从组里取「第几个」，插一页就全体错位且不报错）。
+CONSOLE_PAGE = st.Page(page_console, title="任务控制台",
+                       icon=":material/play_circle:", url_path="console")
 SIGNALS_PAGE = st.Page(page_signals, title="今日信号",
                        icon=":material/notifications:", url_path="signals")
 UNIVERSE_PAGE = st.Page(page_universe, title="信号池", icon=":material/list:",
@@ -96,8 +98,7 @@ UNIVERSE_PAGE = st.Page(page_universe, title="信号池", icon=":material/list:"
 PAGES = {
     "": [
         GUIDE_PAGE_OBJS["guide"],
-        st.Page(page_console, title="任务控制台", icon=":material/play_circle:",
-                url_path="console"),
+        CONSOLE_PAGE,
         SIGNALS_PAGE,
     ],
     # 组名刻意不叫「使用说明」：侧栏里会出现两处同名（组头 + 主组第一项），
@@ -142,7 +143,7 @@ nav = st.navigation(PAGES)
 # 只登记**显式命名**的那几页，不去遍历 PAGES 读 p.url_path：真 st.Page 在 bare
 # 模式（没有 ScriptRunContext）下 __init__ 提前 return，连 _url_path 都没设，
 # 读它会 AttributeError —— 而 bare 模式正是几条 exec 探针测试跑的模式。
-ui.bind_pages({**GUIDE_PAGE_OBJS, "journal": ENTRY_PAGE,
+ui.bind_pages({**GUIDE_PAGE_OBJS, "journal": ENTRY_PAGE, "console": CONSOLE_PAGE,
                "signals": SIGNALS_PAGE, "universe": UNIVERSE_PAGE})
 journal_ui.jump_if_requested(ENTRY_PAGE)
 nav.run()

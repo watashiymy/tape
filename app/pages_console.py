@@ -155,7 +155,12 @@ def _render_card(job_name: str) -> str | None:
         ui.start_job(job_name, params)
     if mid.button("⏹ 停止", key=f"stop_{job_name}", disabled=not running):
         ui.stop_job(state)                # SIGTERM 进程组 → 10s → SIGKILL，然后整页重跑
-    if right.button("↻ 重跑", key=f"rerun_{job_name}", disabled=disabled or state is None):
+    # tooltip 说清它要重跑什么（v0.5.0）：上次的参数只存在磁盘那份 JSON 里，
+    # 页面上一个字不显示——本机那份 argv 就带着 --date，点一下白扫昨天十几分钟。
+    rerun_help = (view.rerun_hint(job_name, state.argv) if state is not None else
+                  "还没跑过，没有可沿用的参数。")
+    if right.button("↻ 重跑", key=f"rerun_{job_name}", help=rerun_help,
+                    disabled=disabled or state is None):
         ui.rerun_job(job_name, state)
     if notice:
         st.caption(notice)

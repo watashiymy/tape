@@ -63,12 +63,26 @@ def page_journal_entry() -> None:
 
 # ---------------------------------------------------------------- 录入（§5.1）
 
+def _source_label(prefill: dict) -> str:
+    """预填提示里的来源用**中文显示名**。
+
+    存进日志的是内部键（`donchian`），那是刻意的、不能动；但把它原样甩到提示里，
+    页面上就冒出一个别处从不出现的英文词——同一个策略在表格里叫「唐奇安通道突破」、
+    在这句话里叫 donchian。未知键原样返回（strategy_label 的既有语义）。
+    """
+    src = prefill.get("source")
+    return journal_ui.SOURCE_LABELS.get(src, src)
+
+
 def _entry_section(report: pnl.PnlReport) -> None:
     st.html(theme.section("记一笔"))
     prefill = journal_ui.apply_prefill()      # 必须在任何控件创建之前
     if prefill:
-        st.caption(f"已按「{prefill.get('source')} / {prefill.get('date')}」那条信号预填，"
-                   "成交价与股数请填你**实际**成交的数——信号那天的收盘价不是成交价。")
+        st.caption(
+            f"已按「{_source_label(prefill)} / {prefill.get('date')}」那条信号预填。"
+            f"**成交日期、成交价、股数**三样都请按你实际成交的填——"
+            f"日期填的是**信号日**（{prefill.get('date')} 收盘算出来的），"
+            f"而实际成交通常在下一个交易日开盘。")
     try:
         costs = load_settings(ui.CONFIG_PATH).costs
     except CONFIG_ERRORS as e:
