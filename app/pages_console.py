@@ -89,14 +89,17 @@ def _result_signal(path_str: str) -> None:
 
 def _result_metrics(dir_str: str) -> None:
     """回测产物：每个策略一个报告目录，各出一组指标卡。
-    卡片只有三分之一宽，指标网格用 2 列（4 列会挤成一团）。"""
+
+    per_row 用默认的 4：v0.5.0 起回测卡片在「研究工具」区**整幅宽**渲染
+    （不再挤在三分之一宽的列里），2 列会让右半边空着、八个指标拉成长长一条。
+    """
     try:
         metrics = json.loads((ui.resolve(dir_str) / "metrics.json").read_text(encoding="utf-8"))
     except (ValueError, OSError) as e:
         st.warning(f"产物 {dir_str} 读取失败（{type(e).__name__}），可能已被删除或仍在写。")
         return
     st.caption(dir_str)
-    ui.metric_grid(metrics, per_row=2)
+    ui.metric_grid(metrics)
 
 
 _RESULT_RENDERERS = {"scan_csv": _result_scan, "signal_csv": _result_signal,
