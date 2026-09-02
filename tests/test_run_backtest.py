@@ -149,18 +149,51 @@ def test_metrics_json_is_written_last_as_completion_marker(tmp_path, monkeypatch
 
 
 def test_write_run_outputs_writes_full_set(tmp_path):
-    """完整跑完时七件套齐全，metrics/config_snapshot 内容逐字可回读。"""
+    """完整跑完时六件套齐全，metrics/config_snapshot 内容逐字可回读。
+
+    **单标的 K 线不在其中**（v0.5.0）：默认不落盘，见下一条。
+    """
     result, bars, benchmarks = _fake_run_inputs()
     run_dir = tmp_path / "run"
     run_backtest.write_run_outputs(run_dir, {"total_return": 0.1}, result, bars,
                                    benchmarks, snapshot={"capital": 5000000.0})
     for f in ("config_snapshot.json", "equity.csv", "trades.csv", "skipped.csv",
-              "report.html", "kline_600519.html", "metrics.json"):
+              "report.html", "metrics.json"):
         assert (run_dir / f).exists(), f"缺 {f}"
     assert json.loads((run_dir / "metrics.json").read_text(encoding="utf-8")) \
         == {"total_return": 0.1}
     assert json.loads((run_dir / "config_snapshot.json").read_text(encoding="utf-8")) \
         == {"capital": 5000000.0}
+
+
+def test_single_symbol_klines_are_off_by_default(tmp_path):
+    """K 线 HTML 默认**不落盘**（v0.5.0）。
+
+    实测账：一次 10 只票的回测 53 MB，其中十个 kline_*.html 各 4.8 MB——每个都内嵌
+    一整份 plotly.js。而面板的「个股K线」页从不读它们（标的清单改读
+    config_snapshot.json 的 universe，图是拿缓存行情现场重画的）。
+    本机 58 次回测因此攒了 3.0 GB，其中约 90% 只服务"离线打开单个 HTML"。
+    """
+    result, bars, benchmarks = _fake_run_inputs()
+    off = tmp_path / "off"
+    run_backtest.write_run_outputs(off, {"total_return": 0.1}, result, bars,
+                                   benchmarks, snapshot={})
+    assert list(off.glob("kline_*.html")) == [], "默认不该落 K 线 HTML"
+    assert (off / "report.html").exists(), "净值报告仍要落（面板 iframe 内嵌它）"
+
+    on = tmp_path / "on"
+    run_backtest.write_run_outputs(on, {"total_return": 0.1}, result, bars,
+                                   benchmarks, snapshot={}, klines=True)
+    assert [p.name for p in on.glob("kline_*.html")] == ["kline_600519.html"], \
+        "--klines 打开时该落盘"
+
+
+def test_the_klines_flag_reaches_write_run_outputs():
+    """命令行开关必须真的接到落盘函数上——只加个 argparse 参数而不接线，
+    用户加了 --klines 却什么都没多出来，且没有任何报错。"""
+    src = _SCRIPT.read_text(encoding="utf-8")
+    assert '"--klines"' in src, "argparse 里没有这个开关"
+    assert "klines=args.klines" in src, "开关没接到 write_run_outputs 上"
 
 
 def test_config_snapshot_serializes_dates_and_costs(tmp_path):

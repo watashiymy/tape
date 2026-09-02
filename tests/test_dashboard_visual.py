@@ -572,3 +572,51 @@ def test_empty_output_still_guides_the_user(tmp_path):
     for page in PAGES:
         at = _page(tmp_path, page)
         assert not at.exception, f"{page}: {at.exception}"
+
+
+# ================================================================ 标的清单的来源（v0.5.0）
+
+def _ui_module():
+    """单独加载 app/ui.py（run_symbols 是纯函数，不需要 Streamlit 上下文）。"""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("qd_ui_symbols", ROOT / "app" / "ui.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["qd_ui_symbols"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_run_symbols_prefers_the_config_snapshot(tmp_path):
+    """标的清单**首选** config_snapshot.json 的 universe——那是这趟回测真正跑的那批。
+
+    v0.5.0 起单标的 K 线图默认不落盘（一次回测因此从 53 MB 降到 5.2 MB，实测），
+    所以不能再靠 kline_*.html 的文件名列标的。
+    """
+    ui_mod = _ui_module()
+    run = tmp_path / "ma_cross_20260902_120000"
+    run.mkdir()
+    (run / "config_snapshot.json").write_text(
+        json.dumps({"universe": ["601899", "000333", "600519"]}), encoding="utf-8")
+    assert ui_mod.run_symbols(run) == ["000333", "600519", "601899"]
+
+
+def test_run_symbols_falls_back_to_kline_filenames_for_old_runs(tmp_path):
+    """v0.5.0 之前的产物（本机有 58 个）没有别的清单来源，只能按文件名兜底。
+    快照损坏时走同一条路——不能因为一个坏 JSON 就让这一页没得看。"""
+    ui_mod = _ui_module()
+    run = tmp_path / "old_run"
+    run.mkdir()
+    (run / "kline_600519.html").write_text("<html></html>", encoding="utf-8")
+    (run / "kline_000333.html").write_text("<html></html>", encoding="utf-8")
+    assert ui_mod.run_symbols(run) == ["000333", "600519"]
+
+    (run / "config_snapshot.json").write_text("{ broken", encoding="utf-8")
+    assert ui_mod.run_symbols(run) == ["000333", "600519"], "快照损坏时该退回文件名"
+
+
+def test_run_symbols_returns_empty_rather_than_inventing_one(tmp_path):
+    """两条路都空就返回空——编一个清单出来会让人对着一只根本没回测过的票看图。"""
+    ui_mod = _ui_module()
+    run = tmp_path / "empty_run"
+    run.mkdir()
+    assert ui_mod.run_symbols(run) == []

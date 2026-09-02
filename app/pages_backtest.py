@@ -63,7 +63,7 @@ def page_backtest() -> None:
 
 def page_kline() -> None:
     ui.page_head("个股K线")
-    ui.control_bar("backtest")   # K 线图也是回测产物（kline_*.html + trades.csv）
+    ui.control_bar("backtest")   # K 线也读回测产物（标的清单 + trades.csv）
     runs = ui.list_runs()
     if not runs:
         st.info(guide.EMPTY_STATES["backtest"])   # 与回测报告页同一句：读的是同一批产物
@@ -75,7 +75,11 @@ def page_kline() -> None:
         st.error(f"回测目录 {run.name} 的 trades.csv 读取失败，"
                  f"多半是回测中途被打断；请删除该目录后刷新页面。")
         return
-    symbols = sorted({p.stem.replace("kline_", "") for p in run.glob("kline_*.html")})
+    symbols = ui.run_symbols(run)
+    if not symbols:
+        st.warning(f"回测目录 {run.name} 里读不出标的清单（config_snapshot.json 缺失或损坏，"
+                   f"且没有 kline_*.html 可以兜底）。重跑一次回测即可。")
+        return
     # 名称让人看得出这是哪家公司（§2.4）。查不到就只显示代码——扫描 CSV 是唯一的
     # 离线名称来源，而它只记录出信号的标的，所以缺名是常态。
     names = ui.symbol_names()

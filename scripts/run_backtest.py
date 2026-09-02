@@ -1,6 +1,7 @@
 """回测入口：python scripts/run_backtest.py [--config config/settings.yaml] [--strategy 名称]
 输出到 output/<策略>_<运行时间戳>/：config_snapshot.json、equity.csv、trades.csv、
-report.html、kline_<代码>.html × N、metrics.json（最后写，完成标记）。"""
+skipped.csv、report.html、metrics.json（最后写，完成标记）。
+加 --klines 才额外落每只标的的 kline_<代码>.html（面板不需要它，见 write_run_outputs）。"""
 from __future__ import annotations
 
 import argparse
@@ -73,10 +74,18 @@ def config_snapshot(settings: Settings) -> dict:
 
 def write_run_outputs(run_dir: Path, metrics: dict, result: BacktestResult,
                       bars: dict[str, pd.DataFrame], benchmarks: dict[str, pd.Series],
-                      snapshot: dict) -> None:
+                      snapshot: dict, *, klines: bool = False) -> None:
     """落盘一次回测的全部产物。metrics.json 必须**最后**写（完成标记）：
     HTML 要花 1-2 秒写几十 MB，Ctrl-C 打断后若 metrics.json 已在，
-    面板会把这个半截目录当成一次完整回测。"""
+    面板会把这个半截目录当成一次完整回测。
+
+    **单标的 K 线图默认不落盘**（v0.5.0，`--klines` 打开）。实测账：一次 10 只票的
+    回测产物 53 MB，其中 report.html 5.1 MB，十个 kline_*.html 各 4.8 MB
+    ——每个都内嵌一整份 plotly.js。而面板的「个股K线」页**从不读**这些文件：
+    它只拿文件名列标的（现已改读 config_snapshot.json 的 universe），图是拿缓存
+    行情现场重画的。也就是说那 48 MB 只服务"离线打开单个 HTML"这一个用途。
+    本机 58 次回测因此攒了 3.0 GB。默认关掉之后一次回测约 5 MB。
+    """
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "config_snapshot.json").write_text(
         json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -85,9 +94,10 @@ def write_run_outputs(run_dir: Path, metrics: dict, result: BacktestResult,
     pd.DataFrame(result.skipped, columns=SKIPPED_COLUMNS).to_csv(
         run_dir / "skipped.csv", index=False)
     equity_chart(result.equity, benchmarks).write_html(run_dir / "report.html")
-    for sym, df in bars.items():
-        sym_trades = [t for t in result.trades if t.symbol == sym]
-        kline_chart(df, sym_trades, sym).write_html(run_dir / f"kline_{sym}.html")
+    if klines:
+        for sym, df in bars.items():
+            sym_trades = [t for t in result.trades if t.symbol == sym]
+            kline_chart(df, sym_trades, sym).write_html(run_dir / f"kline_{sym}.html")
     (run_dir / "metrics.json").write_text(
         json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -98,6 +108,9 @@ def main() -> None:
     ap.add_argument("--strategy", default=None,
                     help=f"只跑指定策略（{' / '.join(REGISTRY)}），默认全部")
     ap.add_argument("--refresh", action="store_true", help="强制全量刷新行情缓存")
+    ap.add_argument("--klines", action="store_true",
+                    help="额外落盘每只标的的 K 线 HTML（约 +5 MB/只；"
+                         "面板不需要它，只在想离线打开/转发单个图时才加）")
     args = ap.parse_args()
 
     settings = load_settings(args.config)
@@ -134,7 +147,8 @@ def main() -> None:
         metrics = compute_metrics(result.equity, result.trades)
 
         run_dir = OUTPUT / f"{strat.name}_{stamp}"
-        write_run_outputs(run_dir, metrics, result, bars, benchmarks, snapshot)
+        write_run_outputs(run_dir, metrics, result, bars, benchmarks, snapshot,
+                          klines=args.klines)
 
         print(f"\n===== {strat.name} =====")
         for k, v in metrics.items():

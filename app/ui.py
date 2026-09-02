@@ -17,6 +17,7 @@ dashboard.py 与 pages_*.py 都只依赖它，单向、无环。
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -274,6 +275,28 @@ def list_runs() -> list[Path]:
     return sorted((p for p in OUTPUT.iterdir()
                    if p.is_dir() and all((p / f).exists() for f in _REQUIRED_FILES)),
                   key=_run_key, reverse=True)
+
+
+def run_symbols(run: Path) -> list[str]:
+    """某次回测跑了哪些标的。
+
+    **先看 `config_snapshot.json` 的 universe**——那是这趟回测真正的标的清单，
+    由 run_backtest.py 原样留档。v0.5.0 起单标的 K 线图不再落盘
+    （每份 `kline_*.html` 内嵌一整份 plotly.js，十只票就是 48 MB，而这一页的图
+    是**现场重画**的、从来不读那些文件），清单只能从这里取。
+
+    读不到就退回按 `kline_*.html` 的文件名列——**老产物全靠这条**（v0.5.0 之前
+    落的那 58 个目录都有那些文件）。两条路都空就返回空列表，由页面显示空态：
+    编一个清单出来会让人对着一只根本没回测过的票看图。
+    """
+    try:
+        snapshot = json.loads((run / "config_snapshot.json").read_text(encoding="utf-8"))
+        universe = [str(s) for s in snapshot.get("universe") or []]
+        if universe:
+            return sorted(universe)
+    except (ValueError, OSError):
+        pass                    # 快照缺失/损坏都退回文件名，不打断这一页
+    return sorted({p.stem.replace("kline_", "") for p in run.glob("kline_*.html")})
 
 
 def resolve(path_str: str) -> Path:
