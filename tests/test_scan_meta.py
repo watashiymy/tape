@@ -231,3 +231,38 @@ def test_no_meta_says_unknown_and_explains_why():
     text, tip = scan_meta.scope_badge(None)
     assert text == "范围未知"
     assert "全量" in tip and "试跑" in tip, "tooltip 没说清「未知」未知在哪儿"
+
+
+# ================================================================ 取数失败必须摆到台面上（v0.5.0）
+
+def test_judged_is_attempts_minus_failures():
+    """`scanned` 是**尝试数**（写 meta 时传的是 total），失败的票没进策略判定。"""
+    assert _meta(scanned=3010, failed=800).judged == 2210
+    assert _meta().judged == 3010                    # 零失败时两者相等
+
+
+def test_a_full_scan_with_failures_does_not_get_to_call_itself_clean():
+    """本条钉住的就是那个「不报错但结论错」：一趟 3010 只里失败 800 只，
+    旧文案照样写「全量 3010 只」+ tooltip「扫满了全部 3010 只」，而页面上同时
+    挂着「今日无新信号」——用户据此以为全市场今天没机会，实际四分之一没看。"""
+    text, tip = scan_meta.scope_badge(_meta(scanned=3010, failed=800, signals=0))
+
+    assert "800" in text, f"徽标没提失败数：{text!r}"
+    assert "2210" in tip, "tooltip 没说真正有结论的是多少只"
+    assert "不等于没信号" in tip, "没说清失败的票意味着什么"
+    assert text.startswith("全量 3010 只"), \
+        "有失败也仍是一次全量扫描——降级成「试跑」是另一种假话（它不是 --limit 试跑）"
+
+
+def test_a_trial_run_with_failures_says_so_too():
+    """试跑那条路径同样要报失败数：两条分支各写各的，最容易漏掉一条。"""
+    text, tip = scan_meta.scope_badge(_meta(scanned=100, pool_total=3010, limit=100,
+                                            failed=7, signals=0))
+    assert text.startswith("试跑 100 只") and "7" in text
+    assert "93" in tip
+
+
+def test_is_full_still_means_the_target_was_the_whole_pool():
+    """`is_full` 的判据刻意不动：它说的是"这趟的目标是不是整个池子"，
+    不是"每只都拿到了结论"。混为一谈会让失败 800 只的全量扫描显示成「试跑」。"""
+    assert _meta(scanned=3010, pool_total=3010, failed=800).is_full is True

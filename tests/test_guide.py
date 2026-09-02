@@ -363,10 +363,10 @@ def test_the_safety_section_tells_users_to_bind_the_loopback_explicitly():
 
         $ streamlit run app/dashboard.py --server.port 8531
         $ lsof -nP -iTCP:8531 -sTCP:LISTEN
-        Python  79141 watashi  6u  IPv6 ...  TCP *:8531 (LISTEN)      ← 所有网卡
+        Python  79141 youruser  6u  IPv6 ...  TCP *:8531 (LISTEN)      ← 所有网卡
 
         $ streamlit run app/dashboard.py --server.port 8532 --server.address 127.0.0.1
-        Python  80013 watashi  6u  IPv4 ...  TCP 127.0.0.1:8532 (LISTEN)
+        Python  80013 youruser  6u  IPv4 ...  TCP 127.0.0.1:8532 (LISTEN)
 
     面板是个本地命令执行入口，"默认安全"这句话错了就不是文案瑕疵而是安全问题。
     所以文案必须给出**可执行的那一条**（显式绑回环），且不得再声称默认值安全。

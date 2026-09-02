@@ -13,7 +13,7 @@
 **验证状态：** 本计划中的全部离线代码与测试已在临时环境实际执行验证（pandas 3.0.5 / Python 3.14）——42 项单测全部通过，并用合成数据（含除权、停牌）跑通了"数据服务 → 策略 → 回测 → 指标 → 图表 → 信号"端到端链路。所有手算断言数值经实跑核对无误。**未经验证的部分只有 baostock 联网代码**（Task 4/13/14 的网络路径），故 Task 0 的探针脚本是其字段口径的事实基准。
 
 **约定：**
-- 所有命令在项目根目录 `/Users/watashi/workspace/pycharm-project/quant_demo` 执行，Python 一律用 `.venv/bin/python`（若 Task 0 降级则为 `.venv312/bin/python`，后续所有命令同步替换）。
+- 所有命令在项目根目录 执行，Python 一律用 `.venv/bin/python`（若 Task 0 降级则为 `.venv312/bin/python`，后续所有命令同步替换）。
 - 单元测试一律离线（fixture 数据），网络测试标记 `@pytest.mark.network`，默认跳过。
 - 每个任务以 git commit 收尾；测试未过不许提交。
 

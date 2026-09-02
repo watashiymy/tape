@@ -123,7 +123,7 @@ def _require_openpyxl() -> None:
         import openpyxl  # noqa: F401  只为确认装了
     except ImportError as e:
         raise RuntimeError(
-            "导出 Excel 需要 openpyxl（已写进 pyproject.toml 的依赖）："
-            "请在项目根目录跑 `.venv/bin/pip install openpyxl` 后重试；"
+            "导出 Excel 需要 openpyxl（它是可选依赖，不在主依赖里）："
+            "请在项目根目录跑 `.venv/bin/pip install -e \".[excel]\"` 后重试；"
             "CSV 导出不依赖它，随时可用。"
         ) from e

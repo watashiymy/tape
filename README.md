@@ -1,4 +1,4 @@
-# quant_demo — A 股日线技术信号系统 v0.4.0
+# quant_demo — A 股日线技术信号系统 v0.5.0
 
 一个**纯学习用**的 A 股日线研究流水线：拉数据 → 算指标 → 策略出目标仓位 → 历史回测（含 A 股交易规则与成本）→ 绩效报告 → 收盘后的每日信号提示与全市场扫描（v0.1.1 新增）。这三个任务既能在命令行跑，也能在面板上点按钮跑（v0.2.0 新增的任务控制台）。目标是把这条链路跑通且**跑对**，不是产出能赚钱的策略；内置的双均线交叉、唐奇安通道突破、时序动量（v0.4.0 新增）只是用来验证流水线的样品。v0.4.0 还给全部策略加了两个可开关的**叠加层**（200 日趋势过滤 + ATR 追踪止损，见 §5），默认开启——它们对回测数字的真实影响（相当大，且方向可能出乎意料）在下面 ① 的实测表里如实列着。
 
@@ -11,20 +11,24 @@
 需要 Python ≥ 3.12（当前开发环境 3.14.7 + pandas 3.0.5）。
 
 ```bash
-cd /Users/watashi/workspace/pycharm-project/quant_demo
+git clone <仓库地址> quant_demo && cd quant_demo
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 ```
 
-依赖：pandas / pyarrow / baostock / PyYAML / plotly / streamlit（dev 额外装 pytest）。数据源 baostock **免费、无需 token、无需注册**。
+依赖：pandas / pyarrow / baostock / PyYAML / plotly / streamlit；`[dev]` 额外装 pytest 与 openpyxl。openpyxl 只有「记账」页导出 Excel 才用得上，单独装是 `pip install -e ".[excel]"`（CSV 导出不需要它）。数据源 baostock **免费、无需 token、无需注册**。
+
+依赖的版本下界一律是**实测跑过的那一档**（例如 `streamlit>=1.61`：面板用到的 `st.navigation` / `st.Page` / `st.logo` / `ButtonColumn` 都晚于 1.30，写 1.30 就是让人装出一个"装得上、跑起来必崩"的组合）；上界一律给到下一个大版本。
 
 跑测试确认环境正常：
 
 ```bash
 .venv/bin/python -m pytest
-# 期望：1782 passed, 3 deselected （deselected 的 3 项是需要联网的 baostock 集成测试）
+# 期望：1801 passed, 1 skipped, 3 deselected
 .venv/bin/python -m pytest -m network   # 想跑联网集成测试时用这个
 ```
+
+那 3 项 deselected 是需要联网的 baostock 集成测试；**1 项 skipped 是正常的**——它检查「本机那份交易日志还读得动」，而新克隆本来就没有日志（`journal/trades.csv` 是用户数据、不进版本控制）。本机记过账之后它会变成 1802 passed。
 
 **所有命令都要在项目根目录执行**——脚本里的 `data/cache`、`output/`、`config/settings.yaml` 都是相对路径。
 
@@ -227,18 +231,24 @@ python3 -m venv .venv
 .venv/bin/streamlit run app/dashboard.py --server.address 127.0.0.1
 ```
 
-**别指望默认值是安全的**——这里原先写着"`streamlit run` 默认只监听本机，保持默认即可"，v0.2.1 实跑证明那是假话：
+**别指望 streamlit 的出厂默认是安全的**——这里原先写着"`streamlit run` 默认只监听本机，保持默认即可"，v0.2.1 实跑证明那是假话。以下是 **streamlit 的出厂行为**（不是本仓库现在的行为，原因见下）：
 
 ```console
 $ streamlit run app/dashboard.py --server.port 8531
 $ lsof -nP -iTCP:8531 -sTCP:LISTEN
-Python  79141 watashi  6u  IPv6 ...  TCP *:8531 (LISTEN)          ← 所有网卡
+Python  79141 youruser  6u  IPv6 ...  TCP *:8531 (LISTEN)          ← 所有网卡
 
 $ streamlit run app/dashboard.py --server.port 8532 --server.address 127.0.0.1
-Python  80013 watashi  6u  IPv4 ...  TCP 127.0.0.1:8532 (LISTEN)  ← 只有本机
+Python  80013 youruser  6u  IPv4 ...  TCP 127.0.0.1:8532 (LISTEN)  ← 只有本机
 ```
 
-不带地址参数时监听的是 `*:8501`（**所有网卡**，启动日志里那两行 `Network URL` / `External URL` 就是证据）。同一网段的人打开就能点你的「开始」按钮，也就等于能在你机器上执行命令。绑定回环之后那两行 URL 不再打印。面板另外刻意不暴露 `--config`（避免任意路径读取），任务一律用 `config/settings.yaml`。
+不带地址参数时监听的是 `*:8501`（**所有网卡**，启动日志里那两行 `Network URL` / `External URL` 就是证据）。同一网段的人打开就能点你的「开始」按钮，也就等于能在你机器上执行命令。
+
+**v0.5.0 起本仓库把安全绑定变成了默认值**：`.streamlit/config.toml` 里写了 `[server] address = "127.0.0.1"`，所以在项目根目录下启动时，上面第一条命令实测已经绑到 `127.0.0.1:8531`、两行 URL 也不再打印。**但这层兜底有边界**：streamlit 按**当前工作目录**查找 `$CWD/.streamlit/config.toml`，从别的目录启动就不加载、静默退回出厂默认。所以命令行那个参数仍然值得养成习惯，别把安全完全押在"我肯定在项目根目录下"这个前提上。
+
+同一份配置里还有 `[browser] gatherUsageStats = false`：streamlit 出厂默认会向其官方端点上报使用统计，而这台机器上同时存着你的真实成交记录，关掉它没有任何代价。
+
+面板另外刻意不暴露 `--config`（避免任意路径读取），任务一律用 `config/settings.yaml`。
 
 ### 三个任务怎么点
 

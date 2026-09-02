@@ -465,8 +465,14 @@ def save_edits(edited: pd.DataFrame, *, trades: pd.DataFrame, path: str | Path,
               + "\n\n".join(f"- {line}" for line in broken))
         return False
     try:
-        merged = store.apply_edits(trades, keep, delete_ids=deleted)
-        store.save_trades(merged, path)
+        with store.locked(path):
+            # **锁里重新读一次**，不拿 `trades` 那份快照直接改（v0.5.0）：
+            # 它是上一轮渲染时读的，从那以后另一个标签页可能又记了一笔。
+            # 拿旧快照整表重写 = 把那一笔冲掉且不报错。重读是安全的——
+            # apply_edits 一律按 trade_id 定位、认不出的主键直接拒绝，
+            # 落在新表上与落在旧表上语义完全一致（这正是"绝不按行号"的红利）。
+            merged = store.apply_edits(store.load_trades(path), keep, delete_ids=deleted)
+            store.save_trades(merged, path)
     except (OSError, ValueError, RuntimeError) as e:
         flash("error", f"保存失败（{type(e).__name__}: {e}），日志文件未被修改。")
         return False

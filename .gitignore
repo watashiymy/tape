@@ -9,3 +9,7 @@ data/symbols.parquet
 journal/trades.csv
 journal/trades.csv.bak
 config/universe.local.yaml
+.DS_Store
+.streamlit/secrets.toml
+journal/*.lock
+config/*.lock

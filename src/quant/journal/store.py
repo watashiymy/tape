@@ -23,12 +23,14 @@ from __future__ import annotations
 import itertools
 import os
 import tempfile
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
 
+from quant import filelock
 from quant.journal import schema
 
 #: 默认落点，相对仓库根（同 symbols.SYMBOLS_PATH 的约定）。
@@ -40,6 +42,10 @@ TRADES_PATH = Path("journal") / "trades.csv"
 #: 上一版备份的后缀。拼在完整文件名后面（`trades.csv` → `trades.csv.bak`）而不是
 #: 换掉扩展名（`trades.bak`）：前者一眼看得出它是谁的备份，也不会被误当成别的东西。
 BACKUP_SUFFIX = ".bak"
+
+#: 并发临界区用的旁挂锁文件后缀（v0.5.0）。定义在 `quant.filelock`，这里只是
+#: 让老调用方仍能从 store 拿到它。
+LOCK_SUFFIX = filelock.LOCK_SUFFIX
 
 #: 写盘编码固定带 BOM。设计 §2.1 选 CSV 的理由之一就是"可直接用 Excel 打开"，
 #: 没有 BOM 的话 Excel 按 GBK 解，中文理由全是乱码。读盘用同一个编码名
@@ -101,6 +107,24 @@ def load_trades(path: str | Path = TRADES_PATH) -> pd.DataFrame:
         ) from e
 
 
+def lock_path(path: str | Path = TRADES_PATH) -> Path:
+    """本份日志的锁文件位置。薄封装，只为把默认路径填上。"""
+    return filelock.lock_path(path)
+
+
+@contextmanager
+def locked(path: str | Path = TRADES_PATH) -> Iterator[None]:
+    """把「读 → 改 → 写」整段包成互斥临界区（v0.5.0，实现见 `quant.filelock`）。
+
+    这份文件不可再生，是全项目最不能出"丢更新"这种错的地方：两个标签页同时提交，
+    两边都读到同一份旧表、各自加一行、后写的覆盖先写的——丢一笔且**不报错**。
+    更糟的是 `_backup` 每次落盘前都跑，那一层"撤销"这时已经被覆盖成同样缺一笔的
+    版本，用户连找回来的路都没有。
+    """
+    with filelock.locked(path):
+        yield
+
+
 def save_trades(df: pd.DataFrame, path: str | Path = TRADES_PATH) -> None:
     """整表原子落盘，**落盘前先把上一版另存为 `.bak`**。列不对一律拒写。
 
@@ -159,6 +183,10 @@ def append_trade(row: Mapping, path: str | Path = TRADES_PATH, *,
     走"读回 → 拼一行 → 整表原子重写"，不用 append 模式直接往文件尾巴上写：
     整表重写才能保证列顺序与编码始终如一，也才能让中断后的文件始终是完整的。
     量级只有一年几十到几百行，代价可以忽略。
+
+    **读与写整段在 `locked` 里**（v0.5.0）：两个标签页同时提交时，各自读到同一份
+    旧表再各自整表重写，后写的会把先写的那一笔冲掉且不报错。校验放在锁**外面**
+    ——参数错该立刻拒绝，没必要先去排队等锁。
     """
     unknown = [k for k in row if k not in schema.COLUMNS]
     if unknown:
@@ -168,11 +196,12 @@ def append_trade(row: Mapping, path: str | Path = TRADES_PATH, *,
         # 而重复主键的表现是"删一笔少两笔"。
         raise ValueError("trade_id 由 store 生成，不要自带")
 
-    df = load_trades(path)
-    trade_id = next_trade_id(df["trade_id"], now or datetime.now())
-    record = {c: row.get(c) for c in schema.COLUMNS} | {"trade_id": trade_id}
-    merged = pd.concat([df, pd.DataFrame([record])], ignore_index=True)
-    save_trades(merged, path)
+    with locked(path):
+        df = load_trades(path)
+        trade_id = next_trade_id(df["trade_id"], now or datetime.now())
+        record = {c: row.get(c) for c in schema.COLUMNS} | {"trade_id": trade_id}
+        merged = pd.concat([df, pd.DataFrame([record])], ignore_index=True)
+        save_trades(merged, path)
     return trade_id
 
 

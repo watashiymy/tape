@@ -27,6 +27,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 import yaml
+from quant import filelock
 from quant.config import load_settings, local_universe_path, universe_source
 from quant.config_edit import write_local_universe
 from quant.data.cache import BarCache
@@ -111,19 +112,29 @@ def add(symbol: str, *, config_path: str | Path,
 
     `allowed` 是扫描池代码集合（沪深主板、非 ST、上市满 400 天）。已在池中时
     **不写文件**：面板上重复点一下不该改文件、也不该报错。
+
+    「读当前池子 → 加一只 → 整份重写」整段在锁里（v0.5.0）：两个标签页各自
+    加一只不同的票时，两边都读到同一份旧池子，后写的那份里没有前一只——
+    **少一只且不报错**，而少的那只从此没有人管它的卖出信号。
     """
-    existing = current(config_path)
-    if symbol in existing:
-        return f"{symbol} 已在信号池中（共 {len(existing)} 只）"
-    wanted = add_symbol(existing, symbol, allowed)      # 池外/格式不对在这里抛
-    write_local_universe(config_path, wanted)           # 原子写 + 写后复核回滚
+    with filelock.locked(local_universe_path(config_path)):
+        existing = current(config_path)
+        if symbol in existing:
+            return f"{symbol} 已在信号池中（共 {len(existing)} 只）"
+        wanted = add_symbol(existing, symbol, allowed)  # 池外/格式不对在这里抛
+        write_local_universe(config_path, wanted)       # 原子写 + 写后复核回滚
     return f"已加入 {symbol}，信号池现有 {len(wanted)} 只"
 
 
 def remove(symbol: str, *, config_path: str | Path) -> str:
-    """把 symbol 移出池子并落盘。清空到 0 只 / 不在池中都会抛 ValueError。"""
-    wanted = remove_symbol(current(config_path), symbol)
-    write_local_universe(config_path, wanted)
+    """把 symbol 移出池子并落盘。清空到 0 只 / 不在池中都会抛 ValueError。
+
+    与 `add` 同一个临界区（同一把锁、同一个理由）：并发的加与删若各拿一份旧快照
+    整份重写，先写的那次改动会被悄悄抹掉。
+    """
+    with filelock.locked(local_universe_path(config_path)):
+        wanted = remove_symbol(current(config_path), symbol)
+        write_local_universe(config_path, wanted)
     return f"已移除 {symbol}，信号池现有 {len(wanted)} 只"
 
 

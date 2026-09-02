@@ -84,8 +84,22 @@ class ScanMeta:
     def is_full(self) -> bool:
         """扫满了整个池子才叫全量。**算出来的，不读盘上那个布尔值**：
         JSON 是手工改得动的普通文本，信它就等于允许一份 3 只票的试跑自称全量。
-        （落盘时仍写一份进去，那是给人看的。）"""
+        （落盘时仍写一份进去，那是给人看的。）
+
+        注意它的语义是"这趟的**目标**是不是整个池子"，**不含**"每只都拿到了结论"
+        ——那是 `judged` 的事。两者混为一谈会让一次失败 800 只的全量扫描降级显示成
+        「试跑」，那同样是假话（它不是 --limit 试跑）。"""
         return self.scanned == self.pool_total
+
+    @property
+    def judged(self) -> int:
+        """真正进了策略判定的只数 = 尝试数 − 取数失败数。
+
+        `scanned` 是尝试数：run_market_scan.py 写 meta 时传的是 total，而同一个文件
+        两行之外给就绪闸门传的正是 `total - len(failures)`。徽标与 tooltip 一律以
+        这个数为准报"有结论的有多少"。算出来的属性，不进 schema（`failed` 早在
+        `_REQUIRED_KEYS` 里，老产物照读不误）。"""
+        return self.scanned - self.failed
 
     def to_json(self) -> dict:
         return {"date": self.date.isoformat(), "scanned": self.scanned,
@@ -194,13 +208,31 @@ UNKNOWN_TIP = ("该文件产生于记录扫描范围之前（v0.2.4），无法�
 def scope_badge(meta: ScanMeta | None) -> tuple[str, str]:
     """范围徽标：(文案, tooltip)。渲染层负责套 pill，这里只管说什么。
 
-    三种说法对应设计 §2.3：`全量 N 只` / `试跑 N 只` / `范围未知`。
+    三种说法对应设计 §2.3：`全量 N 只` / `试跑 N 只` / `范围未知`，
+    v0.5.0 起任何一种都在**有失败时**把失败数摆到台面上。
+
+    为什么必须说：`scanned` 是**尝试数**（run_market_scan.py 写 meta 时传的是 total），
+    取数失败的票根本没进策略判定。一趟 3010 只里失败 800 只的扫描，旧文案照样写
+    「全量 3010 只」、tooltip 照样写「扫满了全部 3010 只」，而页面上同时挂着
+    「今日无新信号」——用户据此以为全市场今天没机会，实际上四分之一的票压根没看。
+    这正是本项目一路在防的"不报错但结论错"。
+
+    刻意**不动** `is_full` 的判据（仍是"这趟的目标是不是整个池子"），也刻意不设
+    失败率阈值：阈值是凭空发明的常量，与本模块"不猜也不编"的口径相抵。
+    有失败就如实报数，多少算多由看的人自己判断。
     """
     if meta is None:
         return UNKNOWN_SCOPE, UNKNOWN_TIP
     if meta.is_full:
-        return (f"全量 {meta.scanned} 只",
-                f"这一趟扫满了扫描池全部 {meta.pool_total} 只标的")
-    return (f"试跑 {meta.scanned} 只",
-            f"这是一次 --limit {meta.limit} 的试跑，只扫了扫描池 {meta.pool_total} 只里的前 "
-            f"{meta.scanned} 只；结论不代表全市场。全量结果另存一份，不会被它覆盖")
+        text = f"全量 {meta.scanned} 只"
+        tip = f"这一趟扫满了扫描池全部 {meta.pool_total} 只标的"
+    else:
+        text = f"试跑 {meta.scanned} 只"
+        tip = (f"这是一次 --limit {meta.limit} 的试跑，只扫了扫描池 {meta.pool_total} 只里的前 "
+               f"{meta.scanned} 只；结论不代表全市场。全量结果另存一份，不会被它覆盖")
+    if meta.failed:
+        text += f"（{meta.failed} 只取数失败）"
+        tip += (f"；其中 {meta.failed} 只取数失败、没有进入策略判定。"
+                f"真正有结论的是 {meta.judged} 只——失败的票不等于没信号，"
+                f"重跑一次即可补上")
+    return text, tip

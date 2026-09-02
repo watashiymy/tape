@@ -429,12 +429,19 @@ def test_a_failed_backup_is_not_swallowed(tmp_path):
 
 
 def test_the_backup_leaves_no_tmp_files(tmp_path):
-    """备份走与落盘同一套原子替换：中途断电不会留下半截 .bak。"""
+    """备份走与落盘同一套原子替换：中途断电不会留下半截 .bak。
+
+    v0.5.0 起旁边还多一个 `trades.csv.lock`（并发临界区的挂载点，内容永远为空、
+    随时可删）。这里逐个文件名钉死而不是只查 `*.tmp`：多出任何**没预料到**的
+    落盘物都该在这条测试上红一次，由人确认它是什么，而不是被一个宽松的 glob 放过。
+    """
     path = tmp_path / "trades.csv"
     store.append_trade(_row(reason="第一笔"), path, now=NOW)
     store.append_trade(_row(reason="第二笔"), path, now=NOW)
 
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["trades.csv", "trades.csv.bak"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "trades.csv", "trades.csv.bak", "trades.csv.lock"]
+    assert store.lock_path(path).read_bytes() == b"", "锁文件必须永远是空的"
 
 
 def test_editing_the_whole_table_still_leaves_the_previous_version_behind(tmp_path):
