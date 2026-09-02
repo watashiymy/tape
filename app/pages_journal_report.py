@@ -93,8 +93,10 @@ def _dashboard_section(report: pnl.PnlReport, trades) -> None:
             st.plotly_chart(charts.position_weights_chart(rows), width="stretch")
         else:
             st.caption("当前没有持仓，暂无占比可画。")
-    st.caption("金额一律是**元**而非收益率：日志不记本金与出入金，收益率的分母"
-               "只能编造；将来若加「本金/出入金」记录类型再升级成真收益率（设计 §2.6）。")
+    # 分号后面那半截（路线图 + 内部设计文档编号）删掉：用户看了没有任何可做的事。
+    # 「为什么不做收益率」的完整理由留在本函数的 docstring 里，给下一个改代码的人。
+    st.caption("金额一律是**元**而非收益率：日志不记本金与出入金，"
+               "收益率的分母只能编造。")
 
 
 def _positions_section(report: pnl.PnlReport) -> None:

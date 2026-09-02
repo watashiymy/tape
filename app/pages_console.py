@@ -281,8 +281,9 @@ def _manual_step_card() -> None:
 def page_console() -> None:
     _check_roster()
     ui.page_head("任务控制台")
-    st.caption("任务在独立进程里运行：关掉浏览器、甚至停掉本面板都不会中断它。"
-               "同时只允许一个任务（baostock 单会话，并发会互踢下线）。")
+    # 互斥这件事不在这里常驻预告：页头已有一句，而按钮被禁用时 view.start_button_state
+    # 的 notice 会当场点名是谁在跑——比预告有用。这里只留"独立进程"这条动作现场的信息。
+    st.caption("任务在独立进程里运行：关掉浏览器、甚至停掉本面板都不会中断它。")
     try:
         busy = process.any_running(ui.RUNS_DIR)
     except RuntimeError as e:
