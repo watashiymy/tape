@@ -1148,3 +1148,45 @@ def test_the_entry_page_still_explains_the_record_types(tmp_path):
     at = _page(_root(tmp_path))
     text = _texts(at)
     assert "四种记录类型" in text, text
+
+
+# ================================================================ 持仓与信号池对账（v0.5.0）
+
+def _set_pool(tmp_path: Path, symbols: tuple[str, ...]) -> None:
+    """把临时根的信号池设成 symbols（写本地覆盖文件，与面板同一条路）。"""
+    from quant.config_edit import write_local_universe
+    write_local_universe(tmp_path / "config" / "settings.yaml", symbols)
+
+
+def test_positions_page_warns_about_holdings_outside_the_pool(tmp_path):
+    """项目自己把这件事称为「最容易踩的坑」（不加进 universe 的票没有任何人管它的
+    卖出），而唯一知道你持着什么的这一页之前从不看信号池。
+
+    典型剧本：扫描报了 BUY，买了、记了账，但忘了点 ＋ 加进池子；此后「每日信号」
+    每天替你盯的是另一批标的，而它不会报错。
+    """
+    _root(tmp_path)
+    _journal(tmp_path, _buy(symbol="000333"), _buy(symbol="600519", name="贵州茅台"))
+    _set_pool(tmp_path, ("600519",))          # 000333 持着但不在池子里
+
+    at = _page(tmp_path, REPORT_PAGE)
+
+    assert not at.exception, at.exception
+    warns = [w.value for w in at.main.warning]
+    assert any("000333" in w and "不在信号池" in w for w in warns), warns
+    assert not any("600519" in w and "不在信号池" in w for w in warns), \
+        "池子里的那只被误报了"
+
+
+def test_positions_page_stays_quiet_when_everything_is_tracked(tmp_path):
+    """全在池内就一个字都不说——这一页的告警区排在所有数字之前，
+    到处都是黄框等于没有黄框。"""
+    _root(tmp_path)
+    _journal(tmp_path, _buy(symbol="600519", name="贵州茅台"))
+    _set_pool(tmp_path, ("600519",))
+
+    at = _page(tmp_path, REPORT_PAGE)
+
+    assert not at.exception, at.exception
+    assert not any("不在信号池" in w.value for w in at.main.warning), \
+        [w.value for w in at.main.warning]

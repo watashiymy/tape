@@ -20,6 +20,7 @@ import streamlit as st
 
 import guide
 import journal_ui
+import pool
 import theme
 import ui
 from quant.journal import analytics, pnl, store
@@ -44,6 +45,7 @@ def page_journal_report() -> None:
     # 收进某个 tab 就会被藏起来。同一句话去重后只说一次，别刷屏。
     for message in dict.fromkeys(i.message for i in report.inconsistencies):
         st.warning(message)
+    _orphan_positions_warning(report)
     _dashboard_section(report, trades)
     positions_tab, matches_tab, source_tab = st.tabs(["当前持仓", "平仓明细", "来源对比"])
     with positions_tab:
@@ -55,6 +57,31 @@ def page_journal_report() -> None:
 
 
 # ---------------------------------------------------------------- 仪表盘（v0.3.1 §2）
+
+def _orphan_positions_warning(report) -> None:
+    """持仓里有票**不在信号池**时提醒一句。
+
+    项目自己把这件事称为"最容易踩的坑"（说明页原话：不加进 universe 的票没有任何人
+    管它的卖出），而唯一能发现它的页面——这一页知道你持着什么——之前从不看信号池。
+    典型剧本：扫描报了 BUY，你买了、记了账，但忘了点 ＋ 加进池子；此后「每日信号」
+    每天替你盯的是**另一批**标的，而它不会报错。
+
+    配置读不到时**不提示**（不猜、也不在盈亏页上再报一次配置错，与
+    pages_signals 里那条降级同一个路子）。跳转用 ui.page_ref 而不是 import
+    dashboard —— 后者会把主脚本再执行一遍（见 ui.py 模块 docstring）。
+    """
+    try:
+        in_pool = set(pool.current(ui.CONFIG_PATH))
+    except pool.CONFIG_ERRORS:
+        return
+    orphans = [p.symbol for p in report.positions if p.symbol not in in_pool]
+    if not orphans:
+        return
+    st.warning(f"持仓里的 {'、'.join(orphans)} **不在信号池里**——"
+               f"「每日信号」不会盯它们的卖出。")
+    st.page_link(ui.page_ref("universe"), label="去「信号池」把它们加进去",
+                 icon=":material/list:")
+
 
 def _dashboard_section(report: pnl.PnlReport, trades) -> None:
     """指标块 2×3 + 曲线/占比两图并排。留在 tabs 之外：这几个数是本页的结论，

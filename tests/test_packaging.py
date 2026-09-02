@@ -157,3 +157,18 @@ def test_no_upper_bound_excludes_the_version_actually_installed():
         assert SpecifierSet(str(req.specifier)).contains(installed, prereleases=True), \
             (f"{req.name} 本机装的是 {installed}，却不满足 pyproject 的 {req.specifier}"
              f"——照 README 装一遍会把实测环境改掉")
+
+
+def test_the_quickstart_section_pointers_all_resolve():
+    """README 顶部「5 分钟上手」里那几个 §N 指针必须真指到存在的一节。
+
+    这个块的全部价值就是"不用读 540 行也找得到东西"。指针指错了它反而更坏——
+    比没有导航更浪费时间。所以按 `## N.` 标题逐个核。
+    （刻意不核标题文字，只核编号存在：文字随时会改，编号是稳定的。）
+    """
+    quickstart = README[README.index("## 5 分钟上手"):README.index("## 1. 安装")]
+    refs = sorted(set(re.findall(r"§(\d+)", quickstart)))
+    assert refs, "导航块里一个指针都没有？"
+    for n in refs:
+        assert re.search(rf"^## {n}\. ", README, re.M), \
+            f"「5 分钟上手」指向 §{n}，但 README 里没有 `## {n}.` 这一节"
