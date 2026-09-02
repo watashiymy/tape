@@ -122,3 +122,29 @@ def test_signal_status_flags_a_stale_result(tmp_path):
 def test_a_missing_directory_is_not_an_error(fn, tmp_path):
     """面板首跑时 output/ 下什么都没有。缺目录不许抛——那会让整页打不开。"""
     assert fn(tmp_path / "does-not-exist", DAY).ready is False
+
+
+def test_signal_status_ignores_files_whose_name_is_not_a_trading_day(tmp_path):
+    """output/signals/ 是个用户放得进任何东西的目录。文件名认不出日期就不算产物
+    ——把它当日期显示在页面上，就是本模块开头那条纪律要防的"编出来的数字"。"""
+    d = tmp_path / "signals"
+    d.mkdir(parents=True)
+    (d / "备份.csv").write_text("date,symbol\n", encoding="utf-8")
+    (d / "zzz-latest.csv").write_text("date,symbol\n", encoding="utf-8")
+    got = steps.signal_status(d, DAY)
+    assert steps.UNKNOWN in got.text and got.ready is False
+    assert "备份" not in got.text and "zzz" not in got.text
+
+    (d / "2026-08-28.csv").write_text("date,symbol\n", encoding="utf-8")
+    # 朴素 reverse 排序会让 "zzz-latest" 压过日期文件（'z' > '2'）
+    assert "2026-08-28" in steps.signal_status(d, DAY).text
+
+
+def test_a_trial_run_with_failures_does_not_nest_parentheses(tmp_path):
+    """scope 在有取数失败时自带一层括号，外面再套一层就成了
+    「（试跑 100 只（7 只取数失败））」——读起来像出了故障。"""
+    d = tmp_path / "scan"
+    _scan(d, "2026-09-01", scanned=100, pool=3010, limit=100, failed=7, signals=0)
+    text = steps.scan_status(d, DAY).text
+    assert "（（" not in text and "））" not in text, text
+    assert "7" in text and "试跑 100 只" in text

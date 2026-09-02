@@ -195,16 +195,14 @@ def test_the_landing_page_links_to_the_other_three(tmp_path):
     assert all(pb.help for pb in links), "每个链接都要有一句「什么时候需要点进去」"
 
 
-def test_the_landing_page_still_has_no_buttons(tmp_path):
+def test_the_toc_uses_page_links_not_buttons(tmp_path):
     """目录用 st.page_link 而**不是** st.button。
 
-    这不是口味：在这个面板里按钮意味着"会起进程"，而说明页是纯文档
-    （原有 test_the_guide_page_has_no_start_buttons 钉着一个都不许有）。
-    page_link 只导航、不触发任何任务。
+    这不是口味：在这个面板里按钮意味着"会起进程"（上面那条逐页钉着一个都不许有），
+    而 page_link 只导航、不触发任何任务。
     """
     at = _page(tmp_path)
-    assert at.main.button == [], [b.label for b in at.main.button]
-    assert len(at.get("page_link")) == 3
+    assert len(at.get("page_link")) == len(guide.GUIDE_PAGES) - 1
 
 
 def test_the_closed_loop_diagram_is_rendered(tmp_path):
@@ -249,10 +247,14 @@ def test_only_the_safety_section_is_ever_a_warning(tmp_path, page):
         f"{page} 页的警告块数应为 {expected}，实际 {len(at.main.warning)}"
 
 
-def test_the_guide_page_has_no_start_buttons(tmp_path):
-    """说明页是纯文档：不放控制条（这页没有任何产物可看，
-    也不该让人在读说明时误点一次 18 分钟的全量扫描）。"""
-    at = _page(tmp_path)
+@pytest.mark.parametrize("page", [p.title for p in guide.GUIDE_PAGES])
+def test_no_guide_page_has_start_buttons(tmp_path, page):
+    """手册**每一页**都是纯文档：不放控制条（这些页没有任何产物可看，
+    也不该让人在读说明时误点一次 18 分钟的全量扫描）。
+
+    v0.5.0 拆页后必须逐页查：只查落地页的话，新拆出来的三页可以随便加按钮。
+    """
+    at = _page(tmp_path, page)
     assert at.main.button == [], [b.label for b in at.main.button]
 
 

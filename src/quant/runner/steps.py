@@ -48,11 +48,13 @@ def scan_status(scan_dir: Path | str, today: date | None = None) -> StepStatus:
     day = scan_meta.scan_day(latest)
     meta = scan_meta.load_meta(latest)
     scope, _ = scan_meta.scope_badge(meta)
+    # 用逗号而不是括号包 scope：scope 在有取数失败时自带一层括号
+    # （「试跑 100 只（7 只取数失败）」），再套一层就成了双层括号。
     if meta is None:
-        return StepStatus(f"最近一次 {day}（{scope}）", ready=True)
+        return StepStatus(f"最近一次 {day}，{scope}", ready=True)
     fresh = today is not None and day == today.isoformat()
     tail = "" if fresh else "——不是今天的"
-    return StepStatus(f"最近一次 {day}（{scope}）报了 {meta.signals} 条{tail}", ready=True)
+    return StepStatus(f"最近一次 {day}，{scope}，报了 {meta.signals} 条{tail}", ready=True)
 
 
 def pool_status(symbols: tuple[str, ...] | None, source: str = "") -> StepStatus:
@@ -76,8 +78,19 @@ def signal_status(signal_dir: Path | str, today: date | None = None) -> StepStat
     是两件事，而后者是绝大多数日子的正常结果（说明页里那句话）。
     把两者混成一句"今日无信号"，正是本项目一路在防的那类误导。
     """
+    # 只认**文件名就是交易日**的产物（run_daily_signal.py 落的就是 <date>.csv）。
+    # 认不出日期的一律不算：把一个随手放进来的文件名当日期显示在页面上，
+    # 就是本模块开头那条纪律要防的"编出来的数字"。同 scan_meta._sort_key 的口径。
+    def _is_day(p: Path) -> bool:
+        try:
+            date.fromisoformat(p.stem)
+        except ValueError:
+            return False
+        return True
+
     d = Path(signal_dir)
-    files = sorted(d.glob("*.csv"), reverse=True) if d.exists() else []
+    files = sorted((p for p in d.glob("*.csv") if _is_day(p)),
+                   key=lambda p: p.stem, reverse=True) if d.is_dir() else []
     if not files:
         return StepStatus(f"{UNKNOWN}——池子里的买卖点还没人盯", ready=False)
     day = files[0].stem
