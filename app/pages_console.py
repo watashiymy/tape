@@ -172,8 +172,9 @@ def _render_card(job_name: str) -> str | None:
                                        status=state.status)
     ratio = view.progress_ratio(prog)
     if ratio is not None:
-        # 已终止也照画：进度条这时是"停在哪儿"的存档（文案已由 view 换成终态词、不带 ETA），
-        # 用户据此判断要不要从这儿接着补跑。
+        # 已终止也照画：进度条这时是"停在哪儿"的存档（文案已由 view 换成终态词、不带 ETA）。
+        # **不存在断点续跑**——v0.2.0 的注释原本写着"用户据此判断要不要接着补跑"，
+        # 那是误解：重跑从第 1 只开始。存档的价值只是"我上次跑到哪、值不值得再等一轮"。
         st.progress(ratio, text=head)
     elif running:
         st.status(head, state="running")     # 不确定态：转圈 + 阶段
@@ -181,6 +182,10 @@ def _render_card(job_name: str) -> str | None:
         st.caption(head)
     if detail:
         st.caption(detail)
+    # 终止且无产物时补一句（v0.5.0）：detail 那行会写着「信号 43 条」，
+    # 而那 43 条一条都没落盘——不说清楚，屏幕上唯一的数字就指向一份不存在的文件。
+    if note := view.no_output_note(prog, status=state.status):
+        st.caption(note)
     # 固定高度滚动：不给 height 的话几十行日志会把三张卡片顶得错开老远。
     st.code(progress.tail(log, ui.LOG_TAIL_LINES) or "（暂无输出）", language="text",
             height=ui.LOG_BOX_HEIGHT)

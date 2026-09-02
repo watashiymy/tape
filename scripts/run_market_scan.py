@@ -221,6 +221,12 @@ def main() -> None:
               f"流动性门槛 20日均额 ≥ {scan_cfg.min_avg_amount:,.0f} 元")
         start = expected - timedelta(days=scan_cfg.history_days)
         service = DataService(provider, BarCache(CACHE_DIR))
+        # 进度行的耗时**另立原点**：t0 含拉全市场清单那 2–4 分钟（首次或过期时），
+        # 把它摊进"每票速率"会让面板按 [100/3012] 外推出的剩余时间高得离谱
+        # ——实测两趟冷清单的跑法在第 100 只处报 ~1小时56分 与 ~7小时30分，
+        # 而真实剩余分别是 34 与 58 分钟（3.4x / 7.7x）。
+        # 总耗时那几处（汇总行、meta 的 elapsed_s）继续用 t0：那要的是墙钟总账。
+        t_loop = time.monotonic()
         for i, (sym, name) in enumerate(zip(universe["symbol"], universe["name"]), 1):
             try:
                 df, _warns = fetch_with_retry(service, sym, start, expected)
@@ -240,7 +246,18 @@ def main() -> None:
                     counts["no_signal"] += 1
             if i % PROGRESS_EVERY == 0 or i == total:
                 print(f"[{i}/{total}] 信号 {len(signals)} 条，失败 {len(failures)} 只，"
-                      f"耗时 {time.monotonic() - t0:.0f}s", flush=True)
+                      f"耗时 {time.monotonic() - t_loop:.0f}s", flush=True)
+                # **就绪闸门的前缀版**（第一个检查点判一次就够）：整趟闸门在循环之后，
+                # 17:30 前起全量扫描要跑完 3012 只才被告知"数据未就绪"——白等 15~25
+                # 分钟。判据与循环后那道**完全一致**（同一个函数、同一句原文、分母同样
+                # 扣掉失败票），只是作用在前 PROGRESS_EVERY 只上，约 40 秒就有结论。
+                if i == PROGRESS_EVERY:
+                    early = data_not_ready_reason(expected, scanned=i - len(failures),
+                                                  stale=counts["stale"])
+                    if early:
+                        print_failures(failures)
+                        sys.exit(f"\n{early}\n（前 {i}/{total} 只即已判定，"
+                                 f"没有跑完全量）")
 
     signals = sort_signals(signals)
     # 闸门二：先判这轮结论可不可信，再决定要不要打印「今日无新信号」、要不要落盘。
@@ -277,14 +294,29 @@ def main() -> None:
     # 里有 3 份就是这么没的（08-24 原本 86 条信号），而 output/ 不在版本控制内。
     SCAN_DIR.mkdir(parents=True, exist_ok=True)
     out = scan_meta.scan_csv_path(expected, args.limit, SCAN_DIR)
-    pd.DataFrame(signals, columns=CSV_COLUMNS).to_csv(out, index=False)  # 空结果也留表头
-    # CSV 先写、meta 后写：中途挂掉留下的是"有 CSV 无 meta"，面板照常显示表格并标
-    # 「范围未知」——这是老产物本来就有的降级路径。反过来（meta 先写）留下的是一份
-    # 说着"扫了 3010 只"却没有结果的范围记录，那才叫误导。
     meta = scan_meta.ScanMeta(
         date=expected, scanned=total, pool_total=pool_total, limit=args.limit,
         signals=len(signals), skipped=dict(counts), failed=len(failures),
         elapsed_s=time.monotonic() - t0, started_at=started_at)
+    # **不许用更不完整的一趟覆盖更完整的那份**（v0.5.0）。v0.2.4 的路径隔离只按
+    # `--limit` 隔，按"到底走完了多少只判定"没隔——而 v0.5.0 的徽标 tooltip 正在
+    # 劝人"重跑一次即可补上"：第一趟部分失败（比如断网前扫完 2800 只）之后重跑，
+    # 若第二趟更差（网络更糟，只走完 200 只）却不为零，就会**同名覆盖**掉那份好的，
+    # 而 output/ 不在版本控制里、也没有 .bak。
+    #
+    # 处理方式是**两份都留**而不是拒绝落盘：这一趟确实跑完了，它的结果有权存在。
+    # 换个不撞名的名字另存，并响亮说清谁更完整、想用新的该怎么做。
+    existing = scan_meta.load_meta(out)          # 损坏就抛（沿用既有口径，不静默）
+    if existing is not None and existing.judged > meta.judged:
+        out = out.with_name(f"{out.stem}_judged{meta.judged}{out.suffix}")
+        print(f"\n注意：同名产物 {scan_meta.scan_csv_path(expected, args.limit, SCAN_DIR)} "
+              f"那趟走完判定 {existing.judged} 只，比本趟的 {meta.judged} 只更完整；"
+              f"本次**没有覆盖**它，新结果另存为 {out.name}。"
+              f"确定要用新的就把那两个文件删掉再重跑。")
+    pd.DataFrame(signals, columns=CSV_COLUMNS).to_csv(out, index=False)  # 空结果也留表头
+    # CSV 先写、meta 后写：中途挂掉留下的是"有 CSV 无 meta"，面板照常显示表格并标
+    # 「范围未知」——这是老产物本来就有的降级路径。反过来（meta 先写）留下的是一份
+    # 说着"扫了 3010 只"却没有结果的范围记录，那才叫误导。
     saved_meta = scan_meta.save_meta(meta, out)
     # 「已保存:」这个前缀是面板解析产物路径的唯一钩子（runner/progress.py 的 _SAVED），
     # meta 必须换个说法打印——否则面板会把那份 JSON 当 CSV 读，回一句"产物读取失败"。

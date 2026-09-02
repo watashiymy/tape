@@ -384,7 +384,33 @@ def submit(row: Mapping, *, path: str | Path, costs: Costs,
                 f"{record['symbol']}（记录号 {trade_id}）")
     for issue in schema.warnings(issues):
         flash("warn", f"{trade_id} 已记下，但请复核：{issue.message}")
+    clear_entry_form()
     return True
+
+
+#: 记完一笔要清掉的录入区控件（v0.5.0）。**刻意不清 `kind` 与 `source`**：
+#: 一晚上连着记的往往是同方向、同来源的几笔，清了反而每次都要重选。
+_ENTRY_KEYS_TO_CLEAR = (SYMBOL_KEY, SHARES_KEY, PRICE_KEY, FEE_KEY, TAX_KEY,
+                        STOP_KEY, REASON_KEY, NOTE_KEY, TIME_KEY, COST_SIG_KEY)
+
+
+def clear_entry_form() -> None:
+    """落盘成功后清掉录入区。
+
+    不清的代价有两个，后一个更贵：
+
+    1. 按钮照样能点，且表单一格没变——不确定记上没有的人再点一下，就静默多一条
+       一模一样的记录（`trade_id` 不同，所以没有任何重复主键的报错拦得住）。
+    2. **同一晚记第二笔时，「股数」框里还留着上一笔的数**。改了代码与成交价之后
+       `sync_auto_costs` 的签名变了，佣金会照着**留下来的那个股数**重算一遍，
+       于是那一行看着完全自洽——正是本模块注释里点名的"最难发现的一种错"，
+       而它会静默污染 FIFO 配对与之后所有盈亏。
+
+    日期不清（回到"今天"由控件的 value 决定，而补记旧交易时用户刚选好的那天
+    清掉反而添乱）；kind / source 也不清，见 `_ENTRY_KEYS_TO_CLEAR`。
+    """
+    for key in _ENTRY_KEYS_TO_CLEAR:
+        st.session_state.pop(key, None)
 
 
 # ================================================================ 编辑与删除（§5.2）

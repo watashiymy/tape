@@ -454,13 +454,13 @@ quant_demo/
 │   ├── run_market_scan.py        # 入口③ 全市场扫描（v0.1.1）
 │   └── probe_baostock.py         # 一次性探针，验证 baostock 字段行为，不属于正式代码
 ├── app/                          # 入口④ Streamlit 面板 TAPE（v0.2.2 起按页拆分，见下）
-│   ├── dashboard.py              #   **只做装配**：八页三组 st.navigation（`streamlit run` 指向它）
+│   ├── dashboard.py              #   **只做装配**：st.navigation 的页表与分组（唯一定义处就是它里面的 PAGES）
 │   ├── ui.py                     #   共享件：页头、指标网格、数据表、控制条、路径 bind
 │   ├── theme.py                  #   视觉基座：字体、语义化 CSS、Cmd+C 热键修复
 │   ├── guide.py                  #   全部文案与实测数字的**唯一定义处**（纯数据）
 │   ├── pool.py                   #   信号池的读写编排（不 import 任何 app 模块，可脱离 UI 单测）
 │   ├── journal_ui.py             #   交易日志两个子页共享的编排（同上，不 import app 模块，可脱离 UI 单测）
-│   ├── pages_guide.py            #   使用说明页
+│   ├── pages_guide.py            #   说明手册各页的渲染函数（页表见 guide.GUIDE_PAGES）
 │   ├── pages_console.py          #   任务控制台页
 │   ├── pages_signals.py          #   今日信号页（含扫描区块的每行 ＋）
 │   ├── pages_journal_entry.py    #   记账页（v0.3.0 新增，v0.3.1 从交易日志页拆出）
@@ -472,7 +472,7 @@ quant_demo/
 ├── data/cache/                   # 行情缓存（.gitignore；扫描与回测共用，按代码键控）
 ├── output/                       # 回测报告与信号/扫描清单（.gitignore）
 │   └── runs/                     #   面板任务的状态 <任务名>.json 与 logs/<run_id>.log
-├── tests/                        # 离线为主 + 3 项联网（默认跳过）；数量见 §1
+├── tests/                        # 离线为主 + 3 项联网（默认跳过）
 └── docs/superpowers/
     ├── specs/                    # 每个版本一份设计文档（决策与理由，按日期命名）
     └── plans/                    # v0.1 的实施计划

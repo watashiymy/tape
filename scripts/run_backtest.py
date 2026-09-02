@@ -120,7 +120,12 @@ def main() -> None:
     if args.strategy:
         strategies = [s for s in strategies if s.name == args.strategy]
         if not strategies:
-            sys.exit(f"未知策略: {args.strategy}")
+            # 两种情况分开说。混成一句「未知策略」时，刚照着 --help 里那份清单
+            # （它取自 REGISTRY）敲进来的人会以为自己拼错了名字，而真因是配置里没它。
+            if args.strategy not in REGISTRY:
+                sys.exit(f"未知策略 {args.strategy!r}，可用: {list(REGISTRY)}")
+            sys.exit(f"{args.strategy!r} 已注册，但不在 {args.config} 的 strategies 段里"
+                     f"——把它的参数加进去（哪怕是空参数）才跑得起来")
     if not strategies:
         sys.exit("配置里没有任何策略（settings.yaml 的 strategies 段缺失或为空），拒绝空跑")
 

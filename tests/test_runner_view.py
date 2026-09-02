@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from quant.runner import view
-from quant.runner.process import RunState
+from quant.runner.process import RUNNING, STOPPED, SUCCESS, RunState
 from quant.runner.progress import Progress, parse_backtest, parse_market_scan
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -306,3 +306,30 @@ def test_unknown_text_never_claims_idle():
     而互斥状态不可知恰恰是最该 fail-safe 的时候。"""
     assert "未知" in view.UNKNOWN_TEXT
     assert "空闲" not in view.UNKNOWN_TEXT
+
+
+# ================================================================ 终止且无产物（v0.5.0）
+
+def test_no_output_note_speaks_up_when_a_stopped_run_left_nothing():
+    """停在半路时细节行会写着「信号 N 条」，而那 N 条一条都没落盘。
+    不补这句，屏幕上唯一的数字就指向一份不存在的文件。"""
+    p = Progress(phase="已停止", current=2500, total=3012,
+                          extras={"信号": "130 条"}, outputs=())
+    note = view.no_output_note(p, status=STOPPED)
+    assert "没有产物" in note
+    assert "上一次" in note, "没说清页面上看到的是哪一次的结果"
+    assert "第 1 只" in note, "没说清重跑是从头开始（不存在断点续跑）"
+
+
+def test_no_output_note_stays_quiet_when_there_is_something_to_show():
+    """跑成功、或者失败但已经落了盘：这句话就是噪声，返回空串（同 progress_lines
+    的既有约定：空串 = 面板不渲染这一行）。"""
+    done = Progress(phase="完成", current=3012, total=3012, extras={},
+                             outputs=("output/scan/2026-09-01.csv",))
+    assert view.no_output_note(done, status=SUCCESS) == ""
+    assert view.no_output_note(done, status=STOPPED) == "", \
+        "有产物就不该说「没有产物」"
+    running = Progress(phase="扫描中", current=100, total=3012,
+                                extras={}, outputs=())
+    assert view.no_output_note(running, status=RUNNING) == "", \
+        "还在跑的时候说这句话等于劝人别等了"

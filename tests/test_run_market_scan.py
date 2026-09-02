@@ -3,13 +3,14 @@
 # v0.2.4 追加：就绪闸门（交易日校验 + 数据就绪校验，见文件末尾一节）
 import importlib.util
 import shutil
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
 from quant.data import symbols
+from quant.signal import scan_meta
 from quant.data.pipeline import prepare_bars
 from quant.signal.market_scan import MIN_BARS
 from tests.conftest import make_bars
@@ -663,3 +664,85 @@ def test_the_saved_path_printed_for_the_panel_is_the_real_one(tmp_path, monkeypa
     saved = [line for line in out.splitlines() if line.startswith("已保存: ")]
     assert len(saved) == 1, f"「已保存:」不止一行: {saved}"
     assert saved[0].endswith(f"{BASE_DAY}_limit2.csv"), saved[0]
+
+
+# ================================================================ 不许用更差的一趟覆盖更好的（v0.5.0）
+
+def _write_prior(scan_dir: Path, *, judged: int, signals: int = 150) -> tuple[Path, str]:
+    """伪造"上一趟"的产物：CSV + meta。judged = scanned − failed。"""
+    scan_dir.mkdir(parents=True, exist_ok=True)
+    csv = scan_dir / f"{BASE_DAY}.csv"
+    body = ("date,symbol,name,strategy,close,pct_chg,amount,amount_ratio_20d\n"
+            f"{BASE_DAY},600519,贵州茅台,ma_cross,1500.0,1.2,3.0e8,1.8\n")
+    csv.write_text(body, encoding="utf-8")
+    scan_meta.save_meta(scan_meta.ScanMeta(
+        date=BASE_DAY, scanned=len(FAKE_ROWS), pool_total=len(FAKE_ROWS), limit=None,
+        signals=signals, skipped={}, failed=len(FAKE_ROWS) - judged,
+        elapsed_s=900.0, started_at=datetime(2026, 8, 26, 18, 30)), csv)
+    return csv, body
+
+
+def test_a_less_complete_rerun_does_not_clobber_the_better_one(tmp_path, monkeypatch):
+    """v0.2.4 的路径隔离只按 `--limit` 隔，按"走完了多少只判定"没隔。
+
+    真实剧本：第一趟断网前扫完了大半（部分失败但成果可观）→ 徽标 tooltip 劝你
+    「重跑一次即可补上」→ 第二趟网络更差、走完的更少但不为零 → **同名覆盖**，
+    那份好的永久没了（output/ 不在版本控制里，也没有 .bak）。
+
+    处理方式是**两份都留**：这一趟确实跑完了，它的结果有权存在，但不能顶掉更完整的。
+    """
+    scan_dir = tmp_path / "output" / "scan"
+    # 上一趟：4 只全部走完判定。本趟：让 3 只取数失败 → judged=1，更差
+    csv, good = _write_prior(scan_dir, judged=len(FAKE_ROWS))
+    monkeypatch.setattr(FakeService, "fail_symbols", tuple(s for s, _ in FAKE_ROWS[:3]))
+
+    _run_scan(tmp_path, monkeypatch, [])
+
+    assert csv.read_text(encoding="utf-8") == good, "更完整的那份被覆盖了"
+    side = [p.name for p in scan_dir.glob(f"{BASE_DAY}_judged*.csv")]
+    assert side, f"本趟的结果没有另存下来：{sorted(p.name for p in scan_dir.iterdir())}"
+
+
+def test_a_more_complete_rerun_overwrites_normally(tmp_path, monkeypatch):
+    """反过来（这趟更完整）就该正常覆盖——那正是"重跑补上"要的效果。"""
+    scan_dir = tmp_path / "output" / "scan"
+    csv, good = _write_prior(scan_dir, judged=1)      # 上一趟只走完 1 只
+
+    _run_scan(tmp_path, monkeypatch, [])              # 本趟 4 只全走完
+
+    assert csv.read_text(encoding="utf-8") != good, "更完整的一趟没有覆盖更差的那份"
+    assert list(scan_dir.glob(f"{BASE_DAY}_judged*.csv")) == [], "不该另存旁路文件"
+
+
+def test_an_old_product_without_meta_is_not_mistaken_for_more_complete(tmp_path, monkeypatch):
+    """v0.2.4 之前的老产物有 CSV 无 meta（load_meta 返回 None）。
+    拿不到"上一趟走完多少只"就不许拦——那会让老产物永远挡着新结果。"""
+    scan_dir = tmp_path / "output" / "scan"
+    scan_dir.mkdir(parents=True)
+    csv = scan_dir / f"{BASE_DAY}.csv"
+    csv.write_text("date,symbol\n", encoding="utf-8")
+
+    _run_scan(tmp_path, monkeypatch, [])
+
+    assert list(scan_dir.glob(f"{BASE_DAY}_judged*.csv")) == [], "被老产物误拦了"
+    assert csv.read_text(encoding="utf-8") != "date,symbol\n", "新结果没写进去"
+
+
+# ================================================================ 提前判定「数据未就绪」（v0.5.0）
+
+def test_the_readiness_gate_also_runs_at_the_first_progress_checkpoint():
+    """整趟闸门在循环**之后**：17:30 前起全量扫描要跑完 3012 只才被告知
+    「数据未就绪」——白等 15~25 分钟。所以在第一个进度检查点（前 100 只）再判一次。
+
+    这里做**源码级**断言而不是端到端跑：测试夹具只有 4 只票，凑不到
+    PROGRESS_EVERY=100 那个检查点，端到端跑不到这条分支。
+    要紧的是它必须复用同一个判据函数（同一句原文、分母同样扣掉失败票），
+    而不是另发明一个阈值——两套判据迟早给出不同答案。
+    """
+    src = (Path(__file__).resolve().parent.parent / "scripts"
+           / "run_market_scan.py").read_text(encoding="utf-8")
+    early = src[src.index("if i == PROGRESS_EVERY"):]
+    assert "data_not_ready_reason(" in early[:400], "提前判定没复用同一个判据函数"
+    assert "scanned=i - len(failures)" in early[:400], \
+        "分母没扣掉失败票——那会让 1 只失败就永远判不出未就绪"
+    assert "sys.exit" in early[:600], "判出未就绪却没退出"

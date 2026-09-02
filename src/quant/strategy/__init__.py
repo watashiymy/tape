@@ -2,7 +2,7 @@
 
 注册表是**唯一**的策略清单：settings.yaml 的合法策略名、面板的策略下拉、
 journal 的 source 合法值（schema.SOURCES）、guide 的对比表断言全部从它派生。
-加一个策略只改这里一行（v0.4.0 M1 的派生化就是为了这一天）。
+加一个策略：这里加一行，再按说明页那份收尾清单补几处文案（v0.4.0 M1 的派生化就是为了这一天）。
 """
 from quant.strategy.base import Strategy
 from quant.strategy.donchian import Donchian
