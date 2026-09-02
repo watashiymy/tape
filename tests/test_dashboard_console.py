@@ -105,10 +105,17 @@ def test_empty_state_when_nothing_ever_ran(tmp_path):
         assert at.button(f"stop_{name}").disabled is True, name
         assert at.button(f"rerun_{name}").disabled is True, name
     assert sum("尚未运行过" in c.value for c in at.caption) == len(jobs.JOBS)
-    sections = _sections(at)
-    assert len(sections) == len(jobs.JOBS), sections
-    for head in sections:
+    # v0.5.0 两区版（设计 §6）：区标题「每日流水线」「研究工具」+ 人工步骤卡片
+    # 「加进信号池」+ 三张任务卡片各一个。带状态 pill 的必须**恰好**是任务卡片：
+    # 人工那一步没有进程，给它挂状态 pill 就是无中生有。
+    with_pill = [h for h in _sections(at) if "qd-pill-" in h]
+    assert len(with_pill) == len(jobs.JOBS), with_pill
+    for head in with_pill:
         assert "空闲" in head and "qd-pill-idle" in head, head
+    plain = [h for h in _sections(at) if "qd-pill-" not in h]
+    assert [h for h in plain if "每日流水线" in h], plain
+    assert [h for h in plain if "研究工具" in h], plain
+    assert [h for h in plain if "加进信号池" in h and "人工步骤" in h], plain
 
 
 def test_console_page_starts_no_process(tmp_path, monkeypatch):

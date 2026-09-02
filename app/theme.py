@@ -237,6 +237,38 @@ CSS = f"""@import url("{FONT_IMPORT}");
   font-family: var(--qd-mono);
   color: var(--qd-primary);
 }}
+
+/* 流水线卡片之间那节箭头轨（v0.5.0：控制台「每日流水线」区）。
+   它落在一个很窄的列里（权重 0.14），要在卡片标题那一行的高度上把箭头居中。
+   窄屏时 streamlit 会把列竖着堆起来，那时箭头朝下才读得通——用 ::after 换字形，
+   而不是另画一个元素（两个元素总有一个要被藏起来，藏错了就是一片空白）。 */
+.qd-rail {{
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.1rem;
+  font-family: var(--qd-mono);
+  font-size: 1.15rem;
+  color: var(--qd-primary);
+  opacity: 0.75;
+}}
+.qd-rail::after {{ content: "→"; }}
+@media (max-width: 640px) {{
+  .qd-rail {{ min-height: 1.2rem; }}
+  .qd-rail::after {{ content: "↓"; }}
+}}
+
+/* 「人工步骤」标记：这一步没有开始按钮，是你自己动手的一环。
+   刻意用灰而不是琥珀——琥珀在本主题里只给**可操作**元素（config.toml 的
+   primaryColor 就是这个约定），给一个没有按钮的卡片上琥珀等于在骗手。 */
+.qd-manual {{
+  font-family: var(--qd-sans);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  color: var(--qd-muted);
+  border: 1px solid {MUTED_DIM};
+  padding: 0.1rem 0.45rem;
+}}
 """
 
 # ---------------------------------------------------------------- 热键修复（v0.2.2 §1.2）
@@ -349,6 +381,21 @@ def flow(steps) -> str:
         return ""
     arrow = '<span class="qd-flow-arrow">→</span>'
     return f'<div class="qd-flow">{arrow.join(parts)}</div>'
+
+
+def rail() -> str:
+    """流水线卡片之间那节箭头轨（v0.5.0）。
+
+    箭头字形在 CSS 的 ::after 里（窄屏自动从 → 换成 ↓），不写死在 HTML 里：
+    streamlit 窄屏会把列竖着堆起来，那时横箭头是错的。
+    """
+    return '<div class="qd-rail"></div>'
+
+
+def manual_tag(text: str) -> str:
+    """「人工步骤」标记：这一步没有开始按钮。灰色，不用琥珀——
+    琥珀在本主题里只给可操作元素，给没有按钮的卡片上琥珀等于骗手。"""
+    return f'<span class="qd-manual">{_esc(text)}</span>'
 
 
 def inject() -> None:

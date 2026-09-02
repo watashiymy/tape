@@ -313,12 +313,17 @@ def test_page_intro_covers_every_page(tmp_path):
 
 # ================================================================ 就地帮助：卡片 popover
 
+#: 控制台上带 `?` 的卡片数：三个任务 + v0.5.0 的「加进信号池」人工步骤。
+#: 人工那一步**尤其**需要帮助——它是唯一一张没有按钮的卡片，不解释就像是坏了。
+CARDS_WITH_HELP = len(jobs.JOBS) + 1
+
+
 def test_every_card_has_a_help_popover(tmp_path):
-    """§3.2：每张任务卡片右上角一个 st.popover("?")。"""
+    """§3.2：每张卡片右上角一个 st.popover("?")。"""
     at = _page(tmp_path, "任务控制台")
     assert not at.exception, at.exception
     labels = [_popover_label(p) for p in at.get("popover")]
-    assert len(labels) == len(jobs.JOBS), f"三张卡片应各有一个 popover，实际 {labels}"
+    assert len(labels) == CARDS_WITH_HELP, f"应各有一个 popover，实际 {labels}"
 
 
 def test_the_popover_content_is_this_jobs_help(tmp_path):
@@ -339,19 +344,19 @@ def test_the_popover_sits_next_to_the_card_title(tmp_path):
     """
     at = _page(tmp_path, "任务控制台")
     pops = at.get("popover")
-    assert len(pops) == len(jobs.JOBS), f"应有三个 popover，实际 {len(pops)}"
+    assert len(pops) == CARDS_WITH_HELP, f"应有 {CARDS_WITH_HELP} 个 popover，实际 {len(pops)}"
     for pop in pops:
         assert _popover_label(pop) == "?", _popover_label(pop)
     narrow = [c for c in at.get("column")
               if any(b.proto is p.proto for b in _descend(c) for p in pops)
               and abs(c.proto.weight - 1 / 6) < 1e-6]
-    assert len(narrow) == len(jobs.JOBS), \
+    assert len(narrow) == CARDS_WITH_HELP, \
         f"每个 popover 都该待在标题行的窄列里，实际 {len(narrow)}"
     titled = [c for c in at.get("column")
               if abs(c.proto.weight - 5 / 6) < 1e-6
               and any('class="qd-section"' in b for b in _bodies_under(c))]
-    assert len(titled) == len(jobs.JOBS), \
-        f"三个卡片标题都该在宽列里与 ? 同行，实际 {len(titled)}"
+    assert len(titled) == CARDS_WITH_HELP, \
+        f"每个卡片标题都该在宽列里与 ? 同行，实际 {len(titled)}"
 
 
 def test_control_bar_pages_have_no_popover(tmp_path):

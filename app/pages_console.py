@@ -6,15 +6,19 @@
 from __future__ import annotations
 
 import json
+from datetime import date
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
 import guide
+import pool
 import theme
 import ui
+from quant.config import universe_source
 from quant.report import fmt
-from quant.runner import jobs, process, progress, view
+from quant.runner import jobs, process, progress, steps, view
 from quant.strategy import strategy_label
 
 
@@ -127,6 +131,11 @@ def _render_card(job_name: str) -> str | None:
         st.error(str(e))
         return None
     _card_head(job, theme.pill(*view.status_pill(state)))
+    # 就绪状态紧跟标题（v0.5.0）：摆在标题**上面**的话，三列的状态行长短不一，
+    # 三张卡片的标题就会各在一个高度上（实测 490 / 429 / 467 px），中间的箭头
+    # 轨也就没有一条可对齐的基线。
+    if (status := _step_status(job_name)) is not None:
+        st.caption(status.text)
     params = _param_widgets(job)
     disabled, notice = view.start_button_state(busy, job_name)
     running = state is not None and state.status == process.RUNNING
@@ -191,7 +200,86 @@ def _card_for(busy: str | None):
     return _card_live if busy else _card_idle
 
 
+# ---------------------------------------------------------------- 排班（v0.5.0 §6）
+#
+# 拆分前三张卡片等宽并排，顺序就是 jobs.JOBS 的字典序——**语义为零**。
+# 而真实的闭环是：全市场扫描（发现）→ 人工研究 → 加进信号池 → 每日信号（跟踪），
+# 其中「加进信号池」不是可运行的任务、「回测」根本不在这条链上。
+#
+# 刻意**不加 ①②③ 编号**：说明页的命令行一节已经在用一套编号，README §2 的
+# 「四个入口」是第三套。再引入一套流水线编号，用户会在两页之间看到互相矛盾的数字，
+# 而没有任何测试会红——正是本项目最忌讳的静默不一致。顺序由箭头与位置表达就够了。
+_PIPELINE = ("market_scan", "daily_signal")     # 链上的两个**可运行**任务
+_TOOLS = ("backtest",)                          # 不在链上的研究工具
+
+
+def _check_roster() -> None:
+    """每个任务都得在某个区里有位置。
+
+    响亮失败而不是静默漏渲染：将来加了第四个任务却忘了排版，那张卡片会从页面上
+    **消失**而没有任何报错——用户只会以为这个功能没做。
+    """
+    placed = set(_PIPELINE) | set(_TOOLS)
+    if placed != set(jobs.JOBS):
+        raise RuntimeError(
+            f"控制台排班与 jobs.JOBS 对不上：漏了 {sorted(set(jobs.JOBS) - placed)}，"
+            f"多了 {sorted(placed - set(jobs.JOBS))}")
+
+
+def _short_path(path) -> str:
+    """路径显示成**相对仓库根**的样子。
+
+    绝对路径在这种一栏宽的卡片里会折成三行，而且把机器上的用户名一起摊在屏幕上
+    ——面板截图发出去就带着它。相对路径同时也正是文档里到处写的那个写法。
+    """
+    if path is None:
+        return ""
+    try:
+        return str(Path(path).relative_to(ui.ROOT))
+    except ValueError:                      # 不在仓库里（测试夹具、别处的配置）
+        return Path(path).name
+
+
+def _step_status(job_name: str):
+    """链上那两个任务的「就绪状态」。返回 None 表示这一步不需要状态行。
+
+    在卡片内部现算而不是由 page_console 传进来：卡片是 fragment，运行中每 2 秒
+    只重跑自己那一列，传进来的值会停在开跑那一刻——扫描跑完了状态行还写着
+    「最近一次是上周」。
+    """
+    if job_name == "market_scan":
+        return steps.scan_status(ui.OUTPUT / "scan", date.today())
+    if job_name == "daily_signal":
+        return steps.signal_status(ui.OUTPUT / "signals", date.today())
+    return None                     # 回测不在链上，没有"就绪"这回事
+
+
+def _manual_step_card() -> None:
+    """第二步：加进信号池。**没有开始按钮**——这一步是你自己动手的一环。
+
+    卡片形状与另外两张一致（标题行 + 状态行 + 一块内容），否则并排看过去像
+    缺了一块。灰色「人工步骤」标记代替状态 pill：琥珀在本主题里只给可操作元素。
+    """
+    head, help_col = st.columns([5, 1], vertical_alignment="center")
+    head.html(theme.section("加进信号池", theme.manual_tag("人工步骤")))
+    with help_col.popover("?"):
+        st.markdown(guide.PIPELINE_MANUAL_HELP)
+    try:
+        symbols = pool.current(ui.CONFIG_PATH)
+        source = universe_source(ui.CONFIG_PATH)
+    except pool.CONFIG_ERRORS:
+        symbols, source = None, None
+    st.caption(steps.pool_status(symbols, _short_path(source)).text)
+    st.caption(guide.PIPELINE_MANUAL_NOTE)
+    st.page_link(ui.page_ref("signals"), label="去「今日信号」看扫描结果",
+                 icon=":material/notifications:")
+    st.page_link(ui.page_ref("universe"), label="去「信号池」增删标的",
+                 icon=":material/list:")
+    st.divider()
+
+
 def page_console() -> None:
+    _check_roster()
     ui.page_head("任务控制台")
     st.caption("任务在独立进程里运行：关掉浏览器、甚至停掉本面板都不会中断它。"
                "同时只允许一个任务（baostock 单会话，并发会互踢下线）。")
@@ -201,8 +289,25 @@ def page_console() -> None:
         st.error(str(e))
         busy = None
     card = _card_for(busy)
-    # 三张卡片等宽并排（§2.4）：纵向堆叠时要滚很久才看得见第三张。
-    # fragment 写进列里是允许的（实测过）——列就是它的父容器，局部重跑照旧只动这一列。
-    for col, name in zip(st.columns(len(jobs.JOBS)), jobs.JOBS):
-        with col:
-            card(name, busy or "")
+
+    # 页顶的闭环图：无论列怎么塌，顺序总还读得懂（窄屏 flex-wrap 自动折行）。
+    st.html(theme.section("每日流水线"))
+    st.html(theme.flow(guide.CONSOLE_FLOW))
+    st.caption(guide.CONSOLE_FLOW_NOTE)
+    # 三卡两轨。箭头列很窄（0.14）；窄屏 streamlit 会竖着堆，那时 CSS 把箭头换成 ↓。
+    # fragment 写进列里是允许的（实测过）——列就是它的父容器，局部重跑只动这一列。
+    scan_col, rail1, manual_col, rail2, signal_col = st.columns(
+        [1, 0.14, 1, 0.14, 1], vertical_alignment="top")
+    with scan_col:
+        card(_PIPELINE[0], busy or "")
+    rail1.html(theme.rail())
+    with manual_col:
+        _manual_step_card()
+    rail2.html(theme.rail())
+    with signal_col:
+        card(_PIPELINE[1], busy or "")
+
+    st.html(theme.section("研究工具"))
+    st.caption(guide.CONSOLE_TOOLS_NOTE)
+    for name in _TOOLS:
+        card(name, busy or "")
