@@ -19,6 +19,7 @@ import theme
 import ui
 from quant.report import fmt
 from quant.signal import scan_meta
+from quant.strategy import strategy_label
 
 
 def _record_column(df: pd.DataFrame, names: dict[str, str], click_key: str) -> dict:
@@ -47,6 +48,35 @@ def _scan_columns(df: pd.DataFrame, symbols: tuple[str, ...],
     }
 
 
+SCAN_STRATEGY_KEY = "scan_filter_strategies"
+
+
+def _filter_by_strategy(df: pd.DataFrame) -> pd.DataFrame:
+    """按策略筛这张扫描表。**必须在别的什么都还没做之前调一次**，返回值同时喂给
+    表格、`＋ 加入` 的 symbols 与「＋ 记一笔」的预填。
+
+    为什么这条约束是硬的：那两个按钮都按**行号/行序**绑定
+    （`pool._clicked_symbol` 拿 session_state 里的 row 去索引传进去的 symbols；
+    `journal_ui.prefills` 同样按这一轮的行序）。给表格喂筛后的、给按钮喂筛前的，
+    点 ＋ 就会加错票、记一笔会预填错代码——而且不会有任何报错。
+
+    候选只列**这份 CSV 里真出现过的策略**（同 journal_ui.filter_options 的口径），
+    不给注册表全集：全集里没出信号的那些选了也是空表。
+    """
+    if "strategy" not in df.columns or df.empty:
+        return df
+    options = journal_ui.filter_options(df, "strategy")
+    if len(options) < 2:                 # 只有一个策略时这个控件是纯噪声
+        return df
+    picked = st.multiselect("按策略筛", options, default=[], key=SCAN_STRATEGY_KEY,
+                            format_func=strategy_label,
+                            help="留空 = 全部。同一只票被两个策略同时报出来只说明"
+                                 "两套规则今天都满足，**不代表信号更强**。")
+    if not picked:
+        return df
+    return df[df["strategy"].isin(picked)].reset_index(drop=True)
+
+
 def _scan_table(df: pd.DataFrame, names: dict[str, str]) -> None:
     """扫描表：能读到信号池就带 ＋ 列，读不到就只留「记一笔」。
 
@@ -65,14 +95,16 @@ def _scan_table(df: pd.DataFrame, names: dict[str, str]) -> None:
                       {**fmt.scan_column_config(),
                        **_record_column(df, names, journal_ui.SCAN_CLICK_KEY)},
                       "当日无新信号", hint=guide.TABLE_HINTS["scan"],
-                      color_columns=ui.SCAN_COLOR_COLUMNS)
+                      color_columns=ui.SCAN_COLOR_COLUMNS,
+                      height=ui.SCAN_TABLE_HEIGHT)
         return
     symbols = tuple(str(s) for s in df["symbol"])
     ui.data_table(fmt.map_strategy_labels(
                       journal_ui.record_table(pool.scan_table(df, in_pool))),
                   _scan_columns(df, symbols, names),
                   "当日无新信号", hint=guide.TABLE_HINTS["scan"],
-                  color_columns=ui.SCAN_COLOR_COLUMNS)
+                  color_columns=ui.SCAN_COLOR_COLUMNS,
+                  height=ui.SCAN_TABLE_HEIGHT)
 
 
 def scan_section(names: dict[str, str]) -> None:
@@ -87,17 +119,28 @@ def scan_section(names: dict[str, str]) -> None:
         return
     # 标题必须带扫描日期：停牌日/忘跑的日子，别让人把旧扫描当今天的。
     # 日期取 scan_day 而不是整个 stem——试跑产物的 stem 带着 `_limit3` 那截给机器看的后缀。
-    st.html(theme.section(f"全市场扫描（{scan_meta.scan_day(latest)}）",
-                          ui.scan_scope_pill(latest)))
     # 扫描被 Ctrl-C 打断可能留下零字节/半截 CSV：EmptyDataError / ParserError
-    # 都是 ValueError 子类，与回测页同一套容错口径，崩页不如明说
+    # 都是 ValueError 子类，与回测页同一套容错口径，崩页不如明说。
+    # 读盘排在标题之前：标题要带条数，而条数只有读完才知道。
     try:
         df = pd.read_csv(latest, dtype={"symbol": str})
     except (ValueError, OSError) as e:
+        st.html(theme.section(f"全市场扫描（{scan_meta.scan_day(latest)}）",
+                              ui.scan_scope_pill(latest)))
         st.error(f"扫描文件 {latest.name} 读取失败（{type(e).__name__}），"
                  f"多半是扫描中途被打断；请删除该文件后重新运行扫描。")
         return
-    _scan_table(df, names)
+    # **筛选必须排在这里**（见 _filter_by_strategy 的 docstring）：筛后的这一份
+    # 同时喂给表格、＋ 加入的 symbols 与记一笔的预填，三处按行序绑定。
+    shown = _filter_by_strategy(df)
+    # 标题带条数，用词与控制台那行就绪状态对齐（steps.scan_status 也说"报了 N 条"）。
+    # 数的是**屏幕上这张表**的行数，不是磁盘 meta 里的 signals——筛过之后那两个数
+    # 就不是一回事了，而用户看的是屏幕。筛过时两个数都给，才看得出自己筛掉了多少。
+    count = (f"报了 {len(df)} 条" if len(shown) == len(df)
+             else f"筛出 {len(shown)} / {len(df)} 条")
+    st.html(theme.section(f"全市场扫描（{scan_meta.scan_day(latest)}）· {count}",
+                          ui.scan_scope_pill(latest)))
+    _scan_table(shown, names)
 
 
 def page_signals() -> None:
@@ -109,29 +152,60 @@ def page_signals() -> None:
     # （查不到就留空，绝不编一个）。扫描表自己带 name，这份查询对它是冗余的兜底。
     names = ui.symbol_names()
     sig_dir = ui.OUTPUT / "signals"
-    files = sorted(sig_dir.glob("*.csv"), reverse=True) if sig_dir.exists() else []
+    # 只认**文件名就是交易日**的产物，且按日期排序。朴素的 sorted(reverse=True) 会让
+    # 任何非日期文件名压过真日期文件（'z' > '2'，一个手工备份 zzz-latest.csv 就够），
+    # 而下面标题里直接印的就是 latest.stem——那会把文件名当日期显示出来。
+    # 判据与 quant.signal.scan_meta.is_day 共用一份，避免第三次只修一边
+    # （steps.py 已经改过，这一页当时漏了）。
+    files = sorted((p for p in sig_dir.glob("*.csv") if scan_meta.is_day(p)),
+                   key=lambda p: p.stem, reverse=True) if sig_dir.is_dir() else []
     # 无信号记录不能 return 早退：全市场扫描区块在页尾，早退会把它一并吞掉
     if not files:
         st.info(guide.EMPTY_STATES["signal"])
     else:
-        latest = files[0]
-        st.html(theme.section(f"最新信号（{latest.stem}）"))
-        df = pd.read_csv(latest, dtype={"symbol": str})
-        # 表格渲染统一走 ui.data_table：空表时那句提示必须是 if/else **语句**，
-        # streamlit 的 magic 会把裸三元（ast.IfExp）整条包进 st.write()，
-        # 于是 st.dataframe 的返回值被当对象内省，把整份 API 手册糊在信号表下面。
-        # 策略列显示中文显示名；预填（_record_column 里的 prefills）仍读原 df 的键
-        ui.data_table(fmt.map_strategy_labels(journal_ui.record_table(df)),
-                      {**fmt.signal_column_config(),
-                       **_record_column(df, names, journal_ui.SIGNAL_CLICK_KEY)},
-                      "当日无新信号", hint=guide.TABLE_HINTS["signal"])
-        if len(files) > 1:
-            st.html(theme.section("历史信号"))
-            hist = pd.concat([pd.read_csv(f, dtype={"symbol": str}) for f in files[1:]],
-                             ignore_index=True)
-            # 历史表不再重复那行灰字：同一页里连着出现两遍等于噪声
-            # 历史表刻意**不**带「记一笔」：补记一笔几个月前的老交易走录入表单更合适，
-            # 而这张表可能有几百行，多一列按钮只会让"今天该做什么"更难看清。
-            ui.data_table(fmt.map_strategy_labels(hist),
-                          fmt.signal_column_config(), "无")
+        _latest_signals(files, names)
     scan_section(names)
+
+
+def _latest_signals(files: list, names: dict[str, str]) -> None:
+    """最新一份信号清单 + 其余那些的历史表。
+
+    单独成函数是为了让"读坏文件"那条路能**早退**而不吞掉页尾的扫描区块——
+    scan_section 由 page_signals 在本函数之后调，不受这里的 return 影响。
+    """
+    latest = files[0]
+    st.html(theme.section(f"最新信号（{latest.stem}）"))
+    # 与扫描 CSV 同一套容错：半截/零字节文件不许把整页打没
+    try:
+        df = pd.read_csv(latest, dtype={"symbol": str})
+    except (ValueError, OSError) as e:
+        st.error(f"信号文件 {latest.name} 读取失败（{type(e).__name__}），"
+                 f"多半是任务中途被打断；删掉该文件后重跑「每日信号」即可。")
+        return
+    # 表格渲染统一走 ui.data_table：空表时那句提示必须是 if/else **语句**，
+    # streamlit 的 magic 会把裸三元（ast.IfExp）整条包进 st.write()，
+    # 于是 st.dataframe 的返回值被当对象内省，把整份 API 手册糊在信号表下面。
+    # 策略列显示中文显示名；预填（_record_column 里的 prefills）仍读原 df 的键
+    ui.data_table(fmt.map_strategy_labels(journal_ui.record_table(df)),
+                  {**fmt.signal_column_config(),
+                   **_record_column(df, names, journal_ui.SIGNAL_CLICK_KEY)},
+                  "当日无新信号", hint=guide.TABLE_HINTS["signal"])
+    if len(files) == 1:
+        return
+    st.html(theme.section("历史信号"))
+    # 逐个文件读、坏的那个单独说并跳过：整块 concat 里有一个零字节文件就是整页
+    # traceback，而报错只有一句 "No columns to parse"，不告诉你是哪个文件。
+    frames = []
+    for f in files[1:]:
+        try:
+            frames.append(pd.read_csv(f, dtype={"symbol": str}))
+        except (ValueError, OSError) as e:
+            st.warning(f"跳过 {f.name}（{type(e).__name__}），其余照常显示。")
+    if not frames:
+        st.write("无")
+        return
+    hist = pd.concat(frames, ignore_index=True)
+    # 历史表不再重复那行灰字：同一页里连着出现两遍等于噪声。
+    # 也刻意**不**带「记一笔」：补记几个月前的老交易走录入表单更合适，
+    # 而这张表可能有几百行，多一列按钮只会让"今天该做什么"更难看清。
+    ui.data_table(fmt.map_strategy_labels(hist), fmt.signal_column_config(), "无")

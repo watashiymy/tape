@@ -81,6 +81,7 @@ def page_ref(key: str):
 AUTO_REFRESH_S = "2s"     # 运行中卡片的局部刷新间隔（空闲时不设，避免面板空转）
 LOG_TAIL_LINES = 30
 LOG_BOX_HEIGHT = 220      # 日志区固定高度滚动（§2.4）：几十行日志不许把版面顶飞
+SCAN_TABLE_HEIGHT = 600   # 扫描结果表（v0.5.0）：一次全量能报上百条，默认约十行的窗口要翻十几屏
 # 标的名称取自最近这么多份扫描 CSV。名称几乎不变，30 份够用，同时把每次渲染的
 # 文件读取量兜住（一天一份，长期跑下来 output/scan/ 会攒到几百份）。
 NAME_LOOKBACK_FILES = 30
@@ -159,12 +160,19 @@ def metric_grid(metrics: dict, per_row: int = 4) -> None:
 
 
 def data_table(df: pd.DataFrame, config: dict, empty_text: str, *,
-               hint: str = "", color_columns: tuple[str, ...] = ()) -> None:
+               hint: str = "", color_columns: tuple[str, ...] = (),
+               height: int | str = "auto") -> None:
     """信号/扫描/交易表的统一渲染口。
 
     `hint` 是表格上方那行灰字（§3.2 就地帮助），只解释关键列——逐列说明在
     「使用说明」页里。**表格为空时不出**：对着一张空表解释列只是噪声，
     而且会把"当日无新信号"这句真正要看的话往下挤。
+
+    `height` 给行数多的表用。缺省 `"auto"` 就是 `st.dataframe` 自己的缺省
+    （**不能写 None**——1.61 会抛 StreamlitInvalidHeightError，而这一路会把
+    信号池、记账、回测等所有走 data_table 的页面一起打没：实测 50 项测试变红）：Streamlit 不给
+    height 时表格只显示约十行，而一次全量扫描能报出上百条——十九屏内滚动条里挑票
+    是这一页最花时间的动作。同 pages_console 的日志框（ui.LOG_BOX_HEIGHT）一个理由。
 
     `color_columns` 走 pandas Styler：`column_config` 里没有条件着色能力
     （NumberColumn 无 color 参数），红绿只能这么给；而 column_config 的格式串
@@ -177,7 +185,8 @@ def data_table(df: pd.DataFrame, config: dict, empty_text: str, *,
     if hint:
         st.caption(hint)
     data = fmt.direction_styler(df, color_columns) if color_columns else df
-    st.dataframe(data, width="stretch", column_config=config, hide_index=True)
+    st.dataframe(data, width="stretch", column_config=config, hide_index=True,
+                 height=height)
 
 
 def symbol_names() -> dict[str, str]:

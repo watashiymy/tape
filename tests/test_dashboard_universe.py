@@ -829,3 +829,73 @@ def guide_fact(key: str) -> str:
     sys.modules["qd_guide_pool"] = mod
     spec.loader.exec_module(mod)
     return mod.FACTS[key]
+
+
+# ================================================================ 扫描表的策略筛选（v0.5.0）
+
+def _multi(at, label: str):
+    """按标签取 multiselect（AppTest 的 multiselect 按 label 找最省事）。"""
+    return next(m for m in at.get("multiselect") if m.label == label)
+
+
+def test_the_scan_table_offers_a_strategy_filter_when_there_is_more_than_one(tmp_path):
+    """一次全量扫描能报上百条（实测 189），从里面挑票是收盘后最花时间的动作。
+    只有一个策略时不出这个控件——那时它是纯噪声。"""
+    _config(tmp_path, ("600519",))
+    _scan_csv(tmp_path,
+              "2026-08-27,000333,美的集团,ma_cross,72.5,3.1,1200000000,2.4\n"
+              "2026-08-27,600036,招商银行,donchian,38.0,0.9,2200000000,1.6\n")
+    at = _at(tmp_path, SIGNALS_PAGE)
+    assert not at.exception, at.exception
+    assert _multi(at, "按策略筛"), "多策略时应有筛选控件"
+
+    one = tmp_path / "output" / "scan" / "2026-08-28.csv"
+    one.write_text(SCAN_HEADER + "2026-08-28,000333,美的集团,ma_cross,72.5,3.1,1.2e9,2.4\n",
+                   encoding="utf-8")
+    at2 = _at(tmp_path, SIGNALS_PAGE)
+    assert [m for m in at2.get("multiselect") if m.label == "按策略筛"] == [], \
+        "只有一个策略时不该出这个控件"
+
+
+def test_the_title_reports_how_many_rows_are_on_screen(tmp_path):
+    """标题要说条数——控制台那行就绪状态早就在说「报了 N 条」，换到真正给你看
+    信号的这一页反而没有。筛过之后要给两个数，才看得出自己筛掉了多少。"""
+    _config(tmp_path, ("600519",))
+    _scan_csv(tmp_path,
+              "2026-08-27,000333,美的集团,ma_cross,72.5,3.1,1200000000,2.4\n"
+              "2026-08-27,600036,招商银行,donchian,38.0,0.9,2200000000,1.6\n")
+    at = _at(tmp_path, SIGNALS_PAGE)
+    blob = " ".join(e.proto.body for e in at.get("html"))
+    assert "报了 2 条" in blob, blob[:400]
+
+
+def test_filtering_keeps_the_table_and_the_plus_buttons_on_the_same_rows(tmp_path):
+    """**这条是这批改动里最危险的地方。**
+
+    「＋ 加入」与「＋ 记一笔」都按**行号/行序**绑定（pool._clicked_symbol 拿
+    session_state 里的 row 去索引传进去的 symbols；journal_ui.prefills 同样按
+    这一轮的行序）。给表格喂筛后的、给按钮喂筛前的，点 ＋ 就会加错票、
+    记一笔会预填错代码——而且不会有任何报错。
+    """
+    cfg = _config(tmp_path, ("600519",))
+    _scan_csv(tmp_path,
+              "2026-08-27,000333,美的集团,ma_cross,72.5,3.1,1200000000,2.4\n"
+              "2026-08-27,600036,招商银行,donchian,38.0,0.9,2200000000,1.6\n"
+              "2026-08-27,601318,中国平安,donchian,45.0,1.5,1800000000,2.1\n")
+    at = _at(tmp_path, SIGNALS_PAGE)
+    _multi(at, "按策略筛").select("donchian").run()
+    assert not at.exception, at.exception
+
+    table = _table(at)
+    assert list(table["symbol"]) == ["600036", "601318"], \
+        f"筛选没生效: {list(table['symbol'])}"
+    assert "筛出 2 / 3 条" in " ".join(e.proto.body for e in at.get("html"))
+
+    # 从**行为**上验（AppTest 不暴露 column_config 里那份 args）：点筛后第 0 行的 ＋，
+    # 加进池子的必须是 600036（筛后第一行），不是 000333（筛前第一行）。
+    at = click_row_button(at, pool.ADD_COLUMN, 0, pool.ADD_LABEL)
+    assert not at.exception, at.exception
+
+    got = load_settings(cfg).universe
+    assert "600036" in got, f"点了筛后第一行的 ＋，加进去的却不是它：{got}"
+    assert "000333" not in got, "加错票了——按钮拿的是筛选前的行序"

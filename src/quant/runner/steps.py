@@ -80,16 +80,10 @@ def signal_status(signal_dir: Path | str, today: date | None = None) -> StepStat
     """
     # 只认**文件名就是交易日**的产物（run_daily_signal.py 落的就是 <date>.csv）。
     # 认不出日期的一律不算：把一个随手放进来的文件名当日期显示在页面上，
-    # 就是本模块开头那条纪律要防的"编出来的数字"。同 scan_meta._sort_key 的口径。
-    def _is_day(p: Path) -> bool:
-        try:
-            date.fromisoformat(p.stem)
-        except ValueError:
-            return False
-        return True
-
+    # 就是本模块开头那条纪律要防的"编出来的数字"。
+    # 判据用 scan_meta.is_day（三处共用一份，见那个函数的 docstring）。
     d = Path(signal_dir)
-    files = sorted((p for p in d.glob("*.csv") if _is_day(p)),
+    files = sorted((p for p in d.glob("*.csv") if scan_meta.is_day(p)),
                    key=lambda p: p.stem, reverse=True) if d.is_dir() else []
     if not files:
         return StepStatus(f"{UNKNOWN}——池子里的买卖点还没人盯", ready=False)

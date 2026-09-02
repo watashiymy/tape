@@ -164,6 +164,24 @@ def load_meta(csv_path: str | Path) -> ScanMeta | None:
             f"删除该文件后该次扫描会退回显示「范围未知」；重跑扫描可重新生成") from e
 
 
+def is_day(csv_path: str | Path) -> bool:
+    """文件名（不含扩展名）是不是一个合法交易日 `YYYY-MM-DD`。
+
+    `output/scan/` 与 `output/signals/` 都是用户放得进任何东西的目录（手工备份、
+    临时笔记）。而面板会把 `stem` 直接当日期印在标题上、还会按名字排序取"最新"
+    ——朴素的 `sorted(reverse=True)` 里一个 `zzz-latest.csv` 就能压过真日期文件
+    （'z' > '2'），然后标题上出现"最新信号（zzz-latest）"。
+
+    判据集中在这里，三处共用（`signal_status`、「今日信号」页、本模块）：
+    分散着写，修一处漏两处——v0.5.0 就先只修了 `steps.py` 那一处。
+    """
+    try:
+        date.fromisoformat(Path(csv_path).stem)
+    except ValueError:
+        return False
+    return True
+
+
 def _sort_key(csv_path: Path) -> tuple[str, bool, str]:
     """排序键：(日期, 是不是全量, 文件名)。`max()` 取的就是"最新一天的全量"。
 
