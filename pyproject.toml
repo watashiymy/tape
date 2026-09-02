@@ -7,7 +7,7 @@ requires-python = ">=3.12"
 # （README §8 记着），"装得上、跑起来才崩"是本项目最讨厌的失败形态。
 dependencies = [
     "pandas>=3.0,<4",
-    "pyarrow>=15,<21",
+    "pyarrow>=15,<25",   # 本机实测环境是 24.0.0；上界写 <21 会把它降级到从没跑过的版本
     "baostock>=0.8.8,<1",
     "PyYAML>=6,<7",
     "plotly>=5.20,<7",
@@ -20,7 +20,7 @@ dependencies = [
 # openpyxl 是「记账」页导出 Excel 的后端。它不在主依赖里（CSV 导出不需要它），
 # 但**必须**在 dev 里：少了它 tests/test_journal_export.py 等 8 项直接红。
 excel = ["openpyxl>=3.1,<4"]
-dev = ["pytest>=8", "openpyxl>=3.1,<4"]
+dev = ["pytest>=8,<10", "openpyxl>=3.1,<4"]
 
 [build-system]
 requires = ["setuptools>=68"]

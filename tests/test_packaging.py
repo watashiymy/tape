@@ -8,6 +8,7 @@
 # 散落三处各说各话的老毛病由测试钉住。
 from __future__ import annotations
 
+import re
 import tomllib
 from pathlib import Path
 
@@ -43,8 +44,7 @@ def test_the_version_matches_the_readme_title():
         f"pyproject 写 {version}，而 README 首行是 {first_line!r}——两者必须一致"
 
 
-@pytest.mark.parametrize("package", ["pandas", "streamlit", "baostock", "pyyaml",
-                                     "plotly", "pyarrow", "openpyxl"])
+@pytest.mark.parametrize("package", sorted(_requirements()))
 def test_every_dependency_has_both_bounds(package):
     """下界 + 上界都要有。
 
@@ -76,15 +76,84 @@ def test_openpyxl_is_declared_because_the_export_path_needs_it():
         "报错文案又在宣称它是主依赖了——它是可选依赖（extra: excel）"
 
 
-def test_the_readme_does_not_promise_a_test_count_it_cannot_deliver():
-    """README 不许出现「1782 passed」这种在新克隆上拿不到的数字。
+def test_the_readme_never_hardcodes_a_test_count():
+    """README 里**不许出现写死的测试条数**。
 
-    tests/test_journal_store.py 有全仓唯一一条条件跳过：本机没有
-    journal/trades.csv（新克隆的正常状态）时 pytest.skip。所以陌生人跑出来的
-    最好结果是「1781 passed, 1 skipped」，与 README 承诺的逐字不符。
-    数字还会随每批新测试变旧，而它是 README 里唯一没进 FACTS↔README 对账机制的数字。
+    这条最初写成"含 passed 的行必须也含 skipped"，结果放行了「1801 passed,
+    1 skipped」——而同一批改动把总数推到了 1836，README 当场变成假数字。
+    追着改数字是没有尽头的（下一批测试又会让它过期），所以直接禁掉这个形态：
+    数字属于 pytest 的输出，不属于文档。
+
+    这与 FACTS↔README 那套逐字对账并不矛盾：那些是**实测结论**（有唯一定义处 +
+    有测试盯着），而测试条数每加一条用例就变，没有任何对账对象。
     """
-    for line in README.splitlines():
-        if "passed" in line and "deselected" in line:
-            assert "skipped" in line, (
-                f"README 这行承诺了一个新克隆拿不到的测试结果：{line.strip()!r}")
+    bad = [ln.strip() for ln in README.splitlines()
+           if re.search(r"\d[\d,]*\s*(passed|failed)", ln)]
+    assert not bad, (
+        "README 写死了通过条数，下一批用例就会让它过期——改成不带数目的说法：\n"
+        + "\n".join(bad))
+
+
+def test_the_two_small_numbers_the_readme_does_quote_are_true():
+    """README 保留了两个数：「1 skipped」与「3 deselected」。它们与总数不同——
+    是**结构性**的（有几条条件跳过、有几项联网用例），所以不禁，改成验真。
+
+    禁掉一个数最省事，但那样 README 就只能说"会有一些跳过"，读者反而判断不出
+    自己看到的结果正不正常。既然能验，就验。
+    """
+    # **排除本文件**：它自己的源码里就含 "pytest.skip(" 与 "@pytest.mark.network"
+    # 这两个字面量，不排就永远比真实数多一个（自指陷阱，与 git ls-files 查个人路径
+    # 时同一个坑）。
+    here = Path(__file__).resolve()
+    sources = [q.read_text(encoding="utf-8") for q in (ROOT / "tests").glob("test_*.py")
+               if q.resolve() != here]
+
+    skips = sum(s.count("pytest.skip(") for s in sources)
+    assert skips == 1, (
+        f"条件跳过现在有 {skips} 条，而 README 写着「1 skipped」——"
+        f"要么改 README，要么想清楚新增那条为什么要跳过")
+
+    # 联网用例是**模块级** `pytestmark = pytest.mark.network` 打的标（不是逐个
+    # 装饰器），所以按"带这个标的模块里有几个 test_ 函数"来数。
+    import ast
+    marked = 0
+    for q in (ROOT / "tests").glob("test_*.py"):
+        if q.resolve() == here:
+            continue
+        tree = ast.parse(q.read_text(encoding="utf-8"))
+        module_marked = any(
+            isinstance(n, ast.Assign)
+            and any(getattr(tg, "id", "") == "pytestmark" for tg in n.targets)
+            and "network" in ast.unparse(n.value)
+            for n in tree.body)
+        for n in ast.walk(tree):
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                    and n.name.startswith("test_"):
+                decorated = any("network" in ast.unparse(d) for d in n.decorator_list)
+                marked += bool(module_marked or decorated)
+    assert marked == 3, (
+        f"联网用例现在有 {marked} 项，而 README 写着「3 deselected」")
+
+
+def test_no_upper_bound_excludes_the_version_actually_installed():
+    """上界不许把**本机实测跑过的那一版**排除在外。
+
+    这条是拿真事故换来的：v0.5.0 给依赖补上界时写了 `pyarrow>=15,<21`，
+    而开发机上装的是 24.0.0——照 README 的安装命令跑一遍，pip 会把它**降级**到
+    一个从没跑过测试的版本。"补上界防上游变动"本身是对的，但上界必须包含
+    "我们真的跑过的那一版"，否则等于用一句没验证过的承诺换掉一句验证过的。
+    """
+    import importlib.metadata as md
+
+    from packaging.requirements import Requirement
+    from packaging.specifiers import SpecifierSet
+
+    for spec in _requirements().values():
+        req = Requirement(spec)
+        try:
+            installed = md.version(req.name)
+        except md.PackageNotFoundError:
+            continue                      # 没装就没有"实测过"这回事，跳过
+        assert SpecifierSet(str(req.specifier)).contains(installed, prereleases=True), \
+            (f"{req.name} 本机装的是 {installed}，却不满足 pyproject 的 {req.specifier}"
+             f"——照 README 装一遍会把实测环境改掉")

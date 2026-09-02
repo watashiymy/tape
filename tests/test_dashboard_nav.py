@@ -332,3 +332,27 @@ def test_every_page_renders_without_exception(tmp_path, title):
     heads = [e.proto.body for e in at.get("html") if 'class="qd-head"' in e.proto.body]
     assert any(f'class="qd-title">{title}<' in h for h in heads), \
         f"切到 {title} 却渲染出了别的页: {heads}"
+
+
+def test_page_ref_fails_loudly_on_an_unregistered_key(tmp_path, monkeypatch):
+    """`ui.page_ref` 拿不到已登记的页时必须 KeyError，不许返回 None。
+
+    `st.page_link(None)` 会渲染出一个**点了没反应**的链接——它长得和正常链接
+    一模一样，用户只会以为是自己点歪了，谁也不会报上来。
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "qd_ui_pageref", Path(__file__).resolve().parent.parent / "app" / "ui.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["qd_ui_pageref"] = mod
+    spec.loader.exec_module(mod)
+
+    with pytest.raises(KeyError, match="还没登记"):
+        mod.page_ref("no-such-page")
+
+    sentinel = object()
+    mod.bind_pages({"guide": sentinel})
+    assert mod.page_ref("guide") is sentinel
+    mod.bind_pages({})                       # 每轮 rerun 整体覆盖，不残留上一轮
+    with pytest.raises(KeyError):
+        mod.page_ref("guide")

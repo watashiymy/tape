@@ -430,6 +430,10 @@ def test_the_backtest_card_is_out_of_the_pipeline_and_full_width(tmp_path):
     # 每张卡片自己就用 st.columns(3) 摆开始/停止/重跑，那三列谁都躲不开。
     pipeline_cols = [c for c in at.get("column")
                      if abs(c.proto.weight - 1 / 3.28) < 1e-3]
+    # 前提断言：3.28 这个常量与 pages_console 的 [1,.14,1,.14,1] 绑着，改了列宽比例
+    # 而不改这里的话，上面这个筛选会**筛出空集**，下面的 not in 就恒真了。
+    assert len(pipeline_cols) == 3, \
+        f"权重常量 3.28 与 pages_console 对不上了: {sorted(c.proto.weight for c in at.get('column'))}"
     inside = {k for c in pipeline_cols for k in _keys_under(c)}
     assert "start_backtest" not in inside, f"回测被摆进流水线的列里了: {sorted(inside)}"
     assert at.button("start_backtest"), "回测卡片整个不见了"

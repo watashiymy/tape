@@ -93,7 +93,7 @@ class ScanMeta:
 
     @property
     def judged(self) -> int:
-        """真正进了策略判定的只数 = 尝试数 − 取数失败数。
+        """完成了判定的只数 = 尝试数 − 取数失败数（与 run_market_scan 那道就绪闸门同一口径）。
 
         `scanned` 是尝试数：run_market_scan.py 写 meta 时传的是 total，而同一个文件
         两行之外给就绪闸门传的正是 `total - len(failures)`。徽标与 tooltip 一律以
@@ -232,7 +232,10 @@ def scope_badge(meta: ScanMeta | None) -> tuple[str, str]:
                f"{meta.scanned} 只；结论不代表全市场。全量结果另存一份，不会被它覆盖")
     if meta.failed:
         text += f"（{meta.failed} 只取数失败）"
-        tip += (f"；其中 {meta.failed} 只取数失败、没有进入策略判定。"
-                f"真正有结论的是 {meta.judged} 只——失败的票不等于没信号，"
-                f"重跑一次即可补上")
+        # 措辞刻意不写"真正有结论的是 N 只"：judged 里还含着因流动性/ST/历史不足
+        # 被**主动筛掉**的那些（它们走完了判定链，只是没进策略），把它们说成
+        # "有结论"是往另一个方向夸大。这里只说"走完判定"，并点明它含哪些。
+        tip += (f"；其中 {meta.failed} 只取数失败、连判定都没走到。"
+                f"走完判定的是 {meta.judged} 只（含被流动性/ST/历史不足筛掉的）"
+                f"——失败的票不等于没信号，重跑一次即可补上")
     return text, tip

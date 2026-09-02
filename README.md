@@ -24,11 +24,13 @@ python3 -m venv .venv
 
 ```bash
 .venv/bin/python -m pytest
-# 期望：1801 passed, 1 skipped, 3 deselected
+# 期望：全部通过；末行还会带 1 skipped 与 3 deselected（原因见下）
 .venv/bin/python -m pytest -m network   # 想跑联网集成测试时用这个
 ```
 
-那 3 项 deselected 是需要联网的 baostock 集成测试；**1 项 skipped 是正常的**——它检查「本机那份交易日志还读得动」，而新克隆本来就没有日志（`journal/trades.csv` 是用户数据、不进版本控制）。本机记过账之后它会变成 1802 passed。
+那 3 项 deselected 是需要联网的 baostock 集成测试；**1 项 skipped 是正常的**——它检查「本机那份交易日志还读得动」，而新克隆本来就没有日志（`journal/trades.csv` 是用户数据、不进版本控制）。本机记过账之后这一项就不再跳过。
+
+这里刻意**不写具体条数**：每加一条用例它就过期一次，而它没有任何对账对象（不像 §2 那些实测结论有 `tests/test_guide.py` 逐字盯着）。`tests/test_packaging.py` 会拦住任何想把数字写回来的改动。
 
 **所有命令都要在项目根目录执行**——脚本里的 `data/cache`、`output/`、`config/settings.yaml` 都是相对路径。
 
@@ -305,7 +307,7 @@ v0.5.0 起它拆成四页（一屏可见的文字量从 9598 字降到约 2000�
 
 **小节清单以面板为准**（`app/guide.py` 的 `SECTIONS` 与 `GUIDE_PAGES`）：这里不再抄一份目录——副本必然过期，而上一版就正好过期在最要紧的地方（写着"八节"实为十节、"两个策略"实为三个）。
 
-**就地帮助**（不跳页也能看懂，散在其余四页里）：
+**就地帮助**（不跳页也能看懂，散在手册之外的各功能页里）：
 
 - 控制台每张任务卡片右上角一个 `?`，点开是"这个任务做什么、大概多久、参数含义、产物在哪"；
 - 参数控件都挂了 tooltip（例如 `--limit`："留空 = 全量"、上限 10000）；

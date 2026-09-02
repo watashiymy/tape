@@ -218,6 +218,36 @@ def test_scan_section_ranks_volume_ratio_above_pct_chg():
 EXPECTED_SECTIONS = ("tasks", "workflow", "scan", "metrics", "strategies",
                      "custom", "limits", "userdata", "safety", "cli")
 
+# 分页表来自 v0.5.0 设计 §5（哪一页装哪几节）。**必须单独钉一张字面量表**：
+# 把某一节挪到相邻页时全局顺序不变，import 期的并集校验与 test_dashboard_guide
+# 里那个 zip 都察觉不到——只有这张表能。分页依据是引用关系不是字数：
+# strategies 引用 metrics 的归因表，拆开就成断链。
+EXPECTED_PAGE_SECTIONS = {
+    "guide": ("tasks", "workflow", "scan"),
+    "guide_metrics": ("metrics", "strategies"),
+    "guide_custom": ("custom",),
+    "guide_limits": ("limits", "userdata", "safety", "cli"),
+}
+
+
+def test_the_guide_pages_carry_exactly_the_designed_sections():
+    assert {p.key: p.section_keys for p in guide.GUIDE_PAGES} == EXPECTED_PAGE_SECTIONS
+
+
+def test_the_landing_page_is_the_first_one_and_keeps_the_old_url():
+    """落地页必须排第一（dashboard.py 按 enumerate 的 0 号给 default=True），
+    且 url_path 仍是 guide——老书签与 README 里到处写的那个名字。"""
+    first = guide.GUIDE_PAGES[0]
+    assert first.key == "guide" and first.url_path == "guide"
+
+
+def test_only_the_page_holding_the_safety_section_carries_the_warning():
+    """全手册恰好一节 emphasis，它必须落在某一页上（不能被分页漏掉）。"""
+    emphasized = [s.key for s in guide.SECTIONS if s.emphasis]
+    assert emphasized == ["safety"]
+    owner = [p.key for p in guide.GUIDE_PAGES if "safety" in p.section_keys]
+    assert owner == ["guide_limits"], owner
+
 
 def test_the_sections_of_the_spec_are_all_there_in_order():
     """§3.1 定的八节，顺序是设计过的（先讲是什么，再讲怎么读，最后安全与命令行）。

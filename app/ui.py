@@ -141,7 +141,9 @@ def page_head(page: str) -> None:
 
 
 def metric_grid(metrics: dict, per_row: int = 4) -> None:
-    """指标卡网格。默认 2 行 × 4 列（§2.4）；控制台卡片只有三分之一宽，传 per_row=2。
+    """指标卡网格。默认 2 行 × 4 列（§2.4）。
+
+    `per_row` 留着给窄容器用；v0.5.0 起控制台的回测卡片整幅宽渲染，不再传 2。
 
     老写法 `st.columns(4)` 配 `cols[i % 4]` 是**一行 4 列、每列纵向摞两张**：
     右半边版面空着，两排数字还错位。这里按行现开列。

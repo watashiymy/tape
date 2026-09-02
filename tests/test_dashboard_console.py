@@ -116,6 +116,7 @@ def test_empty_state_when_nothing_ever_ran(tmp_path):
     assert [h for h in plain if "每日流水线" in h], plain
     assert [h for h in plain if "研究工具" in h], plain
     assert [h for h in plain if "加进信号池" in h and "人工步骤" in h], plain
+    assert len(plain) == 3, plain     # 两个区标题 + 一张人工卡片，设计 §6 定死
 
 
 def test_console_page_starts_no_process(tmp_path, monkeypatch):
@@ -593,3 +594,29 @@ def test_all_pages_still_render(tmp_path, page):
     dashboard = copy_app(tmp_path)
     at = goto_page(AppTest.from_file(str(dashboard), default_timeout=30).run(), page)
     assert not at.exception, f"页面 {page} 抛异常: {at.exception}"
+
+
+def test_a_corrupt_scan_meta_does_not_take_the_whole_page_down(tmp_path):
+    """**v0.5.0 回归**：一份损坏的 output/scan/*.meta.json 曾让整个控制台页阵亡。
+
+    机制：M5 新加的就绪状态行调 steps.scan_status → scan_meta.load_meta，而后者对
+    损坏文件是**响亮抛错**（数据层的设计，不改）。那次调用落在卡片的 try 之外，
+    异常从 fragment 冒到 exec_code 会让整页**提前中止**——第一张卡片之后的一切都不
+    渲染，包括正在跑的那趟全量扫描的 ⏹ 停止 按钮。实测按钮数从 9 掉到 0。
+
+    修法与 app/ui.scan_scope_pill 同口径：如实把错误说出来，但不把页面打没。
+    「今日信号」页在同一份坏文件下一直是这么做的，两页从此一致。
+    """
+    scan = tmp_path / "output" / "scan"
+    scan.mkdir(parents=True)
+    (scan / "2026-09-01.csv").write_text("date,symbol\n", encoding="utf-8")
+    (scan / "2026-09-01.meta.json").write_text("{ broken json", encoding="utf-8")
+
+    at = _console(tmp_path)
+
+    assert not at.exception, at.exception
+    for name in jobs.JOBS:                      # 三个任务的按钮一个都不能少
+        assert at.button(f"start_{name}"), f"{name} 的开始按钮不见了"
+        assert at.button(f"stop_{name}"), f"{name} 的停止按钮不见了"
+    warnings = [w.value for w in at.main.warning]
+    assert any("损坏" in w for w in warnings), f"没有如实说文件坏了：{warnings}"

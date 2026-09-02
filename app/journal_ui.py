@@ -452,8 +452,7 @@ def blocking_rows(rows: pd.DataFrame, *, today: date) -> list[str]:
     return out
 
 
-def save_edits(edited: pd.DataFrame, *, trades: pd.DataFrame, path: str | Path,
-               today: date) -> bool:
+def save_edits(edited: pd.DataFrame, *, path: str | Path, today: date) -> bool:
     """把编辑区的改动与删除写回日志。返回"写进去了没有"。
 
     先校验再落盘：编辑器里把股数清空是一秒钟的事，而落盘之后 FIFO 会静默少算一笔。

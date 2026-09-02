@@ -137,8 +137,16 @@ def _render_card(job_name: str) -> str | None:
     # 就绪状态紧跟标题（v0.5.0）：摆在标题**上面**的话，三列的状态行长短不一，
     # 三张卡片的标题就会各在一个高度上（实测 490 / 429 / 467 px），中间的箭头
     # 轨也就没有一条可对齐的基线。
-    if (status := _step_status(job_name)) is not None:
-        st.caption(status.text)
+    #
+    # **必须接住 RuntimeError**：scan_status 会读扫描的 meta，而 load_meta 对损坏
+    # 文件是响亮抛错（那是数据层的设计，不改）。这里不接的话，异常从 fragment 冒到
+    # exec_code 会让整页**提前中止**——第一张卡片之后的一切都不再渲染，包括正在跑的
+    # 那趟全量扫描的 ⏹ 停止 按钮。口径照抄 ui.scan_scope_pill：如实说，但别把页面打没。
+    try:
+        if (status := _step_status(job_name)) is not None:
+            st.caption(status.text)
+    except RuntimeError as e:
+        st.warning(str(e))
     params = _param_widgets(job)
     disabled, notice = view.start_button_state(busy, job_name)
     running = state is not None and state.status == process.RUNNING

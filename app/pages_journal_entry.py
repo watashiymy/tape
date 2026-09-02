@@ -270,8 +270,9 @@ def _editor(trades, filtered) -> None:
                             disabled=["trade_id"])
     row = st.columns([1, 4], vertical_alignment="center")
     if row[0].button("✔ 保存修改", key=journal_ui.SAVE_KEY):
-        journal_ui.save_edits(edited, trades=trades, path=ui.JOURNAL_PATH,
-                              today=date.today())
+        # 不再传 trades：v0.5.0 起 save_edits 在锁里重新读整本日志，
+        # 拿这一轮渲染时的旧快照整表重写会抹掉另一个标签页刚记的那一笔。
+        journal_ui.save_edits(edited, path=ui.JOURNAL_PATH, today=date.today())
         st.rerun()
     row[1].caption(guide.JOURNAL_EDIT_HINT)
 

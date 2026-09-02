@@ -23,6 +23,26 @@ sys.path.insert(0, str(ROOT / "src"))
 from quant import filelock            # noqa: E402
 from quant.journal import store       # noqa: E402
 
+
+def _load_pool():
+    """单独加载 app/pool.py（同 tests/test_dashboard_universe.py 的做法）。
+    pool.py 刻意不 import 任何 app 内部模块，所以能这么直接加载。"""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("qd_pool_conc", ROOT / "app" / "pool.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["qd_pool_conc"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_pool = _load_pool()
+
+
+def _seed_universe(settings_path) -> tuple[str, ...]:
+    """settings.yaml 里那份种子池（本地覆盖文件还不存在时生效的那批）。"""
+    import yaml
+    return tuple(yaml.safe_load(Path(settings_path).read_text(encoding="utf-8"))["universe"])
+
 WORKERS = 8
 
 
@@ -90,7 +110,8 @@ def test_the_unlocked_version_really_does_lose_trades(tmp_path):
         merged = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
         store.save_trades(merged, path)          # 写（中间没有互斥）
 
-    _run_together(unlocked_append)
+    assert _run_together(unlocked_append) == [], \
+        "线程里抛了异常——那不叫'丢单'，这条对照当场失去意义"
     assert len(store.load_trades(path)) < WORKERS + 1, \
         "没加锁却一笔没丢——并发没真正发生，上面那条测试是空跑"
 
@@ -129,26 +150,32 @@ def test_edits_inside_the_lock_see_the_freshest_table(tmp_path):
 
 def test_concurrent_pool_adds_keep_every_symbol(tmp_path):
     """八个标签页同时点「＋ 加入」，八只都得进池子。
-    少一只的后果不是少个名字——是**没有人管它的卖出信号**。"""
-    from quant.config import load_local_universe, local_universe_path
-    from quant.config_edit import write_local_universe
+    少一只的后果不是少个名字——是**没有人管它的卖出信号**。
+
+    这里调**真的 `pool.add`**，不复刻它的形状：复刻出来的闭包只能证明"我写的这段
+    加锁逻辑是对的"，证明不了产品里那段加了锁——那正是这条测试要守的东西。
+    """
+    from quant.config import load_local_universe
 
     # 真配置的副本：write_local_universe 写完会 load_settings 复核，玩具 YAML 过不了
     settings = tmp_path / "settings.yaml"
     settings.write_text(REAL_CONFIG.read_text(encoding="utf-8"), encoding="utf-8")
 
-    pool = ["600036", "601318", "600900", "000333", "600030", "600276", "601088", "600887"]
-    lock_target = local_universe_path(settings)
+    # 必须挑**种子池之外**的代码：pool.add 对已在池中的标的直接短路不写文件，
+    # 拿池内的票来测等于八个线程什么都没做，测试会假绿。
+    seed = set(load_local_universe(settings) or ()) | set(_seed_universe(settings))
+    picks = [s for s in ("600009", "600028", "600050", "600104", "600585",
+                         "600690", "601006", "601111", "601857", "601988")
+             if s not in seed][:8]
+    assert len(picks) == 8, f"备选里可用的不足 8 只：{picks}"
+    allowed = frozenset({*seed, *picks})         # 扫描池白名单：这批都算合法
 
-    def add(i: int) -> None:
-        with filelock.locked(lock_target):       # app/pool.add 的形状
-            existing = load_local_universe(settings) or ("600519",)
-            write_local_universe(settings, [*existing, pool[i]])
-
-    assert _run_together(add, len(pool)) == []
+    assert _run_together(lambda i: _pool.add(picks[i], config_path=settings,
+                                             allowed=allowed), len(picks)) == []
 
     got = set(load_local_universe(settings) or ())
-    assert got == {"600519", *pool}, f"丢了 {sorted({'600519', *pool} - got)}"
+    assert set(picks) <= got, f"丢了 {sorted(set(picks) - got)}"
+    assert seed <= got, "原有的池子成员被冲掉了"
 
 
 @pytest.mark.parametrize("fn", [filelock.lock_path, store.lock_path])

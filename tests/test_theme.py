@@ -338,3 +338,33 @@ def test_html_builders_never_emit_streamlit_internals():
     for html in blobs:
         for banned in ("st-emotion", "data-testid", "emotion-cache"):
             assert banned not in html
+
+
+def test_config_toml_pins_the_v050_security_defaults():
+    """v0.5.0 把两条**安全/隐私默认**写进了 config.toml，README §3 据此宣称
+    「本仓库把安全绑定变成了默认值」。删掉它们，README 当场变成假话——
+    而这是全项目唯一一条"说错了就是安全问题"的文档。
+
+    实测依据：不带 --server.address 启动时监听项从 *:8501 变成 127.0.0.1，
+    启动日志里的 Network URL / External URL 两行随之消失。
+    """
+    cfg = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
+    assert cfg.get("server", {}).get("address") == "127.0.0.1", \
+        "回环绑定的默认值没了——面板能执行本机命令，少这一条就是全网卡监听"
+    assert cfg.get("browser", {}).get("gatherUsageStats") is False, \
+        "使用统计上报又打开了——这台机器上同时存着用户的真实成交记录"
+
+
+def test_manual_tag_escapes_its_text():
+    """它的输出直接喂给 section() 的原始 HTML 通道，这里不转义就没人转义了。
+    st.html 不套 iframe，一个未转义的 < 就能把版面撕开。"""
+    assert "<img" not in theme.manual_tag('<img src=x onerror=alert(1)>')
+    assert "&lt;img" in theme.manual_tag('<img src=x onerror=alert(1)>')
+
+
+def test_rail_is_a_bare_container_with_the_arrow_in_css():
+    """箭头字形放在 CSS 的 ::after 里，不写死在 HTML 里——窄屏媒体查询要把它从
+    → 换成 ↓（streamlit 窄屏会把列竖着堆起来，那时横箭头是错的）。"""
+    assert theme.rail() == '<div class="qd-rail"></div>'
+    assert ".qd-rail::after" in theme.CSS and '"→"' in theme.CSS
+    assert '"↓"' in theme.CSS, "窄屏没有换成下箭头"

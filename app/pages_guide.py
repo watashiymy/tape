@@ -46,8 +46,8 @@ def _contents() -> None:
     （tests/test_dashboard_guide.py 钉着——一个"读文档"的页面上出现按钮，
     在这个面板里意味着"会起进程"）。page_link 只是导航，不触发任何任务。
     """
-    st.html(theme.section("手册还有三页"))
-    st.caption("日常操作只需要上面那些。下面三页是「读一次就放着」的参考。")
+    st.html(theme.section("手册还有这几页"))
+    st.caption("日常操作只需要上面那些。下面几页是「读一次就放着」的参考。")
     for page in guide.GUIDE_PAGES[1:]:
         st.page_link(ui.page_ref(page.key), label=page.title, icon=page.icon,
                      help=page.lead)
