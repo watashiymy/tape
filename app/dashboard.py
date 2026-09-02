@@ -37,9 +37,9 @@ import guide       # noqa: E402  说明页与就地帮助的全部文案（app/g
 import journal_ui  # noqa: E402  日志页的编排层（这里只用它那个跳页钩子）
 import theme       # noqa: E402  视觉基座（app/theme.py）
 import ui          # noqa: E402  共享件：页头 / 表格 / 控制条 / 路径（app/ui.py）
+import pages_guide  # noqa: E402  说明手册四页的渲染函数（RENDERERS 按页 key 取）
 from pages_backtest import page_backtest, page_kline        # noqa: E402
 from pages_console import page_console                      # noqa: E402
-from pages_guide import page_guide                          # noqa: E402
 from pages_journal_entry import page_journal_entry          # noqa: E402
 from pages_journal_report import page_journal_report        # noqa: E402
 from pages_signals import page_signals                      # noqa: E402
@@ -79,23 +79,37 @@ st.logo(theme.BRAND_LOGO, size=theme.BRAND_LOGO_SIZE)
 # （函数页没有文件路径可给），而按下标从组里取第几个日后一定会错位。
 ENTRY_PAGE = st.Page(page_journal_entry, title="记账", icon=":material/edit_note:",
                      url_path="journal")
+# 说明手册四页（v0.5.0）：第一页留在主组当落地页，另外三页单独成「手册」组。
+# 从 guide.GUIDE_PAGES 循环建，标题/图标/url_path 只有那一份定义
+# ——两处各写一遍迟早有一处悄悄过期。
+GUIDE_PAGE_OBJS = {
+    p.key: st.Page(pages_guide.RENDERERS[p.key], title=p.title, icon=p.icon,
+                   url_path=p.url_path, default=(i == 0))
+    for i, p in enumerate(guide.GUIDE_PAGES)
+}
+# 控制台的流水线区要用 st.page_link 指向这两页，所以它们得有名字（同 ENTRY_PAGE
+# 的既有理由：按下标从组里取「第几个」，插一页就全体错位且不报错）。
+SIGNALS_PAGE = st.Page(page_signals, title="今日信号",
+                       icon=":material/notifications:", url_path="signals")
+UNIVERSE_PAGE = st.Page(page_universe, title="信号池", icon=":material/list:",
+                        url_path="universe")
 PAGES = {
     "": [
-        st.Page(page_guide, title="使用说明", icon=":material/menu_book:",
-                url_path="guide", default=True),
+        GUIDE_PAGE_OBJS["guide"],
         st.Page(page_console, title="任务控制台", icon=":material/play_circle:",
                 url_path="console"),
-        st.Page(page_signals, title="今日信号", icon=":material/notifications:",
-                url_path="signals"),
+        SIGNALS_PAGE,
     ],
+    # 组名刻意不叫「使用说明」：侧栏里会出现两处同名（组头 + 主组第一项），
+    # 读起来像两个不相干的东西。位置紧跟主组——它是侧栏第一项的续页，挨着才读得通。
+    "手册": list(GUIDE_PAGE_OBJS.values())[1:],
     "交易日志": [
         ENTRY_PAGE,
         st.Page(page_journal_report, title="持仓与盈亏",
                 icon=":material/account_balance_wallet:", url_path="positions"),
     ],
     "研究": [
-        st.Page(page_universe, title="信号池", icon=":material/list:",
-                url_path="universe"),
+        UNIVERSE_PAGE,
         st.Page(page_backtest, title="回测报告", icon=":material/assessment:",
                 url_path="backtest"),
         st.Page(page_kline, title="个股K线", icon=":material/candlestick_chart:",
@@ -124,5 +138,12 @@ st.sidebar.caption("策略仅用于学习，不构成投资建议。")
 # 必须排在 st.navigation **之后**：st.switch_page 只认已注册的页，而注册就发生在
 # st.navigation 里；也不能放进按钮回调——那时脚本还没重跑，页面也还没注册。
 nav = st.navigation(PAGES)
+# 登记页对象，供 st.page_link 使用（说明落地页的目录、控制台第二步的两个跳转）。
+# 必须在 st.navigation **之后**：链接只能指向已注册的页。
+# 只登记**显式命名**的那几页，不去遍历 PAGES 读 p.url_path：真 st.Page 在 bare
+# 模式（没有 ScriptRunContext）下 __init__ 提前 return，连 _url_path 都没设，
+# 读它会 AttributeError —— 而 bare 模式正是几条 exec 探针测试跑的模式。
+ui.bind_pages({**GUIDE_PAGE_OBJS, "journal": ENTRY_PAGE,
+               "signals": SIGNALS_PAGE, "universe": UNIVERSE_PAGE})
 journal_ui.jump_if_requested(ENTRY_PAGE)
 nav.run()

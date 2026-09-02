@@ -46,6 +46,10 @@ def copy_app(tmp_path: Path) -> Path:
 # 「记账」沿用老的 journal 路径——一键记账跳的就是它，老书签也不断。
 PAGE_URL_PATHS = {
     "使用说明": "guide",
+    # 说明手册拆出来的三个子页（v0.5.0）
+    "读懂回测": "guide-metrics",
+    "自定义策略": "guide-custom",
+    "边界与安全": "guide-limits",
     "任务控制台": "console",
     "今日信号": "signals",
     "记账": "journal",

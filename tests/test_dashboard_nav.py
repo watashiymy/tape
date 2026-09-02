@@ -41,11 +41,21 @@ _SPEC.loader.exec_module(theme)
 # - 「记账」沿用老的 journal 路径（一键记账跳的就是它，老书签也不断）；
 #   「持仓与盈亏」用新的 positions。
 # - 「任务控制台」仍第二位；「使用说明」仍默认落地页。
+#
+# v0.5.0：说明页拆成四页。第一页留在主组、位置与默认落地页身份都不变
+# （侧栏第一项、任务控制台仍是扁平第 2 项）；另外三页单独成「手册」组，
+# 紧跟主组之后——它们是侧栏第一项的续页，挨着才读得通。
+# 组名刻意不叫「使用说明」：那样侧栏里会出现两处同名，读起来像两个不相干的东西。
 EXPECTED_GROUPS = {
     "": [
         ("使用说明", ":material/menu_book:", "guide"),
         ("任务控制台", ":material/play_circle:", "console"),
         ("今日信号", ":material/notifications:", "signals"),
+    ],
+    "手册": [
+        ("读懂回测", ":material/insights:", "guide-metrics"),
+        ("自定义策略", ":material/code:", "guide-custom"),
+        ("边界与安全", ":material/shield:", "guide-limits"),
     ],
     "交易日志": [
         ("记账", ":material/edit_note:", "journal"),

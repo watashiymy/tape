@@ -54,6 +54,29 @@ def bind(root: Path) -> None:
     JOURNAL_PATH = root / store.TRADES_PATH
 
 
+#: 页对象登记表（v0.5.0）：{页 key: st.Page}。`st.page_link` 与 `st.switch_page`
+#: 收的都是 **Page 对象**，而页面函数没有文件路径可给。按下标从导航分组里取
+#: 「第几个」是行不通的——插一页就全体错位，而且错位之后链接照常渲染、
+#: 点下去跳到另一页，没有任何报错。所以由 dashboard.py 建完 Page 就登记进来。
+_PAGES: dict[str, object] = {}
+
+
+def bind_pages(pages: dict) -> None:
+    """dashboard.py 建完 st.Page 之后调一次。每轮 rerun 都重建，所以整体覆盖。"""
+    _PAGES.clear()
+    _PAGES.update(pages)
+
+
+def page_ref(key: str):
+    """按 key 取 Page 对象。未登记时**响亮失败**而不是返回 None：
+    `st.page_link(None)` 会渲染出一个点了没反应的链接，谁也不会报上来。"""
+    if key not in _PAGES:
+        raise KeyError(
+            f"页 {key!r} 还没登记（已登记：{sorted(_PAGES)}）。"
+            f"dashboard.py 建完 st.Page 之后必须调 ui.bind_pages()。")
+    return _PAGES[key]
+
+
 AUTO_REFRESH_S = "2s"     # 运行中卡片的局部刷新间隔（空闲时不设，避免面板空转）
 LOG_TAIL_LINES = 30
 LOG_BOX_HEIGHT = 220      # 日志区固定高度滚动（§2.4）：几十行日志不许把版面顶飞
@@ -65,8 +88,15 @@ NAME_LOOKBACK_FILES = 30
 # 数字必须与实测一致（baostock 约 17:30 后才有当日数据 —— README/spec §11）。
 # 键就是页名（page_head 按页名取值），顺序与 dashboard.py 的 PAGES 一致；
 # 少一页会让那一页的页头 KeyError 崩页（tests/test_dashboard_nav.py 钉住两边一致）。
+# 说明手册那四页（v0.5.0）的键必须逐个**字面量**写出来，不许改写成
+# `**{p.title: p.lead for p in guide.GUIDE_PAGES}`：tests/test_dashboard_guide.py
+# 按 AST 读这个字典的键（`k.value`），推导式里的键在 AST 里是 None，那条测试会
+# 以 AttributeError 炸掉——而它守的正是"每页都有页头文案"这件事。
 PAGE_INTRO = {
     "使用说明": guide.PAGE_INTRO,
+    "读懂回测": guide.guide_page("guide_metrics").lead,
+    "自定义策略": guide.guide_page("guide_custom").lead,
+    "边界与安全": guide.guide_page("guide_limits").lead,
     "任务控制台": "在本机启动三个任务并盯进度、日志与结果；"
              "同时只允许一个任务（baostock 单会话）。",
     "今日信号": "固定池的每日买卖信号，页尾是全市场扫描当日新 BUY；"

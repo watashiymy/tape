@@ -453,6 +453,77 @@ def section(key: str) -> Section:
     return _BY_KEY[key]
 
 
+# ---------------------------------------------------------------- 说明分成四页（v0.5.0 §5）
+#
+# 十节 10931 字堆在一页，实测渲染出 9598 字——是第二重那一页（控制台 4059）的 2.4 倍，
+# 全站三分之二的文字压在同一屏。按**读者是谁**拆成四页：日常操作的人只需要第一页，
+# 另外三页是"读一次就放着"的参考。
+#
+# 拆的是**呈现**，不是内容：SECTIONS 一个字不改、一节不重排（它的键与顺序被
+# tests/test_guide.py 逐字钉着，Section.key 还是全项目定位一节的手段）。
+# 这里只在其上加一层索引。
+
+@dataclass(frozen=True)
+class GuidePage:
+    """说明手册的一页。
+
+    `section_keys` 里的键拼错 = import 期 KeyError（见 _PAGE_SECTIONS），
+    响亮失败而不是在页面上少渲染一节——后者没人看得出来。
+    `lead` 是目录里那行副标题，回答"我什么时候需要点进去"。
+    """
+    key: str
+    title: str
+    url_path: str
+    icon: str
+    lead: str
+    section_keys: tuple[str, ...]
+
+
+GUIDE_PAGES: tuple[GuidePage, ...] = (
+    GuidePage("guide", "使用说明", "guide", ":material/menu_book:",
+              "三个任务怎么配合、扫描结果怎么读——日常只需要这一页",
+              ("tasks", "workflow", "scan")),
+    # metrics 与 strategies 必须同页：strategies 一节直接引用前者的归因表
+    GuidePage("guide_metrics", "读懂回测", "guide-metrics", ":material/insights:",
+              "指标各是什么意思，以及本项目跑出来的实测结论（含跑输躺平那件事）",
+              ("metrics", "strategies")),
+    GuidePage("guide_custom", "自定义策略", "guide-custom", ":material/code:",
+              "把自己的想法接进来：模板、注册两步、三条不报错的坑",
+              ("custom",)),
+    # limits 末句「完整清单见 README」与安全提示、数据归属、命令行同属"读一次就放着"
+    GuidePage("guide_limits", "边界与安全", "guide-limits", ":material/shield:",
+              "已知局限、你的数据在哪、安全提示、命令行等价用法",
+              ("limits", "userdata", "safety", "cli")),
+)
+
+#: {页 key: 该页要渲染的 Section 元组}。在 import 期就把键解析成对象——
+#: 拼错的键当场 KeyError，而不是等到用户点开那一页才发现少了一节。
+_PAGE_SECTIONS: dict[str, tuple[Section, ...]] = {
+    p.key: tuple(_BY_KEY[k] for k in p.section_keys) for p in GUIDE_PAGES
+}
+
+# 分页必须**不重不漏**地盖住 SECTIONS。这条在 import 期就查：漏一节意味着某段正文
+# 从面板上彻底消失，而页面照常渲染、没有任何报错——正是本项目一路在防的静默失败。
+_paged = [k for p in GUIDE_PAGES for k in p.section_keys]
+if sorted(_paged) != sorted(s.key for s in SECTIONS):
+    raise RuntimeError(
+        f"GUIDE_PAGES 没有不重不漏地盖住 SECTIONS：分页 {sorted(_paged)}，"
+        f"实际 {sorted(s.key for s in SECTIONS)}")
+del _paged
+
+_BY_PAGE_KEY = {p.key: p for p in GUIDE_PAGES}
+
+
+def guide_page(key: str) -> GuidePage:
+    """按 key 取说明手册的一页。拼错同样 KeyError 响亮失败。"""
+    return _BY_PAGE_KEY[key]
+
+
+def page_sections(key: str) -> tuple[Section, ...]:
+    """某一页要渲染的那几节，顺序与 SECTIONS 里一致。"""
+    return _PAGE_SECTIONS[key]
+
+
 # ---------------------------------------------------------------- 就地帮助（§3.2）
 
 # 任务卡片右上角 st.popover("?") 的内容：这个任务做什么、大概多久、产物在哪。
