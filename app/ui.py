@@ -28,6 +28,7 @@ import theme
 from quant.data import symbols
 from quant.journal import store
 from quant.report import fmt
+from quant.strategy import strategy_label
 from quant.runner import jobs, process, view
 from quant.signal import scan_meta
 
@@ -388,3 +389,50 @@ def control_bar(*job_names: str) -> None:
         st.caption(text)
     st.caption(CONSOLE_HINT)
     st.divider()
+
+
+#: 「回测报告」页那张总览表的列。**「标的数」不能省**：output/ 里有两次同一天、
+#: 开关完全一样、总收益 113% vs 8.6% 的跑，看着像 bug——真实差别是"7 只信号池"
+#: 与"10 只基准池"。没有这一列，那两行在表里长得一模一样。
+_OVERVIEW_COLUMNS = ("策略", "跑的时间", "标的数", "趋势过滤", "ATR止损",
+                     "总收益", "最大回撤", "夏普", "交易次数")
+
+
+def runs_overview(runs: list[Path]) -> pd.DataFrame:
+    """把 output/ 里每次回测折成一行，供「回测报告」页在下拉框上方铺开。
+
+    为什么需要它：本机已经攒了 58 次回测，下拉框里的标签只有「策略显示名 + 时间戳」
+    ——同一分钟里能挤着四个，认不出哪次是哪次。而**认不出的恰好是最要紧的那几次**：
+    README 那张叠加层归因表的四组对照（无叠加层 / 只开趋势过滤 / 只开止损 / 双开）
+    就是同一天连着跑的，唯一的区别在 config_snapshot 里，下拉框上一个字都看不到。
+
+    缺键一律显示 `—`，**不猜**：v0.5.0 之前的产物（本机 43/58）没有 overlays 段，
+    那两列就该是 `—`，填 False 等于替它编一个"当时关着"的事实。
+    """
+    rows = []
+    for run in runs:
+        row = dict.fromkeys(_OVERVIEW_COLUMNS, fmt.MISSING)
+        m = RUN_STAMP.search(run.name)
+        row["策略"] = strategy_label(run.name[:m.start()]) if m else run.name
+        row["跑的时间"] = fmt.run_stamp_label(m.group(1)) if m else fmt.MISSING
+        try:
+            metrics = json.loads((run / "metrics.json").read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            metrics = {}
+        for col, key in (("总收益", "total_return"), ("最大回撤", "max_drawdown"),
+                         ("夏普", "sharpe"), ("交易次数", "n_trades")):
+            if key in metrics:
+                row[col] = fmt.fmt_metric(key, metrics[key])
+        try:
+            snap = json.loads((run / "config_snapshot.json").read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            snap = {}
+        if snap.get("universe"):
+            row["标的数"] = len(snap["universe"])
+        overlays = snap.get("overlays") or {}
+        for col, key in (("趋势过滤", "trend_filter"), ("ATR止损", "atr_stop")):
+            cfg = overlays.get(key)
+            if isinstance(cfg, dict) and "enabled" in cfg:
+                row[col] = "开" if cfg["enabled"] else "关"
+        rows.append(row)
+    return pd.DataFrame(rows, columns=list(_OVERVIEW_COLUMNS))

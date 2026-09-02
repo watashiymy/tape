@@ -88,7 +88,10 @@ def test_backtest_page_keeps_leading_zero_symbols(tmp_path, monkeypatch):
 
     _, frames = _load_dashboard(tmp_path, monkeypatch, "回测报告")
 
-    assert [f["symbol"].tolist() for f in frames] == [["000333"], ["000001"]]
+    # v0.5.0 起页面**第一张**表是「全部 N 次回测一览」（帮人从 58 次里认出哪次是哪次），
+    # 它没有 symbol 列。这里要的是成交明细与被跳过表，所以按列筛而不是按下标取。
+    withsym = [f for f in frames if "symbol" in f.columns]
+    assert [f["symbol"].tolist() for f in withsym] == [["000333"], ["000001"]]
 
 
 def test_signal_page_keeps_leading_zero_symbols(tmp_path, monkeypatch):
@@ -199,7 +202,7 @@ def test_run_selector_displays_the_strategy_label_not_the_key(tmp_path, page):
     at = _at_page(tmp_path, page)
     assert not at.exception, at.exception
     box = at.selectbox[0]
-    assert box.options == ["双均线交叉 20260817_121152"], box.options
+    assert box.options == ["双均线交叉 2026-08-17 12:11"], box.options
     assert box.value.name == "ma_cross_20260817_121152", "底层值仍指向原目录"
 
 

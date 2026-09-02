@@ -50,7 +50,12 @@ SYMBOLS_PATH = symbols.SYMBOLS_PATH     # 全市场清单的落点（测试注�
 CSV_COLUMNS = ["date", "symbol", "name", "strategy", "close", "pct_chg",
                "amount", "amount_ratio_20d"]
 SKIP_KEYS = ("stale", "insufficient_history", "is_st", "low_liquidity", "no_signal")
-PROGRESS_EVERY = 100
+# 每多少只打一行进度。25 而不是 100：实测 0.305 秒/只，100 只 ≈ 30 秒一格
+# （最大实测间隔 43 秒），而面板每 2 秒重画一次卡片——14 次刷新里 13 次看到的是
+# 上一次的数字。25 只 ≈ 7.6 秒一格，全程约 120 行、日志从 4.3 KB 涨到约 13 KB，
+# LOG_TAIL_LINES=30 的滚动框吃得下。
+# 它同时是"就绪闸门前缀版"的判定点（见循环里那处）：约 10 秒就能判出数据未就绪。
+PROGRESS_EVERY = 25
 
 
 def require_strategies(strategy_cfg: dict[str, dict]) -> list:

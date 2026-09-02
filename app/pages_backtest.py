@@ -28,7 +28,15 @@ def page_backtest() -> None:
     if not runs:
         st.info(guide.EMPTY_STATES["backtest"])
         return
-    # 显示「策略显示名 时间戳」，底层值仍是产物目录（目录名存键，是数据不是界面）
+    # 下拉框里 58 次跑只有「策略显示名 + 时间」可比，同一分钟能挤着四个——而认不出的
+    # 恰好是最要紧的那几次（README 那张叠加层归因表的四组对照就是同一天连着跑的，
+    # 区别只在 config_snapshot 里）。所以先铺一张总览表，再选。
+    with st.expander(f"全部 {len(runs)} 次回测一览", expanded=False):
+        ui.data_table(ui.runs_overview(runs), {}, "无",
+                      hint="叠加层两列为 — 的是 v0.5.0 之前的产物（那时还没有这个配置段），"
+                           "不是「当时关着」。「标的数」不同就不是同一个池子，收益不可直接比。",
+                      height=ui.SCAN_TABLE_HEIGHT)
+    # 显示「策略显示名 时间」，底层值仍是产物目录（目录名存键，是数据不是界面）
     run = st.selectbox("选择回测", runs, format_func=lambda p: fmt.run_label(p.name))
     # 所有文件读取集中在 try 里：即便三件套都在，metrics.json 仍可能只写了一半
     # （JSONDecodeError）。JSONDecodeError / EmptyDataError 都是 ValueError 子类，

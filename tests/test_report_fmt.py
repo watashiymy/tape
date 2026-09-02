@@ -520,15 +520,27 @@ def test_skipped_reason_column_is_wide_enough_to_read():
 
 
 def test_run_label_replaces_the_strategy_key_with_its_label():
-    """回测目录名 {策略键}_{YYYYMMDD}_{HHMMSS} → 「策略显示名 时间戳」。"""
-    assert fmt.run_label("ma_cross_20260817_121152") == "双均线交叉 20260817_121152"
-    assert fmt.run_label("donchian_20260824_151600") == "唐奇安通道突破 20260824_151600"
+    """回测目录名 {策略键}_{YYYYMMDD}_{HHMMSS} → 「策略显示名 年-月-日 时:分」。
+
+    v0.5.0 起时间戳也排版（原先原样甩出 `20260817_121152`）：下拉框里 58 次跑
+    要靠眼睛逐位比那串数字，而同一分钟能挤着四次。秒不显示——同一秒起的多个策略
+    本来共用一个时间戳，区分它们靠策略名与那张总览表。
+    """
+    assert fmt.run_label("ma_cross_20260817_121152") == "双均线交叉 2026-08-17 12:11"
+    assert fmt.run_label("donchian_20260824_151600") == "唐奇安通道突破 2026-08-24 15:16"
+
+
+def test_run_stamp_label_leaves_shapes_it_does_not_recognise_alone():
+    """认不出的形状原样返回，绝不猜——手工改过名的目录真会留在 output/ 里。"""
+    assert fmt.run_stamp_label("20260817_121152") == "2026-08-17 12:11"
+    for odd in ("20260817", "2026-08-17", "abcdefgh_ijklmn", "", "20260817_12115"):
+        assert fmt.run_stamp_label(odd) == odd, odd
 
 
 def test_run_label_keeps_unknown_names_readable_and_never_raises():
     """未知策略键（已下架策略的旧产物）原样显示键；没有时间戳后缀的目录名
     （手工改过名的产物）整个原样返回——这两种目录都真会留在 output/ 里。"""
-    assert fmt.run_label("turtle_20260817_121152") == "turtle 20260817_121152"
+    assert fmt.run_label("turtle_20260817_121152") == "turtle 2026-08-17 12:11"
     assert fmt.run_label("我改过名的目录") == "我改过名的目录"
 
 

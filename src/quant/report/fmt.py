@@ -151,7 +151,23 @@ def run_label(name: str) -> str:
     m = RUN_STAMP.search(name)
     if m is None:
         return name
-    return f"{strategy_label(name[:m.start()])} {m.group(1)}"
+    return f"{strategy_label(name[:m.start()])} {run_stamp_label(m.group(1))}"
+
+
+def run_stamp_label(stamp: str) -> str:
+    """`20260901_100110` → `2026-09-01 10:01`（v0.5.0）。
+
+    目录名里那串给机器看的数字在下拉框里最难扫读——同一分钟里挤着四次跑时，
+    眼睛得逐位比 `100110` 和 `100241`。秒刻意不显示：同一秒起的两次回测本来就
+    在同一个目录名里（run_backtest.py 一次跑多个策略共用一个时间戳），
+    真正区分它们的是策略名与总览表里那几列。
+
+    认不出的形状原样返回——手工改过名的目录不猜。
+    """
+    if len(stamp) != 15 or stamp[8] != "_" or not (
+            stamp[:8] + stamp[9:]).isdigit():
+        return stamp
+    return f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]} {stamp[9:11]}:{stamp[11:13]}"
 
 
 def map_strategy_labels(df: pd.DataFrame) -> pd.DataFrame:

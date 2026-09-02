@@ -23,8 +23,8 @@ RUNNING, SUCCESS, FAILED, STOPPED = "running", "success", "failed", "stopped"
 
 TERM_GRACE_S = 10.0     # SIGTERM 后等多久才升级 SIGKILL（设计 §5.2）
 REAP_WAIT_S = 2.0       # SIGKILL 之后收尸的最长等待
-# PID 复用防护的静默上限。真实扫描日志相邻进度行最大间隔约 60s（PROGRESS_EVERY=100），
-# 回测写几十 MB HTML 时更是几分钟不出声，阈值取 60s 会把**健康运行中**的任务判成结束，
+# PID 复用防护的静默上限。扫描日志相邻进度行约 8s 一行（PROGRESS_EVERY=25 ×
+# 实测 0.305 秒/只），而回测写几十 MB HTML 时更是几分钟不出声，阈值取 60s 会把**健康运行中**的任务判成结束，
 # 从而放开互斥、让第二个 baostock 会话把第一个踢下线。宁可晚认几分钟。
 LOG_STALE_S = 600.0
 # 僵尸清理时唯一可信的"跑完了"痕迹：两个信号脚本的收尾行是"已保存:"，

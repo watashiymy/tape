@@ -257,7 +257,10 @@ def test_trades_table_carries_the_column_config(tmp_path, monkeypatch):
     """§2.4：交易明细的金额千分位、比率百分号、数字右对齐全靠 column_config；
     不传下去的话表格就是一堆左对齐的裸浮点。"""
     _run_dir(tmp_path, trades="000333,buy,2016-04-05,10.0,100,5.0,0.0,,\n")
-    (data, kwargs), = _captured_tables(tmp_path, "回测报告", monkeypatch)
+    tables = _captured_tables(tmp_path, "回测报告", monkeypatch)
+    # v0.5.0 起页面第一张表是「全部 N 次回测一览」（它 column_config 为空、无 symbol 列），
+    # 所以按内容认成交明细那张，而不是按下标取第一张。
+    data, kwargs = next((d, k) for d, k in tables if "symbol" in d.columns)
     assert kwargs["width"] == "stretch"
     assert set(kwargs["column_config"]) == set(fmt.trades_column_config())
     assert data["symbol"].tolist() == ["000333"], "前导零仍不许被吃掉"

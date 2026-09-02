@@ -465,7 +465,7 @@ def test_pid_alive_with_fresh_log_stays_running(runs):
 
 
 def test_long_silent_gap_still_counts_as_running(runs):
-    """真实扫描日志相邻进度行最大间隔约 60s（PROGRESS_EVERY=100），
+    """扫描日志相邻进度行约 8s 一行（PROGRESS_EVERY=25），
     回测写 HTML 更是几分钟不出声。宽限期必须明显大于这个量级，
     否则健康的任务会被误判成结束、互斥被打破。"""
     p = write_state(runs, "market_scan", pid=os.getpid(), log_text="扫描中\n")
