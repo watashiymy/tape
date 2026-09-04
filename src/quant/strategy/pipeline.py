@@ -3,7 +3,7 @@
 在此之前，三个入口各自直调 `strat.generate_positions(df)`：
 `scripts/run_backtest.py`、`src/quant/signal/market_scan.py`、`src/quant/signal/scan.py`。
 叠加层（止损、趋势过滤）若逐处接入，漏掉任何一处就是"扫描说买、回测按另一套规则
-算、每日信号又是第三套"——三边都输出一串合法仓位，谁也不报错，正是本项目一路在防
+算、信号跟踪又是第三套"——三边都输出一串合法仓位，谁也不报错，正是本项目一路在防
 的"不报错但结论错"。所以先收拢，再叠加：**入口层不许再出现 generate_positions(**
 （tests/test_strategy_pipeline.py 有源码级断言钉着）。
 """

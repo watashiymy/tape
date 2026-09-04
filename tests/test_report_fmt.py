@@ -301,10 +301,10 @@ def test_metric_color_is_none_when_flat_or_missing(value):
     assert fmt.metric_color("total_return", value) is None
 
 
-# ---------------------------------------------------------------- 每日信号列配置
+# ---------------------------------------------------------------- 信号跟踪列配置
 
 def test_signal_column_config_covers_signal_csv_columns():
-    """每日信号 CSV 的列与扫描 CSV **不同**（没有 name/amount/放量倍数）：
+    """信号跟踪 CSV 的列与扫描 CSV **不同**（没有 name/amount/放量倍数）：
     拿 scan_column_config 顶替，多出来的键会被 Streamlit 静默忽略，
     而真正需要中文标签的 action / close 反而没配上。"""
     cfg = fmt.signal_column_config()
@@ -363,7 +363,7 @@ def test_direction_styler_colors_by_the_same_rule_as_the_metric_cards():
 
 
 def test_direction_styler_ignores_columns_the_csv_does_not_have():
-    """每日信号 CSV 没有 pct_chg：Styler 的 subset 指向不存在的列会
+    """信号跟踪 CSV 没有 pct_chg：Styler 的 subset 指向不存在的列会
     KeyError 直接崩页（同一个渲染函数要同时喂扫描表和信号表）。"""
     df = pd.DataFrame({"symbol": ["000020"], "close": [11.74]})
     assert _css_of(fmt.direction_styler(df, ["pct_chg", "amount_ratio_20d"])) == {}

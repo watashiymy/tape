@@ -75,7 +75,7 @@ STATES = [("只有全量", _only_full), ("只有试跑", _only_trial), ("两者�
 
 
 def _load_signals_page(tmp_path, monkeypatch):
-    """bare 模式渲染「今日信号」页，返回 (喂给 st.dataframe 的表, 区块小标题的 HTML)。
+    """bare 模式渲染「信号」页，返回 (喂给 st.dataframe 的表, 区块小标题的 HTML)。
 
     与 tests/test_dashboard_import.py 同一套桩：扫描表实际喂进去的是 Styler，
     取回底层 DataFrame。
@@ -83,7 +83,7 @@ def _load_signals_page(tmp_path, monkeypatch):
     dashboard = copy_app(tmp_path)
     frames: list[pd.DataFrame] = []
     sections: list[str] = []
-    stub_navigation(monkeypatch, "今日信号")
+    stub_navigation(monkeypatch, "信号")
     monkeypatch.setattr(st, "dataframe",
                         lambda df, *a, **k: frames.append(getattr(df, "data", df)))
     monkeypatch.setattr(st, "html", lambda body, *a, **k: sections.append(str(body)))
@@ -182,7 +182,7 @@ def test_a_corrupt_meta_is_reported_as_broken_not_as_an_old_product(tmp_path):
         "{不是 json", encoding="utf-8")
 
     at = goto_page(AppTest.from_file(str(copy_app(tmp_path)), default_timeout=15).run(),
-                   "今日信号")
+                   "信号")
 
     assert not at.exception, f"坏 meta 不该崩页: {at.exception}"
     assert any("损坏" in w.value for w in at.warning), \
@@ -197,7 +197,7 @@ def test_the_signals_page_renders_in_every_scope_state(tmp_path, label, setup):
     """五态 × AppTest：任何一种都不得抛异常，也不得报错（老产物不是错误）。"""
     setup(tmp_path)
     at = goto_page(AppTest.from_file(str(copy_app(tmp_path)), default_timeout=15).run(),
-                   "今日信号")
+                   "信号")
 
     assert not at.exception, f"扫描范围状态「{label}」把页面打崩了: {at.exception}"
     assert not at.error, f"扫描范围状态「{label}」不该报错: {[e.value for e in at.error]}"

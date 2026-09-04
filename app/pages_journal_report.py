@@ -63,7 +63,7 @@ def _orphan_positions_warning(report) -> None:
 
     项目自己把这件事称为"最容易踩的坑"（说明页原话：不加进 universe 的票没有任何人
     管它的卖出），而唯一能发现它的页面——这一页知道你持着什么——之前从不看信号池。
-    典型剧本：扫描报了 BUY，你买了、记了账，但忘了点 ＋ 加进池子；此后「每日信号」
+    典型剧本：扫描报了 BUY，你买了、记了账，但忘了点 ＋ 加进池子；此后「信号跟踪」
     每天替你盯的是**另一批**标的，而它不会报错。
 
     配置读不到时**不提示**（不猜、也不在盈亏页上再报一次配置错，与
@@ -78,7 +78,7 @@ def _orphan_positions_warning(report) -> None:
     if not orphans:
         return
     st.warning(f"持仓里的 {'、'.join(orphans)} **不在信号池里**——"
-               f"「每日信号」不会盯它们的卖出。")
+               f"「信号跟踪」不会盯它们的卖出。")
     st.page_link(ui.page_ref("universe"), label="去「信号池」把它们加进去",
                  icon=":material/list:")
 
@@ -103,7 +103,7 @@ def _dashboard_section(report: pnl.PnlReport, trades) -> None:
     if unpriced:
         st.caption(f"{unpriced} 只持仓无市价未计入市值与浮动盈亏"
                    "（本地缓存 `data/cache/` 里没有它们的日线——"
-                   "跑一次回测或每日信号就有了），显示的是可算部分，不按 0 顶包。")
+                   "跑一次回测或信号跟踪就有了），显示的是可算部分，不按 0 顶包。")
     st.caption(guide.JOURNAL_PNL_HINT)
 
     curve_col, weights_col = st.columns(2)

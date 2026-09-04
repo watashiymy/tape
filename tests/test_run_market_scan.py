@@ -337,7 +337,7 @@ def test_the_scan_still_works_when_there_is_no_local_listing(tmp_path, monkeypat
 # （上一版只测了联网那条，于是回归全绿通过）。两道闸门：
 #   闸门一 交易日校验：基准日不是交易日 → 长跑之前就退（别让人等两小时才知道日期填错）；
 #   闸门二 数据就绪校验：扫过的标的**全部** stale → 数据没到位，非零退出且**不写 CSV**
-#          （那份空 CSV 会出现在面板「今日信号」页，看着像一次正常的无信号扫描）。
+#          （那份空 CSV 会出现在面板「信号」页，看着像一次正常的无信号扫描）。
 # ---------------------------------------------------------------------------
 
 SATURDAY = date(2026, 8, 29)     # BASE_DAY 那一周的周六：日历上没有，绝不能扫出结果
@@ -407,7 +407,7 @@ def test_all_stale_is_data_not_ready_not_a_quiet_day(tmp_path, monkeypatch, cach
     msg, out = str(e.value), capsys.readouterr().out
     assert _nonzero_exit(e.value), f"数据未就绪却是成功退出: {e.value.code!r}"
     assert str(BASE_DAY) in msg and "17:30" in msg, f"没说清是哪天的数据没到、几点再来: {msg}"
-    assert _csvs(tmp_path) == [], "数据未就绪却留下了 CSV（面板「今日信号」页会当成正常无信号）"
+    assert _csvs(tmp_path) == [], "数据未就绪却留下了 CSV（面板「信号」页会当成正常无信号）"
     assert "今日无新信号" not in out, '把「数据没到位」说成了「今日无新信号」'
 
 

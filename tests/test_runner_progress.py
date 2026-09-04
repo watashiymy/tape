@@ -150,9 +150,10 @@ def test_market_scan_traceback_is_reported():
 
 # ---------------------------------------------------------------- daily_signal
 def test_daily_signal_stale_real_log():
-    """真实日志：17:30 前数据未更新，脚本 exit 1。面板必须显示这条人话原因。"""
+    """真实日志：指定的基准日数据还没到，脚本 exit 1。面板必须显示这条人话原因，
+    并且要说出路——v0.5.0 起留空基准日会自动用数据最新的那一天，不再撞这条。"""
     p = parse_daily_signal(DAILY_STALE_LOG)
-    assert "未更新" in p.phase
+    assert "还没有数据" in p.phase and "留空" in p.phase, p.phase
     assert p.current is None and p.total is None and p.eta_s is None
 
 

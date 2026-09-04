@@ -66,7 +66,7 @@ def test_unknown_param_rejected():
     with pytest.raises(ValueError):
         build_argv("market_scan", {"strategy": "ma_cross"})   # 扫描没有这个参数
     with pytest.raises(ValueError):
-        build_argv("daily_signal", {"limit": 10})             # 每日信号无参数
+        build_argv("daily_signal", {"limit": 10})             # 信号跟踪无参数
 
 
 # ------------------------------------------------------------------ --limit

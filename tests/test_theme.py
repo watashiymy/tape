@@ -202,16 +202,16 @@ def test_inject_is_the_single_entry_and_uses_st_html(monkeypatch):
     """注入必须走 st.html：st.markdown(unsafe_allow_html=True) 会给整页开
     HTML 逃逸口子，而 st.html 就是为插样式加的。
 
-    自 v0.2.2 起 inject() 还发第二件东西（Cmd+C 热键修复的那段 JS，见
-    tests/test_dashboard_nav.py）——**样式仍必须单独一发**：纯 <style> 会被
-    Streamlit 送进不占版面的 event 容器，夹了 <script> 就落到主容器，
-    每页顶上多一个空元素位。"""
+    v0.5.0 起 inject() **只发这一件**：v0.2.2 那段"Cmd+C 热键修复"JS 已删——
+    它在 1.61 上是空操作（`c` 键不走 hotkeys-js），而且它是全项目唯一一处
+    `unsafe_allow_javascript=True`。真修法是 config.toml 的 toolbarMode。"""
     calls: list[str] = []
     monkeypatch.setattr(theme.st, "html",
                         lambda body, **kwargs: calls.append(body))
     theme.inject()
     styles = [c for c in calls if c.startswith("<style>")]
     assert len(styles) == 1, f"样式应恰好注入一次: {len(styles)}"
+    assert len(calls) == 1, f"inject 不该再发第二件东西（热键 JS 已删）: {len(calls)}"
     assert styles[0].endswith("</style>")
     assert theme.FONT_IMPORT in styles[0]
 
@@ -353,6 +353,19 @@ def test_config_toml_pins_the_v050_security_defaults():
         "回环绑定的默认值没了——面板能执行本机命令，少这一条就是全网卡监听"
     assert cfg.get("browser", {}).get("gatherUsageStats") is False, \
         "使用统计上报又打开了——这台机器上同时存着用户的真实成交记录"
+
+
+def test_config_toml_turns_off_the_clear_cache_hotkey_via_toolbar_mode():
+    """Cmd+C 复制文字弹 "Clear cache?" 的**真修法**（v0.5.0）。
+
+    1.61 的前端把 `c` 键交给 App.handleKeyDown 自己 switch，不经过 hotkeys-js；
+    那个 case 被 sT(isOwner, toolbarMode) 守着——viewer 模式下恒为 false，热键与
+    菜单项一并消失。真机验证：Deploy 按钮随之消失（同一个判定的可观测副作用）。
+    v0.2.2 注入 JS 包 hotkeys.filter 的"修复"是空操作，已删。
+    """
+    cfg = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
+    assert cfg.get("client", {}).get("toolbarMode") == "viewer", \
+        "toolbarMode 不是 viewer：Cmd+C 又会弹 Clear cache 对话框"
 
 
 def test_manual_tag_escapes_its_text():

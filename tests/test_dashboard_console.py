@@ -218,7 +218,7 @@ def test_crashed_scan_does_not_extrapolate_eta_either(tmp_path):
 
 
 def test_running_job_without_parsable_progress_shows_spinner(tmp_path):
-    """每日信号没有进度行：转圈 + 阶段 + 已用时长，绝不显示假百分比。"""
+    """信号跟踪没有进度行：转圈 + 阶段 + 已用时长，绝不显示假百分比。"""
     _fake_run(tmp_path, "daily_signal", "running", log="login success!\n")
     at = _console(tmp_path)
     assert at.get("progress") == [], "无 current/total 时不许画进度条"
@@ -588,7 +588,7 @@ def test_stop_click_requests_full_rerun(tmp_path, monkeypatch):
     assert reruns, "点了停止却没请求整页重跑"
 
 
-@pytest.mark.parametrize("page", ["回测报告", "个股K线", "今日信号", CONSOLE])
+@pytest.mark.parametrize("page", ["回测报告", "个股K线", "信号", CONSOLE])
 def test_all_pages_still_render(tmp_path, page):
     """加了控制台页之后，四页任何一页都不得抛异常。"""
     dashboard = copy_app(tmp_path)
@@ -605,7 +605,7 @@ def test_a_corrupt_scan_meta_does_not_take_the_whole_page_down(tmp_path):
     渲染，包括正在跑的那趟全量扫描的 ⏹ 停止 按钮。实测按钮数从 9 掉到 0。
 
     修法与 app/ui.scan_scope_pill 同口径：如实把错误说出来，但不把页面打没。
-    「今日信号」页在同一份坏文件下一直是这么做的，两页从此一致。
+    「信号」页在同一份坏文件下一直是这么做的，两页从此一致。
     """
     scan = tmp_path / "output" / "scan"
     scan.mkdir(parents=True)

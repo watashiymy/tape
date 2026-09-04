@@ -171,7 +171,7 @@ def test_caption_of_running_scan_uses_real_log():
 
 
 def test_caption_without_progress_falls_back_to_phase_and_elapsed():
-    """每日信号没有可解析的进度行：只能给阶段 + 已用时长，不许出现百分比或 ETA。"""
+    """信号跟踪没有可解析的进度行：只能给阶段 + 已用时长，不许出现百分比或 ETA。"""
     caption = _joined(Progress(phase="取数中"), elapsed_s=12, status="running")
     assert caption == "取数中，已用 12秒"
 
@@ -351,11 +351,10 @@ def test_rerun_hint_names_the_parameters_it_will_reuse():
 
 
 def test_rerun_hint_says_so_when_there_is_nothing_to_reuse():
-    """全默认时别写成空话；没有参数的任务（每日信号）也要有句人话。"""
+    """全默认时别写成空话（v0.5.0 起三个任务都有参数，信号跟踪多了 --date）。"""
     from quant.runner import jobs
     assert "默认" in view.rerun_hint("market_scan", jobs.build_argv("market_scan", {}))
-    assert "没有参数" in view.rerun_hint("daily_signal",
-                                      jobs.build_argv("daily_signal", {}))
+    assert "默认" in view.rerun_hint("daily_signal", jobs.build_argv("daily_signal", {}))
 
 
 def test_rerun_hint_does_not_promise_a_run_that_will_be_refused():

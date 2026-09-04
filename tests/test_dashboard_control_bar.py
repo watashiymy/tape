@@ -22,11 +22,11 @@ README = (ROOT / "README.md").read_text(encoding="utf-8")
 SOURCE = DASHBOARD.read_text(encoding="utf-8")
 
 # 哪一页该出现哪些任务的控制条：K 线页与回测报告页读的都是回测产物，
-# 今日信号页同屏展示固定池信号与全市场扫描两块产物，所以它有两条。
+# 信号页同屏展示固定池信号与全市场扫描两块产物，所以它有两条。
 PAGE_JOBS = {
     "回测报告": ("backtest",),
     "个股K线": ("backtest",),
-    "今日信号": ("daily_signal", "market_scan"),
+    "信号": ("daily_signal", "market_scan"),
 }
 READONLY_PAGES = list(PAGE_JOBS)
 ALL_PAGES = [*READONLY_PAGES, "任务控制台"]
@@ -154,7 +154,7 @@ def test_control_bar_shows_the_current_status(page, tmp_path):
 
 def test_control_bar_points_to_the_console_for_details(tmp_path):
     """精简条不放进度条/日志/结果（那是控制台页的事），所以必须明确指路。"""
-    at = _page(tmp_path, "今日信号")
+    at = _page(tmp_path, "信号")
     # 只认页面正文里的提示：侧边栏也提"任务控制台"，用 at.caption 会被它蒙过去
     captions = [c.value for c in at.main.caption]
     assert any("任务控制台" in c for c in captions), captions
@@ -165,7 +165,7 @@ def test_control_bar_start_passes_only_whitelisted_default_argv(tmp_path, monkey
     （列表 + shell=False），不能在这里另起一套拼命令的路子。"""
     started: list[tuple] = []
     monkeypatch.setattr(process, "start", lambda *a, **k: started.append(a))
-    at = _page(tmp_path, "今日信号")
+    at = _page(tmp_path, "信号")
     at.button("bar_start_daily_signal").click().run()
     assert len(started) == 1, started
     job_name, argv, runs_dir = started[0]
@@ -181,7 +181,7 @@ def test_control_bar_start_requests_a_full_rerun(tmp_path, monkeypatch):
 
     reruns: list[int] = []
     monkeypatch.setattr(process, "start", lambda *a, **k: None)
-    at = _page(tmp_path, "今日信号")
+    at = _page(tmp_path, "信号")
     monkeypatch.setattr(st, "rerun", lambda *a, **k: reruns.append(1))
     at.button("bar_start_daily_signal").click().run()
     assert reruns, "点了开始却没请求整页重跑"
@@ -213,7 +213,7 @@ def test_control_bar_start_disabled_by_the_global_mutex(tmp_path):
 
 def test_control_bar_stop_only_enabled_for_the_running_job(tmp_path):
     _fake_run(tmp_path, "daily_signal", "running", log="login success!\n")
-    at = _page(tmp_path, "今日信号")
+    at = _page(tmp_path, "信号")
     assert at.button("bar_stop_daily_signal").disabled is False
     assert at.button("bar_stop_market_scan").disabled is True, "没在跑的任务不该能停"
 
@@ -227,7 +227,7 @@ def test_control_bar_stop_goes_through_runner_stop(tmp_path, monkeypatch):
     reruns: list[int] = []
     monkeypatch.setattr(process, "stop", lambda state, runs_dir: stopped.append(state))
     _fake_run(tmp_path, "market_scan", "running", log="[1800/3010] 信号 15 条\n")
-    at = _page(tmp_path, "今日信号")
+    at = _page(tmp_path, "信号")
     monkeypatch.setattr(st, "rerun", lambda *a, **k: reruns.append(1))
     at.button("bar_stop_market_scan").click().run()
     assert len(stopped) == 1 and stopped[0].script == "market_scan"
@@ -276,7 +276,7 @@ def test_readonly_signal_content_survives_the_control_bar(tmp_path):
         "date,symbol,name,strategy,close,pct_chg,amount,amount_ratio_20d\n"
         "2026-08-24,000020,深华发A,ma_cross,11.74,-5.09,2.9e8,4.22\n", encoding="utf-8")
     _fake_run(tmp_path, "daily_signal", "success", exit_code=0, log="已保存: x.csv\n")
-    at = _page(tmp_path, "今日信号")
+    at = _page(tmp_path, "信号")
     assert not at.exception, at.exception
     assert [df.value["symbol"].tolist() for df in at.dataframe] == [["000333"], ["000020"]]
 
@@ -301,7 +301,7 @@ CONSOLE_SECTION = "面板任务控制台"
 
 def test_readme_has_a_console_section_covering_all_three_jobs():
     section = _readme_section(CONSOLE_SECTION)
-    for label in ("全市场扫描", "每日信号", "回测"):
+    for label in ("全市场扫描", "信号跟踪", "回测"):
         assert label in section, f"README 控制台一节没写「{label}」"
 
 

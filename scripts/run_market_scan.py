@@ -40,7 +40,7 @@ from quant.data import symbols
 from quant.data.baostock_provider import BaostockProvider
 from quant.data.cache import BarCache
 from quant.data.service import DataService
-from quant.signal import scan_meta
+from quant.signal import baseday, scan_meta
 from quant.signal.market_scan import classify_and_scan, sort_signals
 from quant.strategy import build_strategies
 
@@ -79,15 +79,16 @@ def fetch_with_retry(service, symbol: str, start, end):
 
 
 def resolve_expected(provider: BaostockProvider, date_arg: str | None) -> date:
-    """基准交易日：--date 指定则用之；缺省取最近交易日（含今天）。"""
+    """基准交易日：--date 指定则用之；缺省取最近交易日（含今天）。
+    日历逻辑在 quant.signal.baseday（与 run_daily_signal.py 共用一份）。"""
     if date_arg:
         return date.fromisoformat(date_arg)
-    cal = provider.get_trade_calendar(date.today() - timedelta(days=21), date.today())
-    if not cal:
-        sys.exit("近三周无交易日？交易日历异常，退出")
-    expected = cal[-1]
-    if expected != date.today():
-        print(f"[注意] 今天 {date.today()} 非交易日，扫描基准为最近交易日 {expected}")
+    try:
+        expected = baseday.latest_trading_day(provider)
+    except baseday.CalendarError as e:
+        sys.exit(str(e))
+    if note := baseday.weekday_note(expected):
+        print(note.replace("基准为", "扫描基准为"))
     return expected
 
 
@@ -98,17 +99,16 @@ def require_trading_day(provider: BaostockProvider, expected: date) -> None:
     `get_all_symbols(expected)` 在空结果时抛 ValueError 兜住，但那是**清单**路径上的
     副作用：v0.2.3 把清单落盘复用之后，缓存命中就根本不调用它，闸门被整条绕过——
     周六也能"扫描成功"并落一份空 CSV。所以这道闸门必须与清单来源**解耦**，
-    自己去查一次日历。
+    自己去查一次日历（实现在 quant.signal.baseday，两个信号脚本共用）。
 
     位置很讲究：排在拉清单（2-4 分钟）与逐票取数（全量 0.5-2 小时）之前。
-    日期填错这种事必须在几百毫秒内知道，不是两小时后。
-
-    不带 `--date` 时这是一次冗余查询（resolve_expected 刚取过日历，取出来的必是交易日）：
-    几百毫秒换"闸门不依赖上游是怎么算出 expected 的"，值。
+    不带 `--date` 时这是一次冗余查询（几百毫秒），换"闸门不依赖上游是怎么算出
+    expected 的"，值。
     """
-    if expected not in provider.get_trade_calendar(expected, expected):
-        sys.exit(f"{expected}（周{'一二三四五六日'[expected.weekday()]}）不是交易日，"
-                 f"没有当日行情可扫；换个交易日重跑（不带 --date 会自动取最近交易日）")
+    try:
+        baseday.require_trading_day(provider, expected)
+    except baseday.NotTradingDay as e:
+        sys.exit(str(e))
 
 
 def data_not_ready_reason(expected: date, *, scanned: int, stale: int) -> str | None:
@@ -270,7 +270,7 @@ def main() -> None:
 
     signals = sort_signals(signals)
     # 闸门二：先判这轮结论可不可信，再决定要不要打印「今日无新信号」、要不要落盘。
-    # 位置是要害——落盘必须排在闸门之后：留下的那份空 CSV 会出现在面板「今日信号」页，
+    # 位置是要害——落盘必须排在闸门之后：留下的那份空 CSV 会出现在面板「信号」页，
     # 与一次正常的无信号扫描看不出区别，还会覆盖掉同一天早先跑出来的真结果。
     reason = data_not_ready_reason(expected, scanned=total - len(failures),
                                    stale=counts["stale"])

@@ -2,10 +2,7 @@
 #
 # 三块内容各有各的可测边界，先说清楚为什么这么测：
 #
-# 1) **热键**（§1.2）：修的是浏览器行为——Streamlit 的 hotkeys-js 过滤器不看修饰键，
-#    在表格里选中文字按 Cmd+C 会被当成"清缓存"的裸 `c`。pytest 里没有 DOM 也没有
-#    键盘，唯一能守住的是"那段 JS 还在、关键片段没被删"，所以下面按片段断言。
-#    **这不等于验证了修复**：真伪只能由用户在自己 Mac 上按一次 Cmd+C 确认。
+# 1) **热键**（§1.2）：v0.5.0 起不再有注入脚本——真修法是配置项，见文内说明。
 # 2) **命名**（§2.1）：TAPE 与副标是纯字符串/纯 SVG，能逐条断言。
 # 3) **导航**（§2.2）：st.navigation + st.Page 取代 st.sidebar.radio。页面声明在
 #    bare 模式下用替身 st.Page 记录（真 Page 没有 ctx 就是个空壳），渲染则走 AppTest。
@@ -35,7 +32,7 @@ _SPEC.loader.exec_module(theme)
 # v0.3.1 M1（设计 §1）的页表：三组八页。「交易日志」拆成「记账」与「持仓与盈亏」，
 # 侧栏改用 st.navigation 的 Mapping 分组形态。
 # - 主组用空字符串键 ""：**实测**（streamlit 1.61.1，真浏览器截图）它渲染为
-#   无标题组——使用说明/任务控制台/今日信号顶格显示、没有组头占位；
+#   无标题组——使用说明/任务控制台/信号顶格显示、没有组头占位；
 #   命名组「交易日志」「研究」各带组头。所以设计里"不行则三组都起名"的
 #   备选方案不必启用。
 # - 「记账」沿用老的 journal 路径（一键记账跳的就是它，老书签也不断）；
@@ -50,7 +47,7 @@ EXPECTED_GROUPS = {
     "": [
         ("使用说明", ":material/menu_book:", "guide"),
         ("任务控制台", ":material/play_circle:", "console"),
-        ("今日信号", ":material/notifications:", "signals"),
+        ("信号", ":material/notifications:", "signals"),
     ],
     "手册": [
         ("读懂回测", ":material/insights:", "guide-metrics"),
@@ -70,79 +67,18 @@ EXPECTED_GROUPS = {
 EXPECTED_PAGES = [page for group in EXPECTED_GROUPS.values() for page in group]
 
 
-# ================================================================ §1.2 Cmd+C 热键修复
-
-def test_hotkey_js_lets_modifier_combos_through():
-    """核心一条：带 Cmd/Ctrl/Alt 的组合直接 return false（不进热键系统），
-    浏览器自己的复制/粘贴/刷新照旧。少了 metaKey 这一项，Mac 上的 Cmd+C 照样被劫持。"""
-    js = theme.HOTKEY_JS
-    for key in ("metaKey", "ctrlKey", "altKey"):
-        assert key in js, f"热键过滤器没检查 {key}，对应的组合键仍会被 Streamlit 吃掉"
-    assert "return false" in js, "带修饰键时必须 return false（让事件回到浏览器）"
+# ================================================================ §1.2 Cmd+C（v0.5.0 改口）
+# v0.2.2 曾注入一段 JS 包 hotkeys.filter 来修「Cmd+C 弹 Clear cache」。**它从头到尾是
+# 空操作**：1.61 的前端把 `c` 键交给 App.handleKeyDown 自己 switch，根本不经过 hotkeys-js
+# （window.hotkeys 存在但 _handlers 为空）。当年的测试也只钉了"那段 JS 长什么样"，
+# 没有任何一条能证明它有效——当时的 docstring 自己也承认"真伪只能由用户按一次确认"。
+# 真修法是 .streamlit/config.toml 的 client.toolbarMode="viewer"（见 tests/test_theme.py）。
 
 
-def test_hotkey_js_survives_streamlit_reassigning_the_filter():
-    """Streamlit 在 useEffect 里**重新赋值** hotkeys.filter，直接赋值会被覆盖。
-    必须用 defineProperty 装 setter，让后续每次赋值都自动裹上包装。"""
-    js = theme.HOTKEY_JS
-    assert "Object.defineProperty" in js, "直接赋值 filter 会被 Streamlit 覆盖"
-    assert "configurable: true" in js, "属性不可配置的话，下次注入就再也改不动了"
-    assert re.search(r"set:\s*function", js), "缺 setter：Streamlit 重新赋值时不会被包装"
 
 
-def test_hotkey_js_wraps_instead_of_replacing_the_original_filter():
-    """裸按 c / r 必须**照旧**工作：不带修饰键时把判断交回原过滤器，
-    而不是一律返回 true（那会让输入框里打字也触发热键）。"""
-    assert "orig.apply" in theme.HOTKEY_JS, "没调用原过滤器：输入框里打字会触发热键"
 
 
-def test_hotkey_js_is_idempotent():
-    """每次 rerun 都会重新注入这段脚本，装两次 setter 就会把包装套娃。
-    幂等标志必须读一次、写一次。"""
-    js = theme.HOTKEY_JS
-    assert theme.HOTKEY_FLAG in js, "幂等标志没用上"
-    assert js.count(theme.HOTKEY_FLAG) >= 2, "幂等标志要读一次（早退）、写一次（安装后）"
-    assert js.index(theme.HOTKEY_FLAG) < js.index("Object.defineProperty"), \
-        "幂等检查必须排在安装之前，否则每次 rerun 都会再套一层"
-
-
-def test_hotkey_js_skips_silently_when_hotkeys_is_disappeared():
-    """守卫：将来 Streamlit 不再暴露 window.hotkeys 时静默跳过。
-    面板不能因为一个"锦上添花"的修复而整页崩掉。"""
-    js = theme.HOTKEY_JS
-    assert "window.hotkeys" in js
-    guard = js.index("if (!hk)")
-    assert guard < js.index("Object.defineProperty"), \
-        "window.hotkeys 不存在时必须在动手之前就早退"
-
-
-def test_inject_sends_the_style_and_the_hotkey_script(monkeypatch):
-    """两次注入合在同一个入口（面板只调 theme.inject()）：
-    CSS 走纯 <style>（Streamlit 会把它塞进不占版面的 event 容器），
-    JS 单独一发且必须显式开 unsafe_allow_javascript——不开的话脚本被静默忽略，
-    "注入了"和"没注入"长得一模一样。"""
-    calls: list[tuple[str, dict]] = []
-    monkeypatch.setattr(theme.st, "html",
-                        lambda body, **kwargs: calls.append((body, kwargs)))
-    theme.inject()
-    assert len(calls) == 2, f"应恰好两发（样式 + 热键脚本），实际 {len(calls)}"
-    style, style_kwargs = calls[0]
-    assert style.startswith("<style>") and style.endswith("</style>")
-    assert theme.FONT_IMPORT in style
-    assert "<script" not in style, "样式那一发里不许夹 JS（它会被当纯样式静默丢掉）"
-    assert style_kwargs == {}, "样式不需要任何开关"
-    script, script_kwargs = calls[1]
-    assert script.startswith("<script>") and script.endswith("</script>")
-    assert theme.HOTKEY_JS in script
-    assert script_kwargs == {"unsafe_allow_javascript": True}, \
-        f"不开这个开关，Streamlit 会静默忽略脚本: {script_kwargs}"
-
-
-def test_the_hotkey_fix_reaches_every_page():
-    """面板只在顶层调一次 theme.inject()，而顶层每次 rerun 都跑——
-    修复因此对六页、每一轮都生效。这条钉的是"注入点没被挪进某个页面函数里"。"""
-    assert "theme.inject()" in SOURCE
-    assert SOURCE.count("theme.inject()") == 1, "注入点只该有一个"
 
 
 # ================================================================ §2.1 TAPE 命名
@@ -198,13 +134,6 @@ def test_the_readme_calls_the_panel_by_its_name():
     """README 是外部第一入口：面板改了名，那里还叫老名字就是两套说法。"""
     assert theme.BRAND in README, "README 里没提到面板叫 TAPE"
 
-
-def test_the_readme_documents_how_to_verify_the_hotkey_fix():
-    """§1.3：热键修复没法用 pytest 验，验收只能人工——那就把步骤写进 README，
-    否则"到底修好没有"永远没人能复核。两步缺一不可：
-    Cmd+C 应正常复制（修好了），裸按 c 仍应弹清缓存对话框（没把功能整个禁掉）。"""
-    assert "Cmd+C" in README, "README 没写 Cmd+C 的验收步骤"
-    assert "hotkeys" in README, "README 没交代根因（Streamlit 的 hotkeys 过滤器）"
 
 
 # ================================================================ §2.2 原生导航

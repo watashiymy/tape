@@ -29,7 +29,7 @@ def _render(page_key: str) -> None:
     for sec in guide.page_sections(page_key):
         st.html(theme.section(sec.title))
         if sec.flow:
-            st.html(theme.flow(sec.flow))          # 闭环图：扫描 → 信号池 → 每日信号
+            st.html(theme.flow(sec.flow))          # 闭环图：扫描 → 信号池 → 信号跟踪
         if sec.emphasis:
             st.warning(sec.body)                   # 安全提示单独成块
         else:

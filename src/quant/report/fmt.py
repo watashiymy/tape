@@ -194,7 +194,7 @@ def map_strategy_labels(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def scan_column_config() -> dict:
-    """全市场扫描 / 每日信号表的列配置（列名取自 run_market_scan.CSV_COLUMNS）。
+    """全市场扫描 / 信号跟踪表的列配置（列名取自 run_market_scan.CSV_COLUMNS）。
 
     每次现造：返回模块级 dict 时，调用方一改就串到下一次渲染。
     键必须是 CSV 里真有的列——多写一个键 Streamlit 会静默忽略，
@@ -222,7 +222,7 @@ def scan_column_config() -> dict:
 
 
 def signal_column_config() -> dict:
-    """固定池每日信号表的列配置（列名取自 run_daily_signal.CSV_COLUMNS）。
+    """固定池信号跟踪表的列配置（列名取自 run_daily_signal.CSV_COLUMNS）。
 
     与扫描表**不是**同一套列：这里没有 name / amount / 放量倍数，却多一个 action
     （buy/sell）。拿 scan_column_config 顶替的话，多出来的键被 Streamlit 静默忽略，
@@ -262,7 +262,7 @@ def direction_styler(df: pd.DataFrame, columns) -> "pd.io.formats.style.Styler":
     列配置说话，Styler 只管颜色，两者不打架。
 
     `columns` 里不存在的列必须跳过：同一个渲染函数要同时喂扫描表（有 pct_chg）
-    和每日信号表（没有），Styler 的 subset 指向不存在的列会 KeyError 崩页。
+    和信号跟踪表（没有），Styler 的 subset 指向不存在的列会 KeyError 崩页。
     """
     present = [c for c in columns if c in df.columns]
     styler = df.style

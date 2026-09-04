@@ -126,7 +126,7 @@ def parse_market_scan(log_text: str) -> Progress:
 
 
 def parse_daily_signal(log_text: str) -> Progress:
-    """每日信号（固定池、秒级）：没有可靠的进度行，靠阶段文字。
+    """信号跟踪（固定池、秒级；v0.5.0 前叫「每日信号」）：没有可靠的进度行，靠阶段文字。
 
     current 按 `[data] …` 行计数——run_backtest.py 打这种行，run_daily_signal.py
     目前不打（它只在异常时打 `[warn]`），所以这里现实中恒为 None，属不确定态。
@@ -141,7 +141,8 @@ def parse_daily_signal(log_text: str) -> Progress:
         phase = "汇总信号"
     stale = _STALE.search(log_text)
     if stale:
-        phase = f"数据未更新到 {stale.group(1)}（收盘后 17:30 起才有当日数据）"
+        phase = (f"指定的 {stale.group(1)} 还没有数据（收盘后 17:30 起才有当日数据；"
+                 f"留空基准日会自动用数据最新的那一天）")
     phase, extras, outputs = _saved_terminal(log_text, phase, {})
     return Progress(current=current, phase=phase, extras=extras, outputs=outputs)
 

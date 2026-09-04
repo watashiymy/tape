@@ -184,7 +184,7 @@ def no_output_note(p: Progress, *, status: str) -> str:
 
     要补的缺口很具体：扫描跑到 2500/3012 时细节行已经写着「信号 130 条」，这时
     按下 ⏹ 停止 —— 那 130 条**一条都没落盘**（结果整轮跑完才写 CSV），而屏幕上
-    留下的唯一数字正是那个 130，指向一份根本不存在的产物。页尾「今日信号」显示的
+    留下的唯一数字正是那个 130，指向一份根本不存在的产物。页尾「信号」显示的
     是上一次那份（标题里带日期，得自己发现不是今天的）。
 
     顺带纠正一处更早的误解：v0.2.0 设计里写着终止后仍画进度条是为了让用户
@@ -195,7 +195,7 @@ def no_output_note(p: Progress, *, status: str) -> str:
     if status not in (STOPPED, FAILED) or p.outputs:
         return ""
     return ("本次**没有产物**：结果整轮跑完才落盘，上面那些计数没有写进任何文件。"
-            "页尾/「今日信号」页看到的是上一次的结果（注意标题里的日期）。"
+            "页尾/「信号」页看到的是上一次的结果（注意标题里的日期）。"
             "重跑是从第 1 只开始，不接着跑——缓存省的是流量不是时间。")
 
 
@@ -214,8 +214,6 @@ def rerun_hint(job_name: str, argv: list[str]) -> str:
     job = JOBS.get(job_name)
     if job is None:                                     # pragma: no cover - 排班校验在前
         return ""
-    if not job.params:
-        return "这个任务没有参数，重跑就是再跑一次。"
     try:
         values = jobs.parse_argv(job_name, argv)
     except ValueError:

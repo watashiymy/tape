@@ -28,7 +28,7 @@ from tests.conftest import click_row_button, copy_app, goto_page
 ROOT = Path(__file__).resolve().parent.parent
 REAL_CONFIG = ROOT / "config" / "settings.yaml"
 PAGE = "信号池"
-SIGNALS_PAGE = "今日信号"
+SIGNALS_PAGE = "信号"
 SCAN_HEADER = "date,symbol,name,strategy,close,pct_chg,amount,amount_ratio_20d\n"
 
 
@@ -559,7 +559,7 @@ def test_the_page_degrades_to_read_only_when_the_pool_cannot_be_fetched(tmp_path
     assert list(_table(at)["代码"]) == ["600519", "000333"], "表格该照常显示"
 
 
-# ================================================================ 今日信号页的 ＋（§3.4 B）
+# ================================================================ 信号页的 ＋（§3.4 B）
 
 def _scan_csv(tmp_path: Path, rows: str) -> Path:
     path = tmp_path / "output" / "scan" / "2026-08-27.csv"
@@ -614,7 +614,7 @@ def test_clicking_the_already_in_pool_cell_changes_nothing(tmp_path):
 
 def test_the_scan_table_still_renders_without_a_config(tmp_path):
     """没有 config/settings.yaml 时（"哪些已在池中"无从判断）扫描表必须照旧可读，
-    只是不给 ＋ 列——今日信号页不该因为配置读不到就整页打不开。"""
+    只是不给 ＋ 列——信号页不该因为配置读不到就整页打不开。"""
     _scan_csv(tmp_path,
               "2026-08-27,000333,美的集团,ma_cross,72.5,3.1,1200000000,2.4\n")
     at = _at(tmp_path, SIGNALS_PAGE)

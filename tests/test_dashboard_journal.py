@@ -39,7 +39,7 @@ REAL_CONFIG = ROOT / "config" / "settings.yaml"
 # 持仓/盈亏/来源在「持仓与盈亏」——下面的测试按这条分界各找各的页。
 PAGE = "记账"
 REPORT_PAGE = "持仓与盈亏"
-SIGNALS_PAGE = "今日信号"
+SIGNALS_PAGE = "信号"
 COSTS = load_settings(REAL_CONFIG).costs
 
 SCAN_HEADER = "date,symbol,name,strategy,close,pct_chg,amount,amount_ratio_20d\n"
@@ -1169,7 +1169,7 @@ def test_positions_page_warns_about_holdings_outside_the_pool(tmp_path):
     """项目自己把这件事称为「最容易踩的坑」（不加进 universe 的票没有任何人管它的
     卖出），而唯一知道你持着什么的这一页之前从不看信号池。
 
-    典型剧本：扫描报了 BUY，买了、记了账，但忘了点 ＋ 加进池子；此后「每日信号」
+    典型剧本：扫描报了 BUY，买了、记了账，但忘了点 ＋ 加进池子；此后「信号跟踪」
     每天替你盯的是另一批标的，而它不会报错。
     """
     _root(tmp_path)

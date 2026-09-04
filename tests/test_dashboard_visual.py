@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DASHBOARD = ROOT / "app" / "dashboard.py"
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 SCAN_LOG = (FIXTURES / "market_scan_sample.log").read_text(encoding="utf-8")
-PAGES = ["回测报告", "个股K线", "今日信号", "任务控制台"]
+PAGES = ["回测报告", "个股K线", "信号", "任务控制台"]
 
 SCAN_HEADER = "date,symbol,name,strategy,close,pct_chg,amount,amount_ratio_20d\n"
 TRADES_HEADER = ("symbol,action,date,price,shares,commission,stamp,pnl,holding_days\n")
@@ -335,7 +335,7 @@ def test_kline_page_still_reports_a_missing_cache_clearly(tmp_path):
     assert any("600519" in e.value for e in at.error), [e.value for e in at.error]
 
 
-# ================================================================ 今日信号 / 扫描
+# ================================================================ 信号 / 扫描
 
 def test_scan_table_gets_column_config_and_direction_colors(tmp_path, monkeypatch):
     """§2.4：amount 千分位、pct_chg 百分号 + 红绿、amount_ratio_20d 进度条。
@@ -353,7 +353,7 @@ def test_scan_table_gets_column_config_and_direction_colors(tmp_path, monkeypatc
     (scan / "2026-08-25.csv").write_text(
         SCAN_HEADER + "2026-08-25,000020,深华发A,ma_cross,11.74,-5.09,2.9e8,4.22\n",
         encoding="utf-8")
-    (data, kwargs), = _captured_tables(tmp_path, "今日信号", monkeypatch)
+    (data, kwargs), = _captured_tables(tmp_path, "信号", monkeypatch)
     assert set(kwargs["column_config"]) == (
         set(fmt.scan_column_config()) | {app_module("journal_ui").RECORD_COLUMN})
     data._compute()
@@ -362,14 +362,14 @@ def test_scan_table_gets_column_config_and_direction_colors(tmp_path, monkeypatc
 
 
 def test_signal_table_gets_the_signal_column_config(tmp_path, monkeypatch):
-    """每日信号 CSV 的列与扫描不同，必须用它自己那套配置（否则 action / close
+    """信号跟踪 CSV 的列与扫描不同，必须用它自己那套配置（否则 action / close
     连中文标签都没有）。"""
     sig = tmp_path / "output" / "signals"
     sig.mkdir(parents=True)
     (sig / "2026-08-25.csv").write_text(
         "date,symbol,strategy,action,close\n2026-08-25,000333,ma_cross,buy,10.0\n",
         encoding="utf-8")
-    (data, kwargs), = _captured_tables(tmp_path, "今日信号", monkeypatch)
+    (data, kwargs), = _captured_tables(tmp_path, "信号", monkeypatch)
     # 同扫描表：数据列来自 fmt，UI 再叠「记账」动作列（v0.3.0 §5.1 的一键记账）
     assert set(kwargs["column_config"]) == (
         set(fmt.signal_column_config()) | {app_module("journal_ui").RECORD_COLUMN})
@@ -384,7 +384,7 @@ def test_scan_block_title_is_a_serif_section_with_the_date(tmp_path):
     (scan / "2026-08-21.csv").write_text(
         SCAN_HEADER + "2026-08-21,000020,深华发A,ma_cross,11.74,-5.09,2.9e8,4.22\n",
         encoding="utf-8")
-    at = _page(tmp_path, "今日信号")
+    at = _page(tmp_path, "信号")
     assert not at.exception, at.exception
     sections = [h for h in _htmls(at) if 'class="qd-section"' in h]
     assert any("2026-08-21" in s for s in sections), sections
@@ -416,7 +416,7 @@ def test_the_pipeline_puts_the_two_chained_jobs_in_equal_columns(tmp_path):
     assert len(card_cols) == len(chained), f"流水线上应有两个任务列，实际 {len(card_cols)}"
     assert {tuple(sorted(_keys_under(c) & {f"start_{n}" for n in jobs.JOBS}))
             for c in card_cols} == {(f"start_{n}",) for n in chained}, \
-        "两列应分别是扫描与每日信号；回测不在链上"
+        "两列应分别是扫描与信号跟踪；回测不在链上"
     weights = sorted(c.proto.weight for c in at.get("column"))
     # [1, .14, 1, .14, 1] 归一化后：三个 0.3049 与两个 0.0427
     wide = [w for w in weights if abs(w - 1 / 3.28) < 1e-3]

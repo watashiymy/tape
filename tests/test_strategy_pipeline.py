@@ -1,10 +1,10 @@
 # tests/test_strategy_pipeline.py — v0.4.0 M2：信号流水线收拢 + ATR 追踪止损（设计 §2）
 #
 # 两件事在这里被钉住：
-#   1. **收拢**：回测/每日信号/全市场扫描三个入口的目标仓位只有一个出口
+#   1. **收拢**：回测/信号跟踪/全市场扫描三个入口的目标仓位只有一个出口
 #      （quant.strategy.pipeline.target_positions）。此前三处各自调
 #      strat.generate_positions(df)，叠加层只要漏接一处，就会出现"扫描说买、
-#      回测按另一套规则算、每日信号又是第三套"——静默分叉，且三边都不报错。
+#      回测按另一套规则算、信号跟踪又是第三套"——静默分叉，且三边都不报错。
 #   2. **ATR 追踪止损的语义**：阈值手算、止损后不得回补、暖机期不装算得出来、
 #      截断重放无未来函数、关闭时是恒等变换。
 import ast
@@ -634,7 +634,7 @@ def test_no_entry_point_calls_generate_positions_directly():
     """源码级断言：scripts/ 与 src/quant/signal/ 下不许再出现 generate_positions( 调用。
 
     此前三处各自直调（run_backtest.py、signal/market_scan.py、signal/scan.py）。
-    叠加层若逐处接入，漏掉任何一处就是"扫描说买、回测按另一套算、每日信号第三套"，
+    叠加层若逐处接入，漏掉任何一处就是"扫描说买、回测按另一套算、信号跟踪第三套"，
     三边都不报错。行为测试查不出这种分叉（漏接的那处照样输出一串合法仓位），
     所以这里钉源码。
     """
@@ -698,7 +698,7 @@ def test_every_script_passes_the_overlays_from_the_loaded_settings(rel):
     """三个可执行入口都必须把 `settings.overlays` 递下去。
 
     这三个脚本是唯一 load_settings 的地方，也就是唯一有资格决定"这轮按什么规则跑"
-    的地方。换成 OverlaysCfg() 就是"配置写着开、实际关着"——回测/扫描/每日信号
+    的地方。换成 OverlaysCfg() 就是"配置写着开、实际关着"——回测/扫描/信号跟踪
     照常跑完、exit 0，而每一笔的认输点全变了。
     """
     got = _overlays_arguments(ROOT / rel)
@@ -754,7 +754,7 @@ def test_three_entry_points_agree_on_the_same_df_and_config(why, closes, base, t
 
     这是"收拢"的行为侧证明。特别看「止损当根」一行：基础信号末两根是 (1,1)，
     没有任何卖出信号；只有走 pipeline 的入口才会报出这次 SELL——
-    每日信号从此开始出现止损触发的卖出，正是本版给用户补的真缺口。
+    信号跟踪从此开始出现止损触发的卖出，正是本版给用户补的真缺口。
     """
     df, base = _padded(closes, base)
     strat = Fixed(base)
@@ -766,7 +766,7 @@ def test_three_entry_points_agree_on_the_same_df_and_config(why, closes, base, t
     pd.testing.assert_series_equal(
         run_backtest.strategy_positions(strat, {"600000": df}, ov)["600000"], want)
 
-    # 入口二：每日信号（固定池，BUY/SELL 双向）
+    # 入口二：信号跟踪（固定池，BUY/SELL 双向）
     sigs = scan({"600000": df}, [strat], overlays=ov)
     if tail[0] == tail[1]:
         assert sigs == []
@@ -873,6 +873,9 @@ def _run_daily_signal(tmp_path, monkeypatch, enabled: str) -> pd.DataFrame:
     monkeypatch.setattr(run_daily_signal, "BaostockProvider", FakeProvider)
     monkeypatch.setattr(run_daily_signal, "DataService", FakeService)
     monkeypatch.chdir(tmp_path)
+    # v0.5.0 起脚本带 argparse（--date）：不给 sys.argv 一个干净值，它会把 pytest
+    # 自己的命令行当参数解析（与 tests/test_run_market_scan.py 的 _run_scan 同一做法）
+    monkeypatch.setattr("sys.argv", ["run_daily_signal.py"])
     run_daily_signal.main()
     out = tmp_path / "output" / "signals" / f"{EXPECTED}.csv"
     assert out.exists(), f"脚本没写出 {out}"
@@ -880,7 +883,7 @@ def _run_daily_signal(tmp_path, monkeypatch, enabled: str) -> pd.DataFrame:
 
 
 def test_run_daily_signal_actually_runs_the_stop_its_config_asks_for(tmp_path, monkeypatch):
-    """配置里 atr_stop 开着 → 每日信号必须报出这次止损 SELL。
+    """配置里 atr_stop 开着 → 信号跟踪必须报出这次止损 SELL。
 
     这是本版给用户补的真缺口：此前系统等权满仓、没有任何出场保护，而基础信号
     （均线仍多头排列）永远不会给出这条卖出。若入口把 settings.overlays 换成

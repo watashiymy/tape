@@ -33,7 +33,7 @@ GUIDE = "使用说明"
 # 由 tests/test_dashboard_nav.py 对账，这里只借它来遍历"每页都要成立"的断言。
 # v0.5.0：说明拆成四页，后三页单独成「手册」组，紧跟主组。
 PAGES = [GUIDE, "读懂回测", "自定义策略", "边界与安全",
-         "任务控制台", "今日信号", "记账", "持仓与盈亏",
+         "任务控制台", "信号", "记账", "持仓与盈亏",
          "信号池", "回测报告", "个股K线"]
 
 # 先塞 sys.modules 再 exec：guide.py 用了 @dataclass，而 dataclasses 会回查
@@ -206,7 +206,7 @@ def test_the_toc_uses_page_links_not_buttons(tmp_path):
 
 
 def test_the_closed_loop_diagram_is_rendered(tmp_path):
-    """§3.1 第 1 条那张闭环图（扫描发现 → 加入 universe → 每日信号跟踪卖出）。"""
+    """§3.1 第 1 条那张闭环图（扫描发现 → 加入 universe → 信号跟踪跟踪卖出）。"""
     at = _page(tmp_path)
     flows = [h for h in _htmls(at) if 'class="qd-flow"' in h]
     assert len(flows) == 1, f"应有一张闭环图，实际 {len(flows)}"
@@ -363,7 +363,7 @@ def test_the_popover_sits_next_to_the_card_title(tmp_path):
 
 def test_control_bar_pages_have_no_popover(tmp_path):
     """精简控制条要越薄越好（§4.2）：帮助只挂在控制台的完整卡片上。"""
-    for page in ("回测报告", "个股K线", "今日信号"):
+    for page in ("回测报告", "个股K线", "信号"):
         at = _page(tmp_path, page)
         assert at.get("popover") == [], f"{page} 的控制条不该有 popover"
 
@@ -420,7 +420,7 @@ def test_scan_table_has_the_volume_ratio_hint(tmp_path):
     (scan / "2026-08-25.csv").write_text(
         SCAN_HEADER + "2026-08-25,000020,深华发A,ma_cross,11.74,-5.09,2.9e8,4.22\n",
         encoding="utf-8")
-    at = _page(tmp_path, "今日信号")
+    at = _page(tmp_path, "信号")
     captions = [c.value for c in at.main.caption]
     assert guide.TABLE_HINTS["scan"] in captions, captions
 
@@ -431,7 +431,7 @@ def test_signal_table_has_its_own_hint(tmp_path):
     (sig / "2026-08-25.csv").write_text(
         "date,symbol,strategy,action,close\n2026-08-25,000333,ma_cross,buy,10.0\n",
         encoding="utf-8")
-    at = _page(tmp_path, "今日信号")
+    at = _page(tmp_path, "信号")
     captions = [c.value for c in at.main.caption]
     assert guide.TABLE_HINTS["signal"] in captions, captions
 
@@ -460,7 +460,7 @@ def test_kline_empty_state_reuses_the_same_wording(tmp_path):
 
 
 def test_signal_empty_state_mentions_the_close_time(tmp_path):
-    at = _page(tmp_path, "今日信号")
+    at = _page(tmp_path, "信号")
     infos = [i.value for i in at.main.info]
     assert guide.EMPTY_STATES["signal"] in infos, infos
     assert any(guide.FACTS["data_ready"] in i for i in infos), infos
@@ -468,7 +468,7 @@ def test_signal_empty_state_mentions_the_close_time(tmp_path):
 
 def test_scan_empty_state_warns_how_long_a_full_run_takes(tmp_path):
     """全量扫描是挂机任务。空态不写耗时，用户点下去就以为面板卡死了。"""
-    at = _page(tmp_path, "今日信号")
+    at = _page(tmp_path, "信号")
     infos = [i.value for i in at.main.info]
     assert guide.EMPTY_STATES["scan"] in infos, infos
     assert any(guide.FACTS["scan_minutes"] in i for i in infos), infos

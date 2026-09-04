@@ -28,3 +28,17 @@ address = "127.0.0.1"
 # 出厂默认 true，会向 streamlit 上报使用统计。这台机器上同时存着真实成交记录，
 # 关掉它没有任何代价。
 gatherUsageStats = false
+
+[client]
+# 关掉「开发者选项」：右上角的 Deploy 按钮、菜单里的 Rerun / Clear cache，
+# **以及键盘热键 `c`（弹 Clear cache 对话框）**。
+#
+# 这才是 Cmd+C 复制文字会弹 "Clear cache?" 的真正修法。1.61 的前端把 `c` 键交给
+# App.handleKeyDown 自己 switch，**根本不经过 hotkeys-js**（window.hotkeys 存在但
+# _handlers 为空），所以 v0.2.2 那段包 hotkeys.filter 的注入脚本从头到尾是空操作。
+# 而 handleKeyDown 里 `case 'c'` 被 sT(isOwner, toolbarMode) 守着——viewer 模式下
+# 它恒为 false，热键与菜单项一并消失。
+#
+# 代价：Rerun 菜单项与 Deploy 按钮也没了。前者本项目用不上（改代码 streamlit 会自己
+# 重跑；面板任务有自己的按钮），后者从来没人点过。
+toolbarMode = "viewer"

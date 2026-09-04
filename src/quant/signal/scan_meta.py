@@ -172,7 +172,7 @@ def is_day(csv_path: str | Path) -> bool:
     ——朴素的 `sorted(reverse=True)` 里一个 `zzz-latest.csv` 就能压过真日期文件
     （'z' > '2'），然后标题上出现"最新信号（zzz-latest）"。
 
-    判据集中在这里，三处共用（`signal_status`、「今日信号」页、本模块）：
+    判据集中在这里，三处共用（`signal_status`、「信号」页、本模块）：
     分散着写，修一处漏两处——v0.5.0 就先只修了 `steps.py` 那一处。
     """
     try:

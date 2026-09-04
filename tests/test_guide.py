@@ -309,7 +309,7 @@ def test_custom_section_code_template_actually_works(tmp_path):
 
 
 def test_the_task_section_draws_the_closed_loop():
-    """§3.1 第 1 条要求配一张闭环图：扫描发现 → 加入 universe → 每日信号跟踪卖出。"""
+    """§3.1 第 1 条要求配一张闭环图：扫描发现 → 加入 universe → 信号跟踪跟踪卖出。"""
     flow = guide.section("tasks").flow
     assert len(flow) >= 3, f"闭环图至少要三步，实际 {flow}"
     joined = " ".join(flow)
@@ -620,7 +620,7 @@ def test_refresh_tooltip_warns_it_costs_a_full_redownload():
     assert "缓存" in text and "重拉" in text, text
 
 
-# 九张表：三张回测产物表 + 每日信号 + 信号池（v0.2.2 M3）
+# 九张表：三张回测产物表 + 信号跟踪 + 信号池（v0.2.2 M3）
 # + 交易日志的四张（v0.3.0 M3：日志本身 / 持仓 / 逐笔平仓 / 按来源分组）
 TABLE_KINDS = ("trades", "skipped", "scan", "signal", "universe",
                "journal", "positions", "closings", "by_source")
@@ -683,7 +683,7 @@ def test_guide_module_has_no_hardcoded_percentages_outside_facts():
 # ================================================================ 闭环图（theme.flow）
 
 def test_flow_renders_every_step_with_arrows_between():
-    html = theme.flow(("扫描发现", "加入 universe", "每日信号跟踪卖出"))
+    html = theme.flow(("扫描发现", "加入 universe", "信号跟踪跟踪卖出"))
     assert 'class="qd-flow"' in html
     assert html.count('class="qd-flow-step"') == 3
     assert html.count('class="qd-flow-arrow"') == 2, "三步之间应有两个箭头"

@@ -81,7 +81,7 @@ def _result_scan(path_str: str) -> None:
 
 
 def _result_signal(path_str: str) -> None:
-    """每日信号 CSV 的列与扫描**不是**同一套（没有 name/成交额/放量倍数），
+    """信号跟踪 CSV 的列与扫描**不是**同一套（没有 name/成交额/放量倍数），
     列配置也得各用各的，否则 action / close 连中文标签都没有。"""
     _result_table(path_str, fmt.signal_column_config(),
                   guide.TABLE_HINTS["signal"], ())
@@ -224,7 +224,7 @@ def _card_for(busy: str | None):
 # ---------------------------------------------------------------- 排班（v0.5.0 §6）
 #
 # 拆分前三张卡片等宽并排，顺序就是 jobs.JOBS 的字典序——**语义为零**。
-# 而真实的闭环是：全市场扫描（发现）→ 人工研究 → 加进信号池 → 每日信号（跟踪），
+# 而真实的闭环是：全市场扫描（发现）→ 人工研究 → 加进信号池 → 信号跟踪（跟踪），
 # 其中「加进信号池」不是可运行的任务、「回测」根本不在这条链上。
 #
 # 刻意**不加 ①②③ 编号**：说明页的命令行一节已经在用一套编号，README §2 的
@@ -292,7 +292,7 @@ def _manual_step_card() -> None:
         symbols, source = None, None
     st.caption(steps.pool_status(symbols, _short_path(source)).text)
     st.caption(guide.PIPELINE_MANUAL_NOTE)
-    st.page_link(ui.page_ref("signals"), label="去「今日信号」看扫描结果",
+    st.page_link(ui.page_ref("signals"), label="去「信号」看扫描结果",
                  icon=":material/notifications:")
     st.page_link(ui.page_ref("universe"), label="去「信号池」增删标的",
                  icon=":material/list:")

@@ -51,7 +51,7 @@ PAGE_URL_PATHS = {
     "自定义策略": "guide-custom",
     "边界与安全": "guide-limits",
     "任务控制台": "console",
-    "今日信号": "signals",
+    "信号": "signals",
     "记账": "journal",
     "持仓与盈亏": "positions",
     "信号池": "universe",

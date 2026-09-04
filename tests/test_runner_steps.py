@@ -93,7 +93,7 @@ def test_pool_status_counts_and_names_the_source():
     assert got.ready is True
 
 
-# ================================================================ ③ 每日信号
+# ================================================================ ③ 信号跟踪
 
 def test_signal_status_says_it_never_ran(tmp_path):
     got = steps.signal_status(tmp_path / "signals", DAY)

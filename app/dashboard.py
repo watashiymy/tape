@@ -70,7 +70,7 @@ st.logo(theme.BRAND_LOGO, size=theme.BRAND_LOGO_SIZE)
 #   -「使用说明」第一位且 default=True → **默认落地页**（v0.2.1 的决定不变）：
 #     第一次打开面板的人先看说明，而不是先对着一句"暂无回测结果"发愁；
 #   -「任务控制台」第二位：它是最常用的操作入口；
-#   -「交易日志」组紧跟「今日信号」：看到信号 → 记一笔，挨着才是一条路；
+#   -「交易日志」组紧跟「信号」：看到信号 → 记一笔，挨着才是一条路；
 #     组内「记账」在前、「持仓与盈亏」在后——先记后看，就是使用顺序。
 #     「记账」沿用老的 journal 路径（老书签不断），报表页用新的 positions；
 #   -「研究」组（信号池 / 回测报告 / 个股K线）殿后。
@@ -91,7 +91,7 @@ GUIDE_PAGE_OBJS = {
 # 的既有理由：按下标从组里取「第几个」，插一页就全体错位且不报错）。
 CONSOLE_PAGE = st.Page(page_console, title="任务控制台",
                        icon=":material/play_circle:", url_path="console")
-SIGNALS_PAGE = st.Page(page_signals, title="今日信号",
+SIGNALS_PAGE = st.Page(page_signals, title="信号",
                        icon=":material/notifications:", url_path="signals")
 UNIVERSE_PAGE = st.Page(page_universe, title="信号池", icon=":material/list:",
                         url_path="universe")
@@ -133,7 +133,7 @@ st.sidebar.warning("安全提示：本面板可在本机执行脚本。启动时
                    "同网段的人就能点这里的「开始」。"
                    "切勿用 `--server.address 0.0.0.0` 暴露到局域网。")
 st.sidebar.caption("策略仅用于学习，不构成投资建议。")
-# 「今日信号」与扫描表里点过「记一笔」之后要跳到「记账」子页（v0.3.1 §1：
+# 「信号」与扫描表里点过「记一笔」之后要跳到「记账」子页（v0.3.1 §1：
 # 目标从整页「交易日志」改指拆出来的录入页）。
 # 必须排在 st.navigation **之后**：st.switch_page 只认已注册的页，而注册就发生在
 # st.navigation 里；也不能放进按钮回调——那时脚本还没重跑，页面也还没注册。

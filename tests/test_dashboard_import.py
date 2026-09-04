@@ -95,7 +95,7 @@ def test_backtest_page_keeps_leading_zero_symbols(tmp_path, monkeypatch):
 
 
 def test_signal_page_keeps_leading_zero_symbols(tmp_path, monkeypatch):
-    """今日信号页（最新 + 历史）同样不能吃掉前导零。"""
+    """信号页（最新 + 历史）同样不能吃掉前导零。"""
     sig = tmp_path / "output" / "signals"
     sig.mkdir(parents=True)
     header = "symbol,date,strategy,signal,close\n"
@@ -104,7 +104,7 @@ def test_signal_page_keeps_leading_zero_symbols(tmp_path, monkeypatch):
     (sig / "2026-08-13.csv").write_text(
         header + "000001,2026-08-13,ma_cross,sell,9.0\n", encoding="utf-8")
 
-    _, frames = _load_dashboard(tmp_path, monkeypatch, "今日信号")
+    _, frames = _load_dashboard(tmp_path, monkeypatch, "信号")
 
     assert [f["symbol"].tolist() for f in frames] == [["000333"], ["000001"]]
 
@@ -115,7 +115,7 @@ def test_metric_formatting_is_not_duplicated_in_the_dashboard(tmp_path, monkeypa
     边界（int/None/NaN/未知键）在 tests/test_report_fmt.py 里钉。"""
     from quant.report import fmt
 
-    mod, _ = _load_dashboard(tmp_path, monkeypatch, "今日信号")  # 空 output，不读文件
+    mod, _ = _load_dashboard(tmp_path, monkeypatch, "信号")  # 空 output，不读文件
     assert not hasattr(mod, "_fmt_metric"), "格式化应已下沉到 fmt，面板不该再留一份"
     assert not hasattr(mod, "METRIC_LABELS"), "标签表同理"
     assert fmt.fmt_metric("n_trades", 243) == "243"
@@ -207,7 +207,7 @@ def test_run_selector_displays_the_strategy_label_not_the_key(tmp_path, page):
 
 
 def test_signal_and_scan_tables_display_strategy_labels(tmp_path, monkeypatch):
-    """今日信号页三张表（最新信号 / 历史信号 / 全市场扫描）的策略列都换显示名；
+    """信号页三张表（最新信号 / 历史信号 / 全市场扫描）的策略列都换显示名；
     磁盘上的 CSV 一个字节不动。"""
     sig = tmp_path / "output" / "signals"
     sig.mkdir(parents=True)
@@ -222,7 +222,7 @@ def test_signal_and_scan_tables_display_strategy_labels(tmp_path, monkeypatch):
         SCAN_HEADER + "2026-08-24,000020,深华发A,donchian,11.74,-5.09,2.9e8,4.22\n",
         encoding="utf-8")
 
-    _, frames = _load_dashboard(tmp_path, monkeypatch, "今日信号")
+    _, frames = _load_dashboard(tmp_path, monkeypatch, "信号")
 
     shown = [f["strategy"].tolist() for f in frames if "strategy" in f.columns]
     assert shown == [["双均线交叉"], ["唐奇安通道突破"], ["唐奇安通道突破"]], shown
@@ -242,14 +242,14 @@ def test_half_written_run_does_not_shadow_complete_run(tmp_path):
     assert at.selectbox[0].value.name == "ma_cross_20260817_121152"
 
 
-# ---------- v0.1.1 M3：今日信号页"全市场扫描"区块 ----------
+# ---------- v0.1.1 M3：信号页"全市场扫描"区块 ----------
 
 SCAN_HEADER = "date,symbol,name,strategy,close,pct_chg,amount,amount_ratio_20d\n"
 
 
 def _goto_signals(tmp_path) -> AppTest:
-    """AppTest 渲染并切到"今日信号"页。"""
-    return _at_page(tmp_path, "今日信号")
+    """AppTest 渲染并切到"信号"页。"""
+    return _at_page(tmp_path, "信号")
 
 
 def test_scan_block_prompts_command_when_no_csv(tmp_path):
@@ -272,7 +272,7 @@ def test_scan_block_shows_latest_csv_even_without_daily_signals(tmp_path, monkey
         SCAN_HEADER + "2026-08-21,000020,深华发A,ma_cross,11.74,-5.09,2.9e8,4.22\n",
         encoding="utf-8")
 
-    _, frames = _load_dashboard(tmp_path, monkeypatch, "今日信号")
+    _, frames = _load_dashboard(tmp_path, monkeypatch, "信号")
 
     assert [f["symbol"].tolist() for f in frames] == [["000020"]], \
         "应只展示最新一份扫描 CSV（2026-08-21），且保留前导零"
@@ -291,7 +291,7 @@ def test_scan_block_renders_after_daily_signals(tmp_path, monkeypatch):
         SCAN_HEADER + "2026-08-21,000020,深华发A,ma_cross,11.74,-5.09,2.9e8,4.22\n",
         encoding="utf-8")
 
-    _, frames = _load_dashboard(tmp_path, monkeypatch, "今日信号")
+    _, frames = _load_dashboard(tmp_path, monkeypatch, "信号")
 
     assert [f["symbol"].tolist() for f in frames] == [["000333"], ["000020"]]
 
@@ -334,7 +334,7 @@ def test_scan_block_corrupt_csv_shows_error_not_crash(tmp_path):
 
 
 @pytest.mark.parametrize("with_scan", [True, False], ids=["有scanCSV", "无scanCSV"])
-@pytest.mark.parametrize("page", ["回测报告", "个股K线", "今日信号"])
+@pytest.mark.parametrize("page", ["回测报告", "个股K线", "信号"])
 def test_three_pages_render_without_exception(tmp_path, page, with_scan):
     """三页面 × 有/无扫描 CSV：任何组合都不得抛异常（M3 验收矩阵）。"""
     if with_scan:
@@ -355,7 +355,7 @@ def test_list_runs_puts_newest_first_regardless_of_strategy_name(tmp_path, monke
                  "ma_cross_20200101_000000"):
         _complete_run(out, name, {})   # 必须造完整目录：半截目录会被 list_runs 排除
 
-    _load_dashboard(tmp_path, monkeypatch, "今日信号")  # 信号页不读 run 目录
+    _load_dashboard(tmp_path, monkeypatch, "信号")  # 信号页不读 run 目录
     # list_runs 自 v0.2.2 M3 起在 app/ui.py（共享件；回测报告页与 K 线页都用它）。
     # 仍取 dashboard.py exec 之后的那份：路径由它调 ui.bind(ROOT) 钉到 tmp_path。
     mod = app_module("ui")

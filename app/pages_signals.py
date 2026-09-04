@@ -1,4 +1,4 @@
-"""「今日信号」页：固定池的每日买卖信号 + 页尾的全市场扫描区块。
+"""「信号」页：固定池的每日买卖信号 + 页尾的全市场扫描区块。
 
 两张表的每一行都带按钮，各自补上闭环里的一环：
 
@@ -43,7 +43,7 @@ def _scan_columns(df: pd.DataFrame, symbols: tuple[str, ...],
             args=(symbols, ui.CONFIG_PATH, frozenset(symbols)),
             key=pool.ADD_CLICK_KEY,
             help="把这一行的标的加进信号池（写入本地 config/universe.local.yaml），"
-                 "此后「每日信号」会替你盯它的卖出信号。已在池中的行不可点。"),
+                 "此后「信号跟踪」会替你盯它的卖出信号。已在池中的行不可点。"),
         **_record_column(df, names, journal_ui.SCAN_CLICK_KEY),
     }
 
@@ -144,11 +144,11 @@ def scan_section(names: dict[str, str]) -> None:
 
 
 def page_signals() -> None:
-    ui.page_head("今日信号")
+    ui.page_head("信号")
     pool.show_flash()   # 扫描表里点了 ＋ 之后那句 toast / 错误（回调跑在重跑之前）
-    # 本页同屏展示两类产物：固定池每日信号 + 页尾的全市场扫描区块，故控制条有两条
+    # 本页同屏展示两类产物：固定池信号跟踪 + 页尾的全市场扫描区块，故控制条有两条
     ui.control_bar("daily_signal", "market_scan")
-    # 名称查一次两张表共用：每日信号 CSV 没有 name 列，而「记一笔」要把名称一起预填
+    # 名称查一次两张表共用：信号跟踪 CSV 没有 name 列，而「记一笔」要把名称一起预填
     # （查不到就留空，绝不编一个）。扫描表自己带 name，这份查询对它是冗余的兜底。
     names = ui.symbol_names()
     sig_dir = ui.OUTPUT / "signals"
@@ -180,7 +180,7 @@ def _latest_signals(files: list, names: dict[str, str]) -> None:
         df = pd.read_csv(latest, dtype={"symbol": str})
     except (ValueError, OSError) as e:
         st.error(f"信号文件 {latest.name} 读取失败（{type(e).__name__}），"
-                 f"多半是任务中途被打断；删掉该文件后重跑「每日信号」即可。")
+                 f"多半是任务中途被打断；删掉该文件后重跑「信号跟踪」即可。")
         return
     # 表格渲染统一走 ui.data_table：空表时那句提示必须是 if/else **语句**，
     # streamlit 的 magic 会把裸三元（ast.IfExp）整条包进 st.write()，

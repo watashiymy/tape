@@ -9,9 +9,14 @@
 纪律由 tests/test_theme.py 钉住：CSS 里出现 Streamlit 内部标识、出现色板之外的
 裸十六进制、字体栈少了离线兜底，测试都会红。
 
-本文件另外管两件"每页都要有"的注入物（都在 `inject()` 里，面板只调那一个入口）：
-品牌块 TAPE（v0.2.2 §2.1，画成 SVG 交给 st.logo）与 Cmd+C 热键修复
-（v0.2.2 §1.2，一小段 JS，见 HOTKEY_JS 上方的注释）。
+本文件另外管品牌块 TAPE（v0.2.2 §2.1，画成 SVG 交给 st.logo）。
+
+**关于 Cmd+C 弹 "Clear cache?"**：v0.2.2 曾在这里注入一段 JS 包 hotkeys.filter，
+v0.5.0 删掉了——它从头到尾是空操作。1.61 的前端把 `c` 键交给 App.handleKeyDown
+自己 switch，根本不经过 hotkeys-js（window.hotkeys 存在但 _handlers 为空）；
+那个 case 被 sT(isOwner, toolbarMode) 守着。真修法是 .streamlit/config.toml 的
+`client.toolbarMode = "viewer"`（tests/test_theme.py 钉着），顺带去掉了全项目唯一
+一处 `unsafe_allow_javascript=True`。
 
 **色值一个都不在本文件定义**：唯一定义处是 `quant.report.palette`，这里只做转发。
 原因是图表（quant.report.charts）也要用同一套配色，而它属于 src/、不能反向
@@ -271,43 +276,6 @@ CSS = f"""@import url("{FONT_IMPORT}");
 }}
 """
 
-# ---------------------------------------------------------------- 热键修复（v0.2.2 §1.2）
-# 症状：在表格/正文里选中文字按 **Cmd+C**，面板弹出 "Clear caches?"。
-# 根因（读 Streamlit 前端 bundle + 浏览器实测确认，是上游行为不是本项目的 bug）：
-# Streamlit 用 hotkeys-js 绑**单键**快捷键（`r` 重跑、`c` 清缓存），它的过滤器只排除
-# 输入类元素（INPUT / SELECT / TEXTAREA / contentEditable），**完全不看修饰键**；
-# 选中正文时事件目标是普通元素（实测 document.activeElement 为 SECTION）→ 放行 →
-# 触发 CLEAR_CACHE。
-#
-# 修法是**与库协作而非对抗**：不拦键盘事件，只包一层 `hotkeys.filter`，
-# 让带 Cmd/Ctrl/Alt 的组合根本不进热键系统；裸按 c / r 照旧交回原过滤器判断
-# （否则就成了"为修一个键把整套快捷键废掉"）。
-#
-# 关键难点：Streamlit 在 useEffect 里**重新赋值** hotkeys.filter（依赖一变就重跑），
-# 直接赋值会被覆盖。用 Object.defineProperty 装 setter，后续每次赋值都自动裹上。
-#
-# 两道守卫：window.hotkeys 不存在时（将来不再暴露）静默跳过，绝不让面板崩；
-# 幂等标志防重复安装——每次 rerun 都会重新注入这段脚本，装两次就是包装套娃。
-HOTKEY_FLAG = "__qdHotkeyFilterWrapped"
-
-HOTKEY_JS = f"""(function () {{
-  if (window.{HOTKEY_FLAG}) return;
-  var hk = window.hotkeys;
-  if (!hk) return;
-  var wrap = function (orig) {{
-    return function (e) {{
-      if (e && (e.metaKey || e.ctrlKey || e.altKey)) return false;
-      return orig ? orig.apply(this, arguments) : true;
-    }};
-  }};
-  var current = wrap(hk.filter);
-  Object.defineProperty(hk, 'filter', {{
-    configurable: true,
-    get: function () {{ return current; }},
-    set: function (v) {{ current = wrap(v); }}
-  }});
-  window.{HOTKEY_FLAG} = true;
-}})();"""
 
 
 # ---------------------------------------------------------------- HTML 组件
@@ -370,7 +338,7 @@ def metric(label: str, value: str, color: str | None = None) -> str:
 
 def flow(steps) -> str:
     """闭环图（设计 §3.1 第 1 节）：一行步骤 + 琥珀箭头，讲"扫描发现 → 加入
-    universe → 每日信号跟踪卖出"这个闭环。
+    universe → 信号跟踪跟踪卖出"这个闭环。
 
     用 flex 而不是画 SVG：步数会变（文案改动比图形改动频繁得多），
     而且 flex-wrap 让它在窄屏上自己折行，SVG 做不到。
@@ -399,18 +367,14 @@ def manual_tag(text: str) -> str:
 
 
 def inject() -> None:
-    """把字体、语义化 CSS 与热键修复注入当前页。**每次 rerun 都要调**：
+    """把字体与语义化 CSS 注入当前页。**每次 rerun 都要调**：
     Streamlit 每轮重画整棵元素树，上一轮的 <style> 不会留下来。
 
     用 `st.html` 而不是 `st.markdown(..., unsafe_allow_html=True)`：st.html 就是为
     插样式/静态 HTML 加的，也不必为了一段固定 CSS 给整页开 HTML 逃逸口子。
+    纯 `<style>` 会被 Streamlit 送进 event 容器，**不占版面**。
 
-    两发分开，各有各的理由：
-    - 纯 `<style>` 的那发被 Streamlit 送进 event 容器，**不占版面**；夹了 <script>
-      就走主容器了，会在每页顶上留一个空元素位。
-    - `<script>` 那发必须显式 `unsafe_allow_javascript=True`，否则 JS 被静默忽略
-      ——"注入了"和"没注入"长得一模一样。st.html 不套 iframe，脚本落在主文档里，
-      正好够得着 `window.hotkeys`（换成 st.iframe 就在沙箱里，碰不到）。
+    这里**不再**注入任何 `<script>`（v0.5.0）：唯一那段热键 JS 已证实是空操作，
+    见模块 docstring。面板从此没有 `unsafe_allow_javascript=True`。
     """
     st.html(f"<style>{CSS}</style>")
-    st.html(f"<script>{HOTKEY_JS}</script>", unsafe_allow_javascript=True)

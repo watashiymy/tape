@@ -106,7 +106,7 @@ FLASH_KEY = "journal_flash"
 PREFILL_KEY = "journal_prefill"
 JUMP_KEY = "journal_jump"
 
-# 「今日信号」与扫描表里那一列（设计 §5.1 的一键记账）。
+# 「信号」与扫描表里那一列（设计 §5.1 的一键记账）。
 RECORD_COLUMN = "记账"
 RECORD_LABEL = "＋ 记一笔"
 SIGNAL_CLICK_KEY = "journal_signal_record_click"

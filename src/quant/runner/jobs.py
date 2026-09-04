@@ -109,10 +109,14 @@ JOBS: dict[str, Job] = {
             Param("date", "--date", "date", "基准交易日（留空=最近交易日）"),
         ),
         parser=progress.parse_market_scan, result_kind="scan_csv"),
+    # 内部键 daily_signal 与脚本文件名永不改（状态文件 runs/daily_signal.json、
+    # 日志名、argv 都认它）；v0.5.0 只改显示名：它算的不一定是"今天"。
     "daily_signal": Job(
-        name="daily_signal", label="每日信号",
+        name="daily_signal", label="信号跟踪",
         script=str(SCRIPTS / "run_daily_signal.py"),
-        params=(),
+        params=(
+            Param("date", "--date", "date", "基准交易日（留空=数据最新的那天）"),
+        ),
         parser=progress.parse_daily_signal, result_kind="signal_csv"),
     "backtest": Job(
         name="backtest", label="回测",

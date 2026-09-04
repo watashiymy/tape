@@ -4,7 +4,7 @@
 
 - `journal/trades.csv`（真实成交记录）——`store.append_trade` 与页面的「保存修改」
 - `config/universe.local.yaml`（关注池）——`config_edit.write_local_universe` 与
-  「今日信号」页扫描表里的「＋ 加入」
+  「信号」页扫描表里的「＋ 加入」
 
 Streamlit 的多个 session 是**同一进程里的并发线程**：用户开两个标签页同时提交，
 两边各自读到同一份旧内容、各自整份重写，后写的把先写的悄悄冲掉。没有任何报错，
