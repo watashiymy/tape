@@ -90,14 +90,19 @@ def page_kline() -> None:
     # 名称让人看得出这是哪家公司（§2.4）。查不到就只显示代码——扫描 CSV 是唯一的
     # 离线名称来源，而它只记录出信号的标的，所以缺名是常态。
     names = ui.symbol_names()
-    pick, period = st.columns([3, 2], vertical_alignment="bottom")
+    pick, period, span_col = st.columns([3, 2, 2], vertical_alignment="bottom")
     with pick:
         sym = st.selectbox("选择标的", symbols,
                            format_func=lambda s: fmt.symbol_label(s, names.get(s)))
     with period:
-        # 周期用内部键存 session_state，显示名走 KLINE_FREQS（同策略键/显示名的分工）
+        # 周期 / 范围都用内部键存 session_state，显示名走 charts 里那两张表
+        # （同策略键 / 显示名的分工）。
         freq = st.radio("周期", list(charts.KLINE_FREQS), horizontal=True, key="kline_freq",
                         format_func=lambda k: charts.KLINE_FREQS[k][0])
+    with span_col:
+        # 默认 120 根：一次画全部（十年两千多根）每根不到一个像素，正是"太细太密"。
+        span = st.radio("显示最近", list(charts.KLINE_SPANS), horizontal=True, key="kline_span",
+                        format_func=lambda k: charts.KLINE_SPANS[k][0])
     rows = trades_df[trades_df["symbol"].astype(str).str.zfill(6) == sym]
     _symbol_summary(rows)
     raw = BarCache(ui.CACHE_DIR).load(sym)
@@ -110,10 +115,11 @@ def page_kline() -> None:
         for r in rows.itertuples()
     ]
     # config 必须传：滚轮/双指缩放是前端行为，图对象自己开不了（见 charts.KLINE_CONFIG）
-    st.plotly_chart(charts.kline_chart(df, sym_trades, sym, freq=freq), width="stretch",
-                    config=charts.KLINE_CONFIG)
+    st.plotly_chart(charts.kline_chart(df, sym_trades, sym, freq=freq, span=span),
+                    width="stretch", config=charts.KLINE_CONFIG)
     st.caption("悬停看开高低收与量额；滚轮或触控板双指缩放，拖动平移，双击复位。"
-               "▲▼ 标在 K 线外侧：▲ 在最低价下方是买入，▼ 在最高价上方是卖出。")
+               "▲▼ 标在 K 线外侧：▲ 在最低价下方是买入，▼ 在最高价上方是卖出。"
+               "横轴按交易日紧排，不留周末与节假日的空档。")
 
 
 def _symbol_summary(rows: pd.DataFrame) -> None:

@@ -101,9 +101,10 @@ def test_benchmark_nan_head_dropped_not_silently_blank():
 
 
 def test_kline_uses_raw_ohlc_in_correct_slots():
+    """x 是交易日的 ISO 串（类目轴，见 test_kline_x_axis_is_trading_day_categories）。"""
     df = _bars()
     k = kline_chart(df, [], "TEST").data[0]
-    assert list(k.x) == list(df.index)
+    assert list(k.x) == [d.strftime("%Y-%m-%d") for d in df.index]
     assert list(k.open) == list(df["open"])
     assert list(k.high) == list(df["high"])
     assert list(k.low) == list(df["low"])
@@ -237,18 +238,100 @@ def test_kline_layout_pans_by_drag_hovers_unified_and_zooms_by_scroll():
     assert fig.layout.dragmode == "pan"
     assert fig.layout.hovermode == "x unified"
     assert fig.layout.xaxis.rangeslider.visible is False
-    assert fig.layout.xaxis.hoverformat == "%Y-%m-%d"     # 悬停标题别是 "Jan 30, 2026"
     assert charts.KLINE_CONFIG["scrollZoom"] is True
     assert charts.KLINE_CONFIG["doubleClick"] == "reset"
 
 
-def test_kline_keeps_the_view_across_reruns_but_resets_on_symbol_or_period_change():
-    """uirevision 随标的与周期变：换了图才重置缩放，别的重跑保留用户缩放到的位置。"""
+def test_kline_keeps_the_view_across_reruns_but_resets_on_symbol_period_or_span_change():
+    """uirevision 随标的 / 周期 / 范围变：换了图才重置缩放，别的重跑保留用户缩放到的位置。"""
     a = kline_chart(_bars(), [], "600519", freq="D").layout.uirevision
     b = kline_chart(_bars(), [], "600519", freq="W").layout.uirevision
     c = kline_chart(_bars(), [], "000333", freq="D").layout.uirevision
+    d = kline_chart(_bars(), [], "600519", freq="D", span="120").layout.uirevision
     assert a == kline_chart(_bars(), [], "600519", freq="D").layout.uirevision
-    assert len({a, b, c}) == 3
+    assert len({a, b, c, d}) == 4
+
+
+# ================================================================ 太细太密（2026-09-05 第二轮）
+# 根源两个：日期轴给周末/节假日留空档，每根被挤瘦约三成；默认一次画全部十年两千多根。
+
+def test_kline_x_axis_is_trading_day_categories_with_no_calendar_gaps():
+    """类目轴按交易日紧排：相邻两根之间没有周末的空格。类目值就是 ISO 日期串，
+    买卖点用同一套串才落在同一根上。"""
+    df = _two_weeks()                       # 01-05（周五）与 01-08（周一）相邻
+    trades = [Trade("T", "buy", pd.Timestamp("2024-01-08"), 14.0, 100, 5)]
+    fig = kline_chart(df, trades, "T")
+    assert fig.layout.xaxis.type == "category"
+    assert fig.layout.xaxis.categoryorder == "category ascending"
+    xs = list(fig.data[0].x)
+    assert xs[3:5] == ["2024-01-05", "2024-01-08"]
+    assert fig.data[1].x[0] == "2024-01-08"
+    assert all(isinstance(x, str) for x in xs)
+
+
+def test_legend_sits_above_the_plot_not_beside_it():
+    """竖排图例占掉右侧约一成宽度，而宽度是每根 K 线能有几个像素的分母。"""
+    legend = kline_chart(_bars(), [], "T").layout.legend
+    assert legend.orientation == "h" and legend.yanchor == "bottom" and legend.y == 1.0
+
+
+def test_candle_outline_is_one_pixel_not_two():
+    """plotly 默认描边 2px：几百根挤在一起时描边比实体还宽，整根看着像一条线。"""
+    k = kline_chart(_bars(), [], "T").data[0]
+    assert k.increasing.line.width == 1 and k.decreasing.line.width == 1
+    assert k.increasing.line.color == palette.UP and k.decreasing.line.color == palette.DOWN
+
+
+def test_kline_spans_offer_120_250_500_and_all():
+    assert list(charts.KLINE_SPANS) == ["120", "250", "500", "all"]
+    assert [v[1] for v in charts.KLINE_SPANS.values()] == [120, 250, 500, None]
+
+
+def test_span_keeps_only_the_most_recent_bars():
+    df = _two_weeks()
+    fig = kline_chart(df, [], "T", span="120")       # 8 根 < 120：全留
+    assert len(fig.data[0].x) == 8
+    charts.KLINE_SPANS["3"] = ("3 根", 3)             # 临时加一档小窗口来测切法
+    try:
+        k = kline_chart(df, [], "T", span="3").data[0]
+        assert list(k.x) == ["2024-01-09", "2024-01-10", "2024-01-11"]
+        assert list(k.close) == [15.5, 16.5, 17.5]
+        # 涨跌幅按**全部** bar 算再切：窗口首根对它前一根（14.5 → 15.5），不是 —
+        assert "涨跌 +6.90%" in k.text[0], k.text[0]
+    finally:
+        del charts.KLINE_SPANS["3"]
+    with pytest.raises(ValueError):
+        kline_chart(df, [], "T", span="7")
+
+
+def test_trades_before_the_window_are_dropped_not_piled_onto_the_first_bar():
+    """在窗口上直接 searchsorted 会把窗口之前的成交全映射到第一根（返回 0）——
+    那是凭空造出来的买卖点。映射在全部 bar 上做，再只留窗口里的。"""
+    df = _two_weeks()
+    trades = [Trade("T", "buy", pd.Timestamp("2024-01-02"), 10.0, 100, 5),     # 窗口外
+              Trade("T", "sell", pd.Timestamp("2024-01-10"), 16.0, 100, 5, 5, pnl=1.0)]
+    charts.KLINE_SPANS["3"] = ("3 根", 3)
+    try:
+        fig = kline_chart(df, trades, "T", span="3")
+    finally:
+        del charts.KLINE_SPANS["3"]
+    assert [tr.name for tr in fig.data] == ["T", "卖出"], "窗口外的买入不该出现"
+    assert fig.data[1].x[0] == "2024-01-10"
+
+
+def test_weekly_trade_earlier_in_the_first_visible_week_is_kept():
+    """周K + 窗口：成交在窗口首根那一周的周一（日期早于首根的标签周五），它属于这根，
+    必须保留——按日期 >= 首根标签过滤会把它误删。"""
+    df = _two_weeks()
+    trades = [Trade("T", "sell", pd.Timestamp("2024-01-08"), 16.0, 100, 5, 5, pnl=1.0)]
+    charts.KLINE_SPANS["1"] = ("1 根", 1)
+    try:
+        fig = kline_chart(df, trades, "T", freq="W", span="1")
+    finally:
+        del charts.KLINE_SPANS["1"]
+    assert list(fig.data[0].x) == ["2024-01-11"]
+    assert fig.data[1].name == "卖出" and fig.data[1].x[0] == "2024-01-11"
+    assert fig.data[1].customdata[0][0] == "2024-01-08"
 
 
 def test_kline_with_trades_but_empty_bars_does_not_crash():

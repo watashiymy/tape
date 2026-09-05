@@ -339,7 +339,12 @@ def test_kline_page_offers_day_week_month_year(tmp_path):
     # AppTest 给的 options 是 format_func 之后的显示名；value / set_value 走内部键
     assert list(radio.options) == ["日K", "周K", "月K", "年K"]
     assert radio.value == "D"
+    span = at.radio(key="kline_span")
+    assert list(span.options) == ["120 根", "250 根", "500 根", "全部"]
+    assert span.value == "120", "默认只画最近 120 根：一次画全部就是「太细太密」"
     assert len(at.get("plotly_chart")) == 1
+    at = span.set_value("all").run()
+    assert not at.exception, at.exception
     at = radio.set_value("W").run()
     assert not at.exception, at.exception
     chart = at.get("plotly_chart")[0]

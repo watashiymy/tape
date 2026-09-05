@@ -85,6 +85,19 @@ KLINE_FREQS: dict[str, tuple[str, str | None]] = {
 #: （不必去右上角工具栏找放大镜）；双击复位；plotly 的 logo 去掉。
 KLINE_CONFIG: dict = {"scrollZoom": True, "doubleClick": "reset", "displaylogo": False}
 
+#: 显示最近多少根：内部键 → (显示名, 根数；None = 全部)。密度由根数决定而不是由时间跨度
+#: 决定——同样 120 根，日K是半年、周K是两年多、年K是全部，屏幕上一样疏密。
+#: 默认 120 根（页面里定）：一次画十年两千多根，每根不到一个像素宽，正是"太细太密"的来源。
+KLINE_SPANS: dict[str, tuple[str, int | None]] = {
+    "120": ("120 根", 120),
+    "250": ("250 根", 250),
+    "500": ("500 根", 500),
+    "all": ("全部", None),
+}
+
+#: K 线描边宽度。plotly 默认 2px：几百根挤在一起时描边比实体还宽，整根看着像一条线。
+_CANDLE_LINE_WIDTH = 1
+
 #: 买卖标注离影线的距离（占价格的比例）。太小会贴回 K 线上，太大在密集的日线上
 #: 会对不上是哪一根；1.2% 在日/周/年三种周期的真机图上都看得出"这根的下方/上方"。
 _MARKER_PAD = 0.012
@@ -123,6 +136,22 @@ def _bar_for(index: pd.DatetimeIndex, day) -> pd.Timestamp:
     return index[pos]
 
 
+def _cat(day) -> str:
+    """x 轴用**类目**而不是日期：日期轴会给周末与节假日留空档，每根 K 线因此被挤瘦
+    约三成（一周七格只画五根）。类目轴按交易日紧排，这是所有行情软件的画法。
+    类目值就是 ISO 日期串，悬停标题直接显示它，不用再管日期格式。"""
+    return pd.Timestamp(day).strftime("%Y-%m-%d")
+
+
+def _window(bars: pd.DataFrame, span: str) -> pd.DataFrame:
+    """只留最近 N 根（KLINE_SPANS）。切的是数据不是坐标范围：plotly 的 y 轴不会跟着
+    x 缩放自动重算，只设 x 范围会让最近半年的 K 线挤在十年价格区间的一小段里。"""
+    if span not in KLINE_SPANS:
+        raise ValueError(f"未知的显示范围 {span!r}，只能是 {list(KLINE_SPANS)}")
+    n = KLINE_SPANS[span][1]
+    return bars if n is None or len(bars) <= n else bars.iloc[-n:]
+
+
 def _cn_amount(x: float) -> str:
     """成交额：亿 / 万 / 元。日线一根几亿、年线一根几千亿，固定单位哪头都难读。"""
     if pd.isna(x):
@@ -159,16 +188,17 @@ def _bar_hover_text(bars: pd.DataFrame) -> list[str]:
     return lines
 
 
-def _marker_trace(bars: pd.DataFrame, trades: list[Trade], *, action: str) -> go.Scatter:
-    """一组买（或卖）点：x 是所属 bar，y 在影线之外，悬停显示真实成交日、价、股数。"""
+def _marker_trace(bars: pd.DataFrame, placed: list[tuple[pd.Timestamp, Trade]], *,
+                  action: str) -> go.Scatter:
+    """一组买（或卖）点。`placed` 是 (所属 bar 的 x, 成交) 对——映射在**切窗口之前**做好
+    （见 kline_chart），这里只画：y 在影线之外，悬停显示真实成交日、价、股数。"""
     buying = action == "buy"
     xs, ys, custom = [], [], []
-    for t in trades:
-        x = _bar_for(bars.index, t.date)
+    for x, t in placed:
         bar = bars.loc[x]
         ys.append(bar["low"] * (1 - _MARKER_PAD) if buying else bar["high"] * (1 + _MARKER_PAD))
-        xs.append(x)
-        custom.append([pd.Timestamp(t.date).strftime("%Y-%m-%d"), t.price, t.shares])
+        xs.append(_cat(x))
+        custom.append([_cat(t.date), t.price, t.shares])
     verb = "买入" if buying else "卖出"
     return go.Scatter(
         x=xs, y=ys, mode="markers", name=verb, customdata=custom,
@@ -179,33 +209,48 @@ def _marker_trace(bars: pd.DataFrame, trades: list[Trade], *, action: str) -> go
 
 
 def kline_chart(df: pd.DataFrame, trades: list[Trade], title: str, *,
-                freq: str = "D") -> go.Figure:
-    """K 线 + 买卖点。`df` 是日线（prepare_bars 的输出），`freq` 见 KLINE_FREQS。
+                freq: str = "D", span: str = "all") -> go.Figure:
+    """K 线 + 买卖点。`df` 是日线（prepare_bars 的输出），`freq` 见 KLINE_FREQS，
+    `span` 见 KLINE_SPANS（只画最近 N 根）。
 
     A股红涨绿跌（铁律）。色值走色板：暗底上纯 red/green 太刺，方向不变、观感协调。
+    涨跌幅按**全部** bar 算再切窗口：窗口里第一根的涨跌是对它前一根的，不是 —。
+    买卖点先在全部 bar 上映射到所属那根，再只留落在窗口里的——直接在窗口上映射会把
+    窗口之前的成交全堆到第一根上（searchsorted 对早于首根的日期返回 0）。
     """
-    bars = resample_bars(df, freq)
+    full = resample_bars(df, freq)
+    hover = pd.Series(_bar_hover_text(full), index=full.index) if len(full) else pd.Series(dtype=str)
+    bars = _window(full, span)
     fig = go.Figure(go.Candlestick(
-        x=bars.index, open=bars["open"], high=bars["high"], low=bars["low"],
-        close=bars["close"], name=title,
-        increasing_line_color=palette.UP, decreasing_line_color=palette.DOWN,
-        text=_bar_hover_text(bars), hovertemplate="%{text}<extra></extra>"))
+        x=[_cat(d) for d in bars.index], open=bars["open"], high=bars["high"],
+        low=bars["low"], close=bars["close"], name=title,
+        increasing=dict(line=dict(color=palette.UP, width=_CANDLE_LINE_WIDTH)),
+        decreasing=dict(line=dict(color=palette.DOWN, width=_CANDLE_LINE_WIDTH)),
+        text=list(hover.loc[bars.index]) if len(bars) else [],
+        hovertemplate="%{text}<extra></extra>"))
     if len(bars):
-        buys = [t for t in trades if t.action == "buy"]
-        sells = [t for t in trades if t.action == "sell"]
+        first = bars.index[0]
+        placed = [(x, t) for t in trades
+                  if (x := _bar_for(full.index, t.date)) >= first]
+        buys = [(x, t) for x, t in placed if t.action == "buy"]
+        sells = [(x, t) for x, t in placed if t.action == "sell"]
         if buys:
             fig.add_trace(_marker_trace(bars, buys, action="buy"))
         if sells:
             fig.add_trace(_marker_trace(bars, sells, action="sell"))
     fig.update_layout(
         title=title, height=550,
-        xaxis_rangeslider_visible=False,      # 底部那条缩略滑块又占地方又不好用：滚轮就够
-        hovermode="x unified",                # 悬停一根 bar：开高低收量额与买卖点一起出
-        dragmode="pan",                       # 拖动 = 平移；缩放交给滚轮 / 双指（KLINE_CONFIG）
+        xaxis=dict(type="category", categoryorder="category ascending",
+                   rangeslider_visible=False,    # 底部那条缩略滑块又占地方又不好用：滚轮就够
+                   nticks=8),                    # 类目轴默认会试着标每一根，8 个刻度够定位
+        hovermode="x unified",                    # 悬停一根 bar：开高低收量额与买卖点一起出
+        dragmode="pan",                           # 拖动 = 平移；缩放交给滚轮 / 双指（KLINE_CONFIG）
         hoverlabel=dict(align="left"),
-        xaxis_hoverformat="%Y-%m-%d",          # 悬停框标题的日期：真机默认是 "Jan 30, 2026"
-        # 换标的或换周期才重置视图；别的重跑（页头 pill 刷新等）保留用户缩放到的位置
-        uirevision=f"{title}:{freq}",
+        # 图例横排放到绘图区**上方右侧**（标题在左）：竖排在右边会吃掉约一成宽度，
+        # 而宽度正是每根 K 线能有几个像素的分母。
+        legend=dict(orientation="h", x=1, xanchor="right", y=1.0, yanchor="bottom"),
+        # 换标的 / 周期 / 范围才重置视图；别的重跑（页头 pill 刷新等）保留用户缩放到的位置
+        uirevision=f"{title}:{freq}:{span}",
     )
     return _apply_dark(fig)
 
