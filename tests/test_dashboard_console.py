@@ -71,19 +71,50 @@ def _fake_run(root: Path, job: str, status: str, *, log: str = "", exit_code=Non
 
 
 # ---------------------------------------------------------------- 页面骨架
-def test_console_is_a_sidebar_page_and_not_the_default(tmp_path):
-    """控制台是侧栏的一页，但**不是**默认落地页——默认页自 v0.2.1 M3 起是
-    「使用说明」（设计 §3.1）。位次自 v0.2.2 起从末位提到第二位（设计 §2.2），
-    页表本身由 tests/test_dashboard_nav.py 逐项对账，这里只守"没顶掉落地页"。"""
+def test_console_is_the_default_landing_page(tmp_path):
+    """控制台是默认落地页（2026-09-05 用户定；v0.2.1～v0.5.0 是「使用说明」）。
+    页表本身由 tests/test_dashboard_nav.py 逐项对账，这里守"不切页就是它、切过去也是它"。"""
     dashboard = copy_app(tmp_path)
     at = AppTest.from_file(str(dashboard), default_timeout=30).run()
     assert not at.exception
     heads = [e.proto.body for e in at.get("html") if 'class="qd-head"' in e.proto.body]
-    assert heads and 'class="qd-title">使用说明<' in heads[0], heads
+    assert heads and 'class="qd-title">任务控制台<' in heads[0], heads
     at = goto_page(at, CONSOLE)
     assert not at.exception
     heads = [e.proto.body for e in at.get("html") if 'class="qd-head"' in e.proto.body]
     assert heads and f'class="qd-title">{CONSOLE}<' in heads[0], heads
+
+
+def _guide_links(at: AppTest) -> list[str]:
+    """页面上指向「使用说明」的 page_link 标签（AppTest 把 page_link 当 UnknownElement，
+    标签在 proto 里）。"""
+    return [el.proto.label for el in at.get("page_link") if "使用说明" in el.proto.label]
+
+
+def test_console_points_first_time_users_at_the_guide(tmp_path):
+    """落地页不再是手册了，第一次打开面板的人得有条明路：三个任务的状态文件一个都
+    没有时，控制台给一条去「使用说明」的链接（2026-09-05）。"""
+    at = AppTest.from_file(str(copy_app(tmp_path)), default_timeout=30).run()
+    assert not at.exception, at.exception
+    assert _guide_links(at) == ["第一次用？先看「使用说明」"], _guide_links(at)
+
+
+def test_the_first_run_hint_disappears_once_anything_has_run(tmp_path):
+    """跑过一次之后它就消失——常驻的引导等于噪声（同侧栏安全警告一个道理）。"""
+    _fake_run(tmp_path, "backtest", "success", log="全部完成: 2 个策略\n", exit_code=0)
+    at = AppTest.from_file(str(copy_app(tmp_path)), default_timeout=30).run()
+    assert not at.exception, at.exception
+    assert _guide_links(at) == [], _guide_links(at)
+
+
+def test_the_first_run_hint_stays_quiet_when_the_state_file_is_corrupt(tmp_path):
+    """状态文件坏了：卡片会报错，这条引导不猜"是不是第一次"，直接不显示。"""
+    runs = tmp_path / "output" / "runs"
+    runs.mkdir(parents=True)
+    (runs / "backtest.json").write_text('{"script": "backtest", "pid":', encoding="utf-8")
+    at = AppTest.from_file(str(copy_app(tmp_path)), default_timeout=30).run()
+    assert not at.exception, at.exception
+    assert _guide_links(at) == []
 
 
 def test_three_cards_render(tmp_path):

@@ -66,44 +66,48 @@ st.logo(theme.BRAND_LOGO, size=theme.BRAND_LOGO_SIZE)
 # （st.navigation 收到 list 时内部就折成 {"": pages}）。命名组「交易日志」「研究」
 # 各带组头。设计里"若 "" 渲染异常则三组都起名"的备选方案因此不必启用。
 #
-# 顺序沿袭 v0.2.2 §2.2 + v0.3.0 §5 的既有决定：
-#   -「使用说明」第一位且 default=True → **默认落地页**（v0.2.1 的决定不变）：
-#     第一次打开面板的人先看说明，而不是先对着一句"暂无回测结果"发愁；
-#   -「任务控制台」第二位：它是最常用的操作入口；
-#   -「交易日志」组紧跟「信号」：看到信号 → 记一笔，挨着才是一条路；
-#     组内「记账」在前、「持仓与盈亏」在后——先记后看，就是使用顺序。
+# 顺序（2026-09-05 用户定：落地页换成任务控制台）：
+#   -「任务控制台」第一位且 default=True → **默认落地页**：它是每天的操作入口，
+#     页上那条流水线带着就绪状态与 ? 帮助，本身就是引导；从未跑过任务时它还会
+#     给一条指向「使用说明」的链接（pages_console._first_run_hint）。
+#     v0.2.1～v0.5.0 的落地页是「使用说明」——一本手册当首页，天天用的人每次都要多点一下。
+#   -「信号」第二位：看信号是每天第二件事；
+#   -「手册」组紧跟主组：使用说明 / 读懂回测 / 边界与安全，三页说明放一起才读得通；
+#   -「交易日志」组：组内「记账」在前、「持仓与盈亏」在后——先记后看，就是使用顺序。
 #     「记账」沿用老的 journal 路径（老书签不断），报表页用新的 positions；
 #   -「研究」组（信号池 / 回测报告 / 个股K线）殿后。
+# 注意 streamlit 的规则：default=True 那页挂在根路径 `/`，它自己的 url_path 不参与路由
+# （st.Page 文档原话："If you set default=True, url_path is ignored"）；不认识的路径一律
+# 回落到默认页。2026-09-05 真机实测：/console、/ 与任何乱写的路径都打开控制台，
+# /guide 现在能直接打开了——老书签一个都不断。页对象上的 url_path 仍写着，测试侧按它算哈希。
 # url_path 显式给短英文：不给的话会取函数名，地址栏出现 /page_backtest 这种内部名。
 # 「记一笔」要跳到的那一页单独留个名字：st.switch_page 收的是 Page 对象
 # （函数页没有文件路径可给），而按下标从组里取第几个日后一定会错位。
 ENTRY_PAGE = st.Page(page_journal_entry, title="记账", icon=":material/edit_note:",
                      url_path="journal")
-# 说明手册四页（v0.5.0）：第一页留在主组当落地页，另外三页单独成「手册」组。
+# 说明手册三页（v0.5.0 拆页；2026-09-05 起整组进「手册」，不再有一页当落地页）。
 # 从 guide.GUIDE_PAGES 循环建，标题/图标/url_path 只有那一份定义
 # ——两处各写一遍迟早有一处悄悄过期。
 GUIDE_PAGE_OBJS = {
     p.key: st.Page(pages_guide.RENDERERS[p.key], title=p.title, icon=p.icon,
-                   url_path=p.url_path, default=(i == 0))
-    for i, p in enumerate(guide.GUIDE_PAGES)
+                   url_path=p.url_path)
+    for p in guide.GUIDE_PAGES
 }
 # 控制台的流水线区要用 st.page_link 指向这两页，所以它们得有名字（同 ENTRY_PAGE
 # 的既有理由：按下标从组里取「第几个」，插一页就全体错位且不报错）。
 CONSOLE_PAGE = st.Page(page_console, title="任务控制台",
-                       icon=":material/play_circle:", url_path="console")
+                       icon=":material/play_circle:", url_path="console", default=True)
 SIGNALS_PAGE = st.Page(page_signals, title="信号",
                        icon=":material/notifications:", url_path="signals")
 UNIVERSE_PAGE = st.Page(page_universe, title="信号池", icon=":material/list:",
                         url_path="universe")
 PAGES = {
     "": [
-        GUIDE_PAGE_OBJS["guide"],
         CONSOLE_PAGE,
         SIGNALS_PAGE,
     ],
-    # 组名刻意不叫「使用说明」：侧栏里会出现两处同名（组头 + 主组第一项），
-    # 读起来像两个不相干的东西。位置紧跟主组——它是侧栏第一项的续页，挨着才读得通。
-    "手册": list(GUIDE_PAGE_OBJS.values())[1:],
+    # 组名叫「手册」而不是「使用说明」：组里有一页就叫「使用说明」，同名会读成两个东西。
+    "手册": list(GUIDE_PAGE_OBJS.values()),
     "交易日志": [
         ENTRY_PAGE,
         st.Page(page_journal_report, title="持仓与盈亏",

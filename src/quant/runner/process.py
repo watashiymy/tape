@@ -180,6 +180,17 @@ def read_state(job_name: str, runs_dir: str | Path) -> RunState | None:
     return state
 
 
+def has_ever_run(runs_dir: str | Path) -> bool:
+    """面板上是否**曾经**起过任何任务：runs/ 下有没有状态文件（2026-09-05）。
+
+    给控制台的"第一次用？"引导链接用——只看文件存在与否，不读内容：坏掉的状态文件
+    也算"跑过"（那一刻该显示的是卡片上的错误，不是新手引导）。刻意不走 read_state：
+    那条路径会做僵尸清理、还可能抛错，而这里只需要一个是/否。
+    """
+    d = Path(runs_dir)
+    return d.is_dir() and any(d.glob("*.json"))
+
+
 def any_running(runs_dir: str | Path) -> str | None:
     """全局互斥检查：返回正在跑的任务名，没有则 None。
 

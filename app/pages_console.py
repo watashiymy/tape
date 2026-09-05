@@ -284,12 +284,27 @@ def _manual_step_card() -> None:
     st.divider()
 
 
+def _first_run_hint() -> None:
+    """从未在面板上跑过任何任务时，给一条去「使用说明」的链接（2026-09-05）。
+
+    落地页换成了控制台，第一次打开面板的人不再先撞上手册。这条链接补那一环，
+    但**只在适用时出现**：一个任务的状态文件都没有，才算"第一次"。跑过一次
+    之后它就消失——同侧栏安全警告一个道理，常驻的引导等于噪声。
+    状态文件坏了也算"跑过"：那一刻该显示的是卡片上的错误，不是新手引导。
+    只看文件在不在（process.has_ever_run），不走 read_state——那条路径会做僵尸清理。
+    """
+    if not process.has_ever_run(ui.RUNS_DIR):
+        st.page_link(ui.page_ref("guide"), label="第一次用？先看「使用说明」",
+                     icon=":material/menu_book:", help=guide.guide_page("guide").lead)
+
+
 def page_console() -> None:
     _check_roster()
     ui.page_head("任务控制台")
     # 互斥这件事不在这里常驻预告：页头已有一句，而按钮被禁用时 view.start_button_state
     # 的 notice 会当场点名是谁在跑——比预告有用。这里只留"独立进程"这条动作现场的信息。
     st.caption("任务在后台运行：关掉浏览器也不会中断它，回来还能看到进度。")
+    _first_run_hint()
     try:
         busy = process.any_running(ui.RUNS_DIR)
     except RuntimeError as e:

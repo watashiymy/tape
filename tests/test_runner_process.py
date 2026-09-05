@@ -473,3 +473,21 @@ def test_long_silent_gap_still_counts_as_running(runs):
     quiet = time.time() - 120           # 静默 2 分钟
     os.utime(log, (quiet, quiet))
     assert process.read_state("market_scan", runs).status == "running"
+
+
+# ---------------------------------------------------------------- has_ever_run（2026-09-05）
+
+def test_has_ever_run_is_false_for_a_missing_or_empty_runs_dir(tmp_path):
+    assert process.has_ever_run(tmp_path / "output" / "runs") is False
+    (tmp_path / "runs").mkdir()
+    assert process.has_ever_run(tmp_path / "runs") is False
+
+
+def test_has_ever_run_ignores_the_logs_dir_and_counts_any_state_file(tmp_path):
+    """只有 logs/ 子目录（没有状态文件）不算跑过；一个状态文件——哪怕内容坏了——就算。"""
+    runs = tmp_path / "runs"
+    (runs / "logs").mkdir(parents=True)
+    assert process.has_ever_run(runs) is False
+    (runs / "backtest.json").write_text('{"script": "backtest", "pid":', encoding="utf-8")
+    assert process.has_ever_run(runs) is True
+

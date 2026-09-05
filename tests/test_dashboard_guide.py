@@ -3,7 +3,7 @@
 #
 # 文案本身在 tests/test_guide.py 里逐条对账过；这里只管"有没有真的渲染出来、
 # 挂在对的位置上"。三类容易静默失效的接线：
-#   - 说明页排侧栏第一位且是**默认落地页**（新用户一进来就该看到它）；
+#   - 说明页在「手册」组第一位（2026-09-05 起落地页是任务控制台，见 test_dashboard_nav.py）；
 #   - 每张任务卡片右上角的 st.popover，以及每个参数控件的 help=
 #     （漏挂不会报错，只是 tooltip 永远不出现）；
 #   - 空态文案与表格上方那行灰字（退回"暂无数据"也照样能跑）。
@@ -50,7 +50,7 @@ TRADES_HEADER = "symbol,action,date,price,shares,commission,stamp,pnl,holding_da
 
 def _page(tmp_path: Path, page: str = GUIDE) -> AppTest:
     """app/ 整目录复制进 tmp_path 再交给 AppTest（ROOT/OUTPUT 全落在 tmp_path）。
-    一律显式切页：默认落地页是「使用说明」，靠默认值取页会静默测错页面。"""
+    一律显式切页：默认落地页是「任务控制台」，靠默认值取页会静默测错页面。"""
     return goto_page(
         AppTest.from_file(str(copy_app(tmp_path)), default_timeout=30).run(), page)
 
@@ -116,17 +116,17 @@ def _fake_run(root: Path, job: str, status: str, *, log: str = "",
 
 # ================================================================ 侧栏与落地页
 
-def test_guide_is_the_default_landing_page(tmp_path):
-    """§3.1：默认落地页（也排侧栏第一位）。第一次打开面板的人先看说明，
-    而不是先对着一个"暂无回测结果"发愁。
-
-    v0.2.2 起导航是 st.navigation，侧栏里没有可读值的控件了，所以改成断言
-    "不切页时渲染出来的是说明页"——比读控件的选中值更接近用户看到的东西。
-    页表顺序在 tests/test_dashboard_nav.py 里对账。"""
+def test_the_guide_is_no_longer_the_landing_page(tmp_path):
+    """2026-09-05 用户定：落地页换成「任务控制台」（v0.2.1～v0.5.0 是这一页）。
+    不切页渲染出来的不再是说明页；说明页仍可显式切到（其余测试都这么切）。
+    第一次用的人怎么找到它：控制台在从未跑过任务时给链接（tests/test_dashboard_console.py）。"""
     at = AppTest.from_file(str(copy_app(tmp_path)), default_timeout=30).run()
     assert not at.exception, at.exception
     heads = [h for h in _htmls(at) if 'class="qd-head"' in h]
     assert len(heads) == 1, heads
+    assert f'class="qd-title">{GUIDE}<' not in heads[0], heads[0]
+    at = goto_page(at, GUIDE)
+    heads = [h for h in _htmls(at) if 'class="qd-head"' in h]
     assert f'class="qd-title">{GUIDE}<' in heads[0], heads[0]
 
 

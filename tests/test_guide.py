@@ -235,9 +235,9 @@ def test_the_guide_pages_carry_exactly_the_designed_sections():
     assert {p.key: p.section_keys for p in guide.GUIDE_PAGES} == EXPECTED_PAGE_SECTIONS
 
 
-def test_the_landing_page_is_the_first_one_and_keeps_the_old_url():
-    """落地页必须排第一（dashboard.py 按 enumerate 的 0 号给 default=True），
-    且 url_path 仍是 guide——老书签与 README 里到处写的那个名字。"""
+def test_the_guide_page_is_the_first_one_and_keeps_the_old_url():
+    """手册的第一页仍是「使用说明」，url_path 仍是 guide——老书签与 README 里到处写的
+    那个名字（2026-09-05 起它不再是落地页，但页序与地址都不动）。"""
     first = guide.GUIDE_PAGES[0]
     assert first.key == "guide" and first.url_path == "guide"
 

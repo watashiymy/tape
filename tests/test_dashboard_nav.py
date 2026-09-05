@@ -43,14 +43,15 @@ _SPEC.loader.exec_module(theme)
 # （侧栏第一项、任务控制台仍是扁平第 2 项）；另外三页单独成「手册」组，
 # 紧跟主组之后——它们是侧栏第一项的续页，挨着才读得通。
 # 组名刻意不叫「使用说明」：那样侧栏里会出现两处同名，读起来像两个不相干的东西。
+# 2026-09-05（用户定）：落地页换成「任务控制台」；主组只留每天用的两页，「使用说明」
+# 并进「手册」组（「自定义策略」同日搬去 docs/custom-strategy.md）。
 EXPECTED_GROUPS = {
     "": [
-        ("使用说明", ":material/menu_book:", "guide"),
         ("任务控制台", ":material/play_circle:", "console"),
         ("信号", ":material/notifications:", "signals"),
     ],
-    # 2026-09-05：「自定义策略」是写代码的说明，搬去 docs/custom-strategy.md，手册剩两页。
     "手册": [
+        ("使用说明", ":material/menu_book:", "guide"),
         ("读懂回测", ":material/insights:", "guide-metrics"),
         ("边界与安全", ":material/shield:", "guide-limits"),
     ],
@@ -195,18 +196,18 @@ def test_the_record_jump_targets_the_entry_subpage(tmp_path, monkeypatch):
         "跳页钩子没接到 ENTRY_PAGE 上"
 
 
-def test_the_console_is_the_second_page(tmp_path, monkeypatch):
-    """§2.2：控制台从末位提到第二位——它是最常用的操作入口，
-    排在三张只读页后面每次都要多找一遍。"""
+def test_the_console_is_the_first_page(tmp_path, monkeypatch):
+    """2026-09-05：控制台排第一——它是每天的操作入口（v0.2.2 曾从末位提到第二位，
+    那时第一位留给手册）。"""
     _, pages = _declared_pages(tmp_path, monkeypatch)
-    assert pages[1].title == "任务控制台"
+    assert pages[0].title == "任务控制台"
 
 
-def test_the_guide_is_the_only_default_page(tmp_path, monkeypatch):
-    """默认落地页仍是「使用说明」（v0.2.1 的决定不变）。
+def test_the_console_is_the_only_default_page(tmp_path, monkeypatch):
+    """默认落地页是「任务控制台」（2026-09-05 用户定；v0.2.1～v0.5.0 是「使用说明」）。
     显式 default=True 而不是靠"排第一"：st.navigation 的落地页由这个标志定。"""
     _, pages = _declared_pages(tmp_path, monkeypatch)
-    assert [p.title for p in pages if p.default] == ["使用说明"]
+    assert [p.title for p in pages if p.default] == ["任务控制台"]
 
 
 def test_url_paths_are_unique_and_match_the_test_helper(tmp_path, monkeypatch):
@@ -243,13 +244,13 @@ def test_the_sidebar_has_no_radio_widget_left(tmp_path):
     assert at.sidebar.radio == [], "侧栏还留着圆点选择器"
 
 
-def test_the_guide_is_the_landing_page(tmp_path):
-    """不切页直接渲染：落地页必须是「使用说明」。"""
+def test_the_console_is_the_landing_page(tmp_path):
+    """不切页直接渲染：落地页必须是「任务控制台」。"""
     at = AppTest.from_file(str(copy_app(tmp_path)), default_timeout=30).run()
     assert not at.exception, at.exception
     heads = [e.proto.body for e in at.get("html") if 'class="qd-head"' in e.proto.body]
     assert len(heads) == 1, heads
-    assert 'class="qd-title">使用说明<' in heads[0], heads[0]
+    assert 'class="qd-title">任务控制台<' in heads[0], heads[0]
 
 
 @pytest.mark.parametrize("title", [p[0] for p in EXPECTED_PAGES])
