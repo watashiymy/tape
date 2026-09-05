@@ -117,7 +117,9 @@ def test_kline_ashare_color_convention_red_up_green_down():
     assert k.decreasing.line.color == palette.DOWN
 
 
-def test_buy_sell_markers_carry_own_date_price_and_shape():
+def test_buy_sell_markers_sit_outside_the_candle_and_carry_the_trade():
+    """2026-09-05：标注不再画在成交价上（那正好压在 K 线实体中间，把那一根遮没了），
+    买 ▲ 挪到最低价下方、卖 ▼ 挪到最高价上方；真实成交价/股数/日期进悬停。"""
     df = _bars()
     trades = [
         Trade("TEST", "buy", pd.Timestamp("2024-01-03"), 13.0, 100, 5),
@@ -127,11 +129,133 @@ def test_buy_sell_markers_carry_own_date_price_and_shape():
     buy, sell = fig.data[1], fig.data[2]
     assert buy.name == "买入" and sell.name == "卖出"
     assert [pd.Timestamp(x) for x in buy.x] == [pd.Timestamp("2024-01-03")]
-    assert list(buy.y) == pytest.approx([13.0])
     assert [pd.Timestamp(x) for x in sell.x] == [pd.Timestamp("2024-01-06")]
-    assert list(sell.y) == pytest.approx([16.0])
+    assert buy.y[0] < df.loc["2024-01-03", "low"], "买入标注必须在那根 K 线的最低价之下"
+    assert sell.y[0] > df.loc["2024-01-06", "high"], "卖出标注必须在那根 K 线的最高价之上"
+    assert list(buy.customdata[0]) == ["2024-01-03", 13.0, 100]
+    assert list(sell.customdata[0]) == ["2024-01-06", 16.0, 100]
+    assert "成交日" in buy.hovertemplate and "股 @" in buy.hovertemplate
     assert buy.marker.symbol == "triangle-up" and buy.marker.color == palette.UP
     assert sell.marker.symbol == "triangle-down" and sell.marker.color == palette.DOWN
+
+
+# ================================================================ K 线交互（2026-09-05）
+# 用户点名的四条：标注遮 K 线、悬停无信息、只能靠工具栏缩放、只有日线。
+
+def _two_weeks():
+    """两周共 8 个交易日：第一周二~五，第二周一~四（周五缺，像个假日）。价格逐日 +1。"""
+    days = ["2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05",
+            "2024-01-08", "2024-01-09", "2024-01-10", "2024-01-11"]
+    return make_bars([dict(date=d, open=10 + i, high=11 + i, low=9 + i, close=10.5 + i,
+                           volume=1e6 * (i + 1), amount=1e7 * (i + 1))
+                      for i, d in enumerate(days)])
+
+
+def test_resample_weekly_bars_aggregate_ohlcv_and_sit_on_the_last_trading_day():
+    """开 = 首日开、高 = 最高、低 = 最低、收 = 末日收、量额求和；bar 标在该周**最后一个
+    交易日**（第二周是周四 01-11，不是日历周五）——x 轴上永远是真实交易日。"""
+    w = charts.resample_bars(_two_weeks(), "W")
+    assert list(w.index) == [pd.Timestamp("2024-01-05"), pd.Timestamp("2024-01-11")]
+    first = w.iloc[0]
+    assert (first["open"], first["high"], first["low"], first["close"]) == (10, 14, 9, 13.5)
+    assert first["volume"] == pytest.approx(1e6 * (1 + 2 + 3 + 4))
+    assert first["amount"] == pytest.approx(1e7 * (1 + 2 + 3 + 4))
+    second = w.iloc[1]
+    assert (second["open"], second["high"], second["low"], second["close"]) == (14, 18, 13, 17.5)
+
+
+def test_resample_monthly_and_yearly_land_on_the_last_trading_day():
+    df = _two_weeks()
+    assert list(charts.resample_bars(df, "M").index) == [pd.Timestamp("2024-01-11")]
+    assert list(charts.resample_bars(df, "Y").index) == [pd.Timestamp("2024-01-11")]
+    y = charts.resample_bars(df, "Y").iloc[0]
+    assert (y["open"], y["high"], y["low"], y["close"]) == (10, 18, 9, 17.5)
+
+
+def test_resample_skips_periods_without_any_trading_day():
+    """中间整周停牌/长假：不产生一根全 NaN 的空 bar。"""
+    df = make_bars([dict(date=d, open=10, high=11, low=9, close=10.5, volume=1e6, amount=1e7)
+                    for d in ("2024-01-02", "2024-01-03", "2024-01-16", "2024-01-17")])
+    w = charts.resample_bars(df, "W")
+    assert list(w.index) == [pd.Timestamp("2024-01-03"), pd.Timestamp("2024-01-17")]
+    assert not w.isna().any().any()
+
+
+def test_resample_daily_is_the_frame_itself_and_unknown_freq_is_loud():
+    df = _two_weeks()
+    assert charts.resample_bars(df, "D") is df
+    with pytest.raises(ValueError):
+        charts.resample_bars(df, "H")
+
+
+def test_kline_freqs_cover_day_week_month_year_with_display_names():
+    assert list(charts.KLINE_FREQS) == ["D", "W", "M", "Y"]
+    assert [v[0] for v in charts.KLINE_FREQS.values()] == ["日K", "周K", "月K", "年K"]
+
+
+def test_weekly_markers_land_on_the_bar_that_contains_the_trade():
+    """周三买、下周二卖 → 标在各自那周的 bar 上（x 是该周末个交易日），
+    仍在该 bar 的影线之外；悬停里的成交日是真实的周三/周二。"""
+    df = _two_weeks()
+    trades = [Trade("T", "buy", pd.Timestamp("2024-01-03"), 12.0, 100, 5),
+              Trade("T", "sell", pd.Timestamp("2024-01-09"), 16.0, 100, 5, 5, pnl=1.0)]
+    fig = kline_chart(df, trades, "T", freq="W")
+    bars = charts.resample_bars(df, "W")
+    buy, sell = fig.data[1], fig.data[2]
+    assert pd.Timestamp(buy.x[0]) == pd.Timestamp("2024-01-05")
+    assert buy.y[0] < bars.loc["2024-01-05", "low"]
+    assert pd.Timestamp(sell.x[0]) == pd.Timestamp("2024-01-11")
+    assert sell.y[0] > bars.loc["2024-01-11", "high"]
+    assert buy.customdata[0][0] == "2024-01-03" and sell.customdata[0][0] == "2024-01-09"
+
+
+def test_candlestick_hover_text_has_ohlc_change_volume_and_amount():
+    """悬停看得到开高低收、涨跌幅（对上一根 bar 的收盘）、成交量（手）、成交额（亿/万）。
+    第一根没有上一根，涨跌显示 — 而不是 0。"""
+    fig = kline_chart(_two_weeks(), [], "T")
+    k = fig.data[0]
+    assert k.hovertemplate == "%{text}<extra></extra>"
+    first, second = k.text[0], k.text[1]
+    for word in ("开 10.00", "高 11.00", "低 9.00", "收 10.50", "涨跌 —", "成交量", "成交额"):
+        assert word in first, first
+    assert "涨跌 +9.52%" in second, second          # 11.5 / 10.5 − 1
+    assert "成交量 2.00 万手" in second and "成交额 2,000 万" in second, second
+
+
+def test_cn_units_for_amount_and_volume():
+    assert charts._cn_amount(1.234e9) == "12.34 亿"
+    assert charts._cn_amount(5.2e7) == "5,200 万"
+    assert charts._cn_amount(999.0) == "999 元"
+    assert charts._cn_volume(1.5e6) == "1.50 万手"      # 150 万股 = 1.5 万手
+    assert charts._cn_volume(35_000) == "350 手"
+    assert charts._cn_amount(float("nan")) == "—" and charts._cn_volume(float("nan")) == "—"
+
+
+def test_kline_layout_pans_by_drag_hovers_unified_and_zooms_by_scroll():
+    """拖动 = 平移，滚轮 / 双指 = 缩放（前端配置），双击复位；统一按 x 悬停。"""
+    fig = kline_chart(_bars(), [], "T")
+    assert fig.layout.dragmode == "pan"
+    assert fig.layout.hovermode == "x unified"
+    assert fig.layout.xaxis.rangeslider.visible is False
+    assert fig.layout.xaxis.hoverformat == "%Y-%m-%d"     # 悬停标题别是 "Jan 30, 2026"
+    assert charts.KLINE_CONFIG["scrollZoom"] is True
+    assert charts.KLINE_CONFIG["doubleClick"] == "reset"
+
+
+def test_kline_keeps_the_view_across_reruns_but_resets_on_symbol_or_period_change():
+    """uirevision 随标的与周期变：换了图才重置缩放，别的重跑保留用户缩放到的位置。"""
+    a = kline_chart(_bars(), [], "600519", freq="D").layout.uirevision
+    b = kline_chart(_bars(), [], "600519", freq="W").layout.uirevision
+    c = kline_chart(_bars(), [], "000333", freq="D").layout.uirevision
+    assert a == kline_chart(_bars(), [], "600519", freq="D").layout.uirevision
+    assert len({a, b, c}) == 3
+
+
+def test_kline_with_trades_but_empty_bars_does_not_crash():
+    """全部日线都被过滤掉（极端：整段停牌）：不画标注，也不崩。"""
+    empty = _bars().iloc[0:0]
+    fig = kline_chart(empty, [Trade("T", "buy", pd.Timestamp("2024-01-03"), 1.0, 1, 0)], "T")
+    assert len(fig.data) == 1
 
 
 def test_kline_title_and_no_rangeslider():

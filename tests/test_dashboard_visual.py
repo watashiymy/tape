@@ -327,6 +327,43 @@ def test_kline_summary_of_an_open_position_shows_no_fake_zero(tmp_path):
     assert '>已平仓盈亏</div><div class="qd-metric-value">0<' not in blob, blob
 
 
+def test_kline_page_offers_day_week_month_year(tmp_path):
+    """周期切换（2026-09-05）：日/周/月/年四档，切到周K照常出图。"""
+    import json
+
+    _run_dir(tmp_path, klines=("600519",))
+    _cache_bars(tmp_path, "600519")
+    at = _page(tmp_path, "个股K线")
+    assert not at.exception, at.exception
+    radio = at.radio(key="kline_freq")
+    # AppTest 给的 options 是 format_func 之后的显示名；value / set_value 走内部键
+    assert list(radio.options) == ["日K", "周K", "月K", "年K"]
+    assert radio.value == "D"
+    assert len(at.get("plotly_chart")) == 1
+    at = radio.set_value("W").run()
+    assert not at.exception, at.exception
+    chart = at.get("plotly_chart")[0]
+    spec = json.loads(chart.proto.spec)
+    candles = [tr for tr in spec["data"] if tr["type"] == "candlestick"][0]
+    # 夹具是 08-20/21（周四五）与 08-24/25（周一二）：周K正好两根
+    assert len(candles["x"]) == 2, candles["x"]
+
+
+def test_kline_page_enables_scroll_zoom_and_explains_the_gestures(tmp_path):
+    """滚轮/双指缩放是**前端配置**，图对象自己开不了——必须经 st.plotly_chart(config=)
+    真的传到前端；图下面一句话说清手势与 ▲▼ 的位置。"""
+    import json
+
+    _run_dir(tmp_path, klines=("600519",))
+    _cache_bars(tmp_path, "600519")
+    at = _page(tmp_path, "个股K线")
+    assert not at.exception, at.exception
+    config = json.loads(at.get("plotly_chart")[0].proto.config)
+    assert config.get("scrollZoom") is True, config
+    captions = " ".join(c.value for c in at.caption)
+    assert "双指" in captions and "双击" in captions and "▲" in captions, captions
+
+
 def test_kline_page_still_reports_a_missing_cache_clearly(tmp_path):
     """行情缓存里没有这只（用户删过 data/cache）：既有的 st.error 不能被小结顶掉。"""
     _run_dir(tmp_path, klines=("600519",))

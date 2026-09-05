@@ -17,8 +17,7 @@ import ui
 from quant.backtest.portfolio import Trade
 from quant.data.cache import BarCache
 from quant.data.pipeline import prepare_bars
-from quant.report import fmt
-from quant.report.charts import kline_chart
+from quant.report import charts, fmt
 
 
 def page_backtest() -> None:
@@ -91,8 +90,14 @@ def page_kline() -> None:
     # 名称让人看得出这是哪家公司（§2.4）。查不到就只显示代码——扫描 CSV 是唯一的
     # 离线名称来源，而它只记录出信号的标的，所以缺名是常态。
     names = ui.symbol_names()
-    sym = st.selectbox("选择标的", symbols,
-                       format_func=lambda s: fmt.symbol_label(s, names.get(s)))
+    pick, period = st.columns([3, 2], vertical_alignment="bottom")
+    with pick:
+        sym = st.selectbox("选择标的", symbols,
+                           format_func=lambda s: fmt.symbol_label(s, names.get(s)))
+    with period:
+        # 周期用内部键存 session_state，显示名走 KLINE_FREQS（同策略键/显示名的分工）
+        freq = st.radio("周期", list(charts.KLINE_FREQS), horizontal=True, key="kline_freq",
+                        format_func=lambda k: charts.KLINE_FREQS[k][0])
     rows = trades_df[trades_df["symbol"].astype(str).str.zfill(6) == sym]
     _symbol_summary(rows)
     raw = BarCache(ui.CACHE_DIR).load(sym)
@@ -104,7 +109,11 @@ def page_kline() -> None:
         Trade(r.symbol, r.action, pd.Timestamp(r.date), r.price, r.shares, r.commission)
         for r in rows.itertuples()
     ]
-    st.plotly_chart(kline_chart(df, sym_trades, sym), width="stretch")
+    # config 必须传：滚轮/双指缩放是前端行为，图对象自己开不了（见 charts.KLINE_CONFIG）
+    st.plotly_chart(charts.kline_chart(df, sym_trades, sym, freq=freq), width="stretch",
+                    config=charts.KLINE_CONFIG)
+    st.caption("悬停看开高低收与量额；滚轮或触控板双指缩放，拖动平移，双击复位。"
+               "▲▼ 标在 K 线外侧：▲ 在最低价下方是买入，▼ 在最高价上方是卖出。")
 
 
 def _symbol_summary(rows: pd.DataFrame) -> None:
