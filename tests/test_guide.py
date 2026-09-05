@@ -62,7 +62,7 @@ def _all_text() -> str:
     parts += list(guide.EMPTY_STATES.values())
     # 信号池页那两段（v0.2.2 M3 §3.4）：底部"改动写到哪里"的说明与候选清单的代价。
     parts += [guide.POOL_NOTE, guide.POOL_LOAD_HINT]
-    parts.append(guide.PAGE_INTRO)
+    parts += [p.lead for p in guide.GUIDE_PAGES]
     return "\n".join(parts)
 
 
@@ -191,7 +191,7 @@ def test_the_honest_conclusion_is_actually_written_down():
     body = guide.section("metrics").body
     assert "跑输" in body, "回测指标一节没写「跑输」这个结论"
     assert "1/3" in body, "没写「回撤只有约 1/3」这个另一面"
-    assert "不是 bug" in body, "没说明这是诚实结果而不是缺陷"
+    assert "不是算错" in body, "没说明这是如实结果而不是算错"
     assert "蓝筹" in body and "趋势跟随" in body, "没解释为什么（长牛蓝筹对趋势跟随最不利）"
 
 
@@ -215,8 +215,10 @@ def test_scan_section_ranks_volume_ratio_above_pct_chg():
 
 # ================================================================ 八个小节（§3.1）
 
+# 2026-09-05：「自定义策略」一节搬到 docs/custom-strategy.md（写代码的说明不进面板），
+# 面板正文剩九节。
 EXPECTED_SECTIONS = ("tasks", "workflow", "scan", "metrics", "strategies",
-                     "custom", "limits", "userdata", "safety", "cli")
+                     "limits", "userdata", "safety", "cli")
 
 # 分页表来自 v0.5.0 设计 §5（哪一页装哪几节）。**必须单独钉一张字面量表**：
 # 把某一节挪到相邻页时全局顺序不变，import 期的并集校验与 test_dashboard_guide
@@ -225,7 +227,6 @@ EXPECTED_SECTIONS = ("tasks", "workflow", "scan", "metrics", "strategies",
 EXPECTED_PAGE_SECTIONS = {
     "guide": ("tasks", "workflow", "scan"),
     "guide_metrics": ("metrics", "strategies"),
-    "guide_custom": ("custom",),
     "guide_limits": ("limits", "userdata", "safety", "cli"),
 }
 
@@ -253,7 +254,8 @@ def test_the_sections_of_the_spec_are_all_there_in_order():
     """§3.1 定的八节，顺序是设计过的（先讲是什么，再讲怎么读，最后安全与命令行）。
     v0.3.2 在「已知局限」与「安全提示」之间插入「你的数据在哪」——它讲的是
     "哪些文件是你的、不进 git、备份在哪"，与紧随其后的安全提示是同一类话题。
-    v0.4.0 在「策略对比」之后插入「自定义策略」——先看懂内置的，再写自己的。"""
+    v0.4.0 在「策略对比」之后插入过「自定义策略」，2026-09-05 搬去 docs/（写代码的
+    说明不进面板）。"""
     assert tuple(s.key for s in guide.SECTIONS) == EXPECTED_SECTIONS
 
 
@@ -271,56 +273,20 @@ def test_section_lookup_rejects_an_unknown_key():
         guide.section("no-such-section")
 
 
-def test_custom_section_has_the_two_steps_and_three_hard_rules():
-    """「自定义策略」一节（v0.4.0 M4）：两步注册 + 三条硬规则，缺一条都等于没讲——
-    这三条恰好都是"违反了不报错、只给假回测"的坑，文档是唯一的防线。"""
-    body = guide.section("custom").body
-    assert "REGISTRY" in body, "没讲注册那一步（REGISTRY 加一行）"
-    assert "label" in body and "name" in body, "没讲内部键与显示名的分工"
-    assert "adj_close" in body, "没讲「价格一律用后复权」这条硬规则"
-    assert "shift(1)" in body, "没讲「前 N 日窗口自己 shift(1)」这条硬规则"
-    assert "未来函数" in body, "没讲「只用当日及以前数据」这条硬规则"
-    assert "死信号" in body, "没引用唐奇安全 0 死信号的教训"
-
-
-def test_custom_section_code_template_actually_works(tmp_path):
-    """模板代码不许烂：把正文里的 python 代码块存成临时模块**真实导入**，
-    造一段行情验证它真能出仓位。文档里的示例代码没有测试就会腐烂成"照抄就报错"。"""
-    import importlib.util
-
-    import pandas as pd
-    body = guide.section("custom").body
-    m = re.search(r"```python\n(.*?)```", body, re.S)   # 第一个块就是完整模板（含 import）
-    assert m, "自定义一节里没有策略类的 python 代码块"
-    path = tmp_path / "my_break_template.py"
-    path.write_text(m.group(1), encoding="utf-8")
-    spec = importlib.util.spec_from_file_location("my_break_template", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)               # 模板类定义必须原样可执行
-    strat = mod.MyBreak(n=3)
-    close = [10.0, 11.0, 12.0, 11.0, 13.0, 12.0]
-    df = pd.DataFrame({"adj_close": close},
-                      index=pd.bdate_range("2026-01-05", periods=len(close)))
-    pos = strat.generate_positions(df)
-    # 手算：前 3 日最高（不含当日），第 5 根 13 > max(11,12,11)=12 → 1，其余 0
-    assert list(pos) == [0, 0, 0, 0, 1, 0]
-    with pytest.raises(ValueError):
-        mod.MyBreak(n=0)                       # 校验模板必须真的在校验
-
-
 def test_the_task_section_draws_the_closed_loop():
     """§3.1 第 1 条要求配一张闭环图：扫描发现 → 加入 universe → 信号跟踪跟踪卖出。"""
     flow = guide.section("tasks").flow
     assert len(flow) >= 3, f"闭环图至少要三步，实际 {flow}"
     joined = " ".join(flow)
-    assert "扫描" in joined and "universe" in joined and "信号" in joined, flow
+    assert "扫描" in joined and "信号池" in joined and "信号" in joined, flow
 
 
 def test_the_task_section_spells_out_who_watches_the_sell_side():
-    """最容易踩的坑：扫描报了 BUY，人买了，票没进 universe，从此没人管卖出。"""
+    """最容易踩的坑：扫描报了 BUY，人买了，票没进信号池，从此没人管卖出。
+    用使用者的词「信号池」，不用内部键 universe（2026-09-05）。"""
     body = guide.section("tasks").body
-    assert "universe" in body
-    assert "卖出" in body, "没讲清卖出信号只对 universe 里的票有效"
+    assert "信号池" in body and "universe" not in body
+    assert "卖出" in body, "没讲清卖出信号只对信号池里的票有效"
 
 
 def test_the_workflow_section_says_to_wait_for_the_close():
@@ -379,32 +345,23 @@ def test_the_safety_section_is_a_block_of_its_own():
         "只有安全提示该醒目；到处都是警告框等于没有警告"
 
 
-def test_the_safety_section_forbids_binding_to_all_interfaces():
+def test_the_safety_section_forbids_exposing_the_panel():
     """面板能执行本机命令，暴露到局域网就等同于挂了个远程命令执行接口。
-    这句话必须**逐字**带上那个开关，否则用户不知道该躲什么。"""
+    2026-09-05 起这一节面向使用者：说"只在本机用、别暴露到局域网"，命令行开关与
+    lsof 证据留在 README；免责声明也在这块里。"""
     body = guide.section("safety").body
-    assert "0.0.0.0" in body, body
+    assert "局域网" in body and "本机" in body, body
     assert "投资建议" in body, "免责声明也该在这块里"
 
 
-def test_the_safety_section_tells_users_to_bind_the_loopback_explicitly():
-    """v0.2.1 M3 实跑纠正的一处**假话**：原文案（和 README、v0.2.0 设计文档）都写着
-    "streamlit run 默认只监听本机，保持默认即可"。实测不是——
-
-        $ streamlit run app/dashboard.py --server.port 8531
-        $ lsof -nP -iTCP:8531 -sTCP:LISTEN
-        Python  79141 youruser  6u  IPv6 ...  TCP *:8531 (LISTEN)      ← 所有网卡
-
-        $ streamlit run app/dashboard.py --server.port 8532 --server.address 127.0.0.1
-        Python  80013 youruser  6u  IPv4 ...  TCP 127.0.0.1:8532 (LISTEN)
-
-    面板是个本地命令执行入口，"默认安全"这句话错了就不是文案瑕疵而是安全问题。
-    所以文案必须给出**可执行的那一条**（显式绑回环），且不得再声称默认值安全。
+def test_the_safety_section_does_not_call_the_factory_default_safe():
+    """v0.2.1 M3 实跑纠正的一处**假话**：原文案写着"streamlit run 默认只监听本机，
+    保持默认即可"，实测出厂默认监听所有网卡（*:8501）。v0.5.0 起本仓库用
+    .streamlit/config.toml 把默认绑到 127.0.0.1，所以现在可以说"从项目根目录启动就只
+    监听本机"，但必须点明那是**本仓库的配置、不是出厂默认**，不许再写回那句假话。
     """
     body = guide.section("safety").body
-    assert guide.FACTS["bind_flag"] in body, \
-        f"安全提示没给出显式绑回环的开关（{guide.FACTS['bind_flag']}）: {body}"
-    assert "所有网卡" in body, "没说清不加这个开关时 streamlit 监听的是什么"
+    assert "出厂默认" in body, "没点明「只监听本机」是本仓库的配置而非出厂默认"
     for lie in ("默认只监听本机", "保持默认即可"):
         assert lie not in body, f"安全提示又写回了那句假话「{lie}」"
 
@@ -434,13 +391,17 @@ def test_no_user_facing_copy_claims_the_default_bind_is_safe():
 # 它们在哪、不受 git 保护、备份在哪、换机器怎么带走。不写清楚的后果很具体：
 # 换电脑时只 clone 了仓库，以为"东西都在"，结果一笔交易记录都没有。
 
-def test_the_userdata_section_names_every_file_that_belongs_to_the_user():
-    """三个路径都要出现在正文里：日志、日志备份、本地信号池。
-    少写一个，用户换机器时就会漏带一个。"""
+#: 使用者要认识的两个文件——也是面板正文里**唯一**允许出现的文件路径（2026-09-05）：
+#: "换电脑要拷什么"的答案本身就是路径。备份文件不在此列：它由「恢复上一版」按钮代劳。
+USER_FILES = ("journal/trades.csv", "config/universe.local.yaml")
+
+
+def test_the_userdata_section_names_the_two_files_that_belong_to_the_user():
+    """两个路径都要出现在正文里：日志、本地信号池。少写一个，用户换电脑时就会漏带一个。"""
     body = guide.section("userdata").body
-    for path in ("journal/trades.csv", "journal/trades.csv.bak",
-                 "config/universe.local.yaml"):
-        assert path in body, f"「你的数据在哪」一节没提到 {path}"
+    for path in USER_FILES:
+        assert path in body, f"「你的数据与备份」一节没提到 {path}"
+    assert ".bak" not in body, "备份文件名不该再要求使用者认识——有「恢复上一版」按钮"
 
 
 def test_the_userdata_section_says_these_files_are_not_in_git():
@@ -454,16 +415,16 @@ def test_the_userdata_section_says_these_files_are_not_in_git():
 def test_the_userdata_section_tells_you_how_to_move_to_a_new_machine():
     """§5（E）点名要有这一条：换机器时把哪几个文件拷过去。"""
     body = guide.section("userdata").body
-    assert "新机器" in body or "换机器" in body, body
+    assert "新机器" in body or "换机器" in body or "换电脑" in body, body
     assert "拷" in body or "复制" in body, body
 
 
-def test_the_userdata_section_says_settings_yaml_is_still_project_config():
-    """分离的另一半也要说：settings.yaml 仍然受版本控制（成本模型、策略参数是
-    项目决策），里面的 universe 只是**种子**。不说的话，用户会以为改它有用。"""
+def test_the_userdata_section_mentions_the_default_pool_without_naming_its_file():
+    """删掉本地池子文件就回到默认池子——这一点要说；但默认池子存在哪个文件是
+    实现细节（README「你的数据在哪」有），面板正文里不出现（2026-09-05）。"""
     body = guide.section("userdata").body
-    assert "config/settings.yaml" in body
-    assert "种子" in body or "默认池子" in body, body
+    assert "默认池子" in body, body
+    assert "settings.yaml" not in body, body
 
 
 @pytest.mark.parametrize("lie", ["写进 config/settings.yaml",
@@ -532,18 +493,21 @@ def test_the_readme_has_the_same_userdata_section():
     assert "新机器" in section or "换机器" in section, section
 
 
-def test_the_cli_section_lists_all_three_entry_scripts():
-    """§3.1 第 8 条：三条命令，且说明与按钮完全等价。"""
+def test_the_cli_section_points_at_the_readme_instead_of_listing_commands():
+    """2026-09-05 起面板不再教命令行：具体命令在 README，这一节只说"等价、去哪看"。"""
     body = guide.section("cli").body
-    for script in ("run_market_scan.py", "run_daily_signal.py", "run_backtest.py"):
-        assert script in body, f"命令行一节缺 {script}"
     assert "等价" in body, "没说明命令行与按钮等价"
+    assert "README" in body, "没说命令去哪看"
+    for script in ("run_market_scan.py", "run_daily_signal.py", "run_backtest.py"):
+        assert script not in body, f"命令行一节不该再列脚本名 {script}"
 
 
 def test_the_cli_section_warns_that_terminal_jobs_dodge_the_mutex():
-    """命令行起的任务面板看不见，两个 baostock 会话会互踢下线——这是真会踩的坑。"""
+    """命令行起的任务面板看不见、也不受"同时只跑一个"保护，两边会互相踢掉数据连接
+    ——这是真会踩的坑。用使用者的话说，不提 baostock。"""
     body = guide.section("cli").body
-    assert "互斥" in body and "baostock" in body, body
+    assert "看不见" in body and "同时只跑一个" in body, body
+    assert "baostock" not in body, body
 
 
 # ================================================================ 就地帮助（§3.2）
@@ -559,7 +523,8 @@ def test_job_help_answers_all_four_questions(name):
     """§3.2：这个任务做什么、大概多久、产物在哪。参数含义由 PARAM_HELP 分别回答。"""
     text = guide.JOB_HELP[name]
     assert len(text.strip()) > 60, f"{name} 的帮助太短: {text!r}"
-    assert "output/" in text, f"{name} 的帮助没说产物落在哪"
+    assert "**结果在哪**" in text, f"{name} 的帮助没说结果在哪看"
+    assert "output/" not in text, f"{name} 的帮助不该写产物路径（实现细节）"
     assert "**多久**" in text, f"{name} 的帮助没说大概多久"
     assert "**做什么**" in text, f"{name} 的帮助没说这个任务做什么"
 
@@ -591,18 +556,20 @@ def test_limit_tooltip_states_the_real_ceiling_and_the_full_pool_size():
     assert guide.FACTS["scan_pool"] in text, f"没写全量池子有多大: {text!r}"
 
 
-def test_strategy_tooltip_lists_the_registered_strategies():
-    """策略下拉的选项来自注册表；tooltip 里如果漏了某个策略名，
+def test_strategy_tooltip_lists_the_registered_strategies_by_display_name():
+    """策略下拉的选项来自注册表；tooltip 里如果漏了某个策略的显示名，
     用户会以为面板少了功能。"""
+    from quant.strategy import strategy_label
+
     text = guide.PARAM_HELP[("backtest", "strategy")]
-    for name in jobs.JOBS["backtest"].params[0].choices:
-        assert name in text, f"策略 tooltip 缺 {name}: {text!r}"
+    for key in jobs.JOBS["backtest"].params[0].choices:
+        assert strategy_label(key) in text, f"策略 tooltip 缺 {strategy_label(key)}: {text!r}"
 
 
-def test_strategy_copy_pairs_every_display_label_with_its_key():
-    """v0.4.0 M1：guide 文案换显示名，但键不许消失——CLI 与 settings.yaml
-    认的是键，只写中文名会让人在命令行里无从下手。策略对比一节与策略 tooltip
-    两处都要 label 与键成对出现（注册表驱动：新策略漏更新文案这条会红）。"""
+def test_strategy_copy_uses_display_names_and_never_internal_keys():
+    """2026-09-05：面板文案只用显示名。内部键（ma_cross / donchian / tsmom）是文件名
+    与命令行认的东西，使用者不需要认识它——README 里 label 与键成对出现，面板里不。
+    注册表驱动：新策略漏更新文案这条会红。"""
     from quant.strategy import REGISTRY, strategy_label
 
     body = guide.section("strategies").body
@@ -610,8 +577,8 @@ def test_strategy_copy_pairs_every_display_label_with_its_key():
     for key in REGISTRY:
         label = strategy_label(key)
         assert label in body, f"策略对比一节缺显示名 {label}"
-        assert key in body, f"策略对比一节缺内部键 {key}"
         assert label in tooltip, f"策略 tooltip 缺显示名 {label}"
+        assert key not in _all_text(), f"面板文案里出现了内部键 {key}"
 
 
 def test_refresh_tooltip_warns_it_costs_a_full_redownload():
@@ -653,12 +620,68 @@ def test_empty_states_guide_instead_of_just_reporting(kind):
     「暂无数据」四个字什么也没告诉人。"""
     text = guide.EMPTY_STATES[kind]
     assert "开始" in text, f"{kind} 的空态没指路到「开始」按钮"
-    assert "scripts/" in text, f"{kind} 的空态没给等价命令"
+    assert "scripts/" not in text, f"{kind} 的空态不该再给命令行（实现细节，README 有）"
     assert "约" in text, f"{kind} 的空态没给预计耗时"
 
 
 def test_empty_states_cover_exactly_the_three_products():
     assert set(guide.EMPTY_STATES) == set(EMPTY_KINDS)
+
+
+# ================================================================ 面向使用者（2026-09-05）
+
+#: 正常状态的页面文字里不许出现的实现细节（正则）。路径前缀、文件后缀、命令行开关、
+#: 库名、版本号、设计文档编号。错误信息不在这里查（它们可以指名坏文件）。
+#: 命令行开关写成 `--[a-z]`：markdown 表格的 `|---|` 分隔线不算。
+IMPLEMENTATION_TOKENS = (r"config/", r"output/", r"data/", r"journal/", r"scripts/",
+                         r"\.csv", r"\.yaml", r"\.json", r"\.parquet", r"\.bak",
+                         r"--[a-z]", r"baostock", r"[Ss]treamlit", r"parquet",
+                         r"v0\.", r"§")
+
+
+def _user_copy() -> dict[str, str]:
+    """全部正常状态下渲染给使用者看的文案，按来源命名，便于断言失败时定位。
+    「你的数据与备份」一节单独处理——它是唯一允许出现那两个文件路径的地方。"""
+    out = {f"section:{s.key}": s.body for s in guide.SECTIONS if s.key != "userdata"}
+    out |= {f"title:{s.key}": s.title for s in guide.SECTIONS}
+    out |= {f"flow:{i}": step for s in guide.SECTIONS for i, step in enumerate(s.flow)}
+    out |= {f"lead:{p.key}": p.lead for p in guide.GUIDE_PAGES}
+    out |= {f"job_help:{k}": v for k, v in guide.JOB_HELP.items()}
+    out |= {f"param_help:{k}": v for k, v in guide.PARAM_HELP.items()}
+    out |= {f"table_hint:{k}": v for k, v in guide.TABLE_HINTS.items()}
+    out |= {f"empty:{k}": v for k, v in guide.EMPTY_STATES.items()}
+    out |= {name: getattr(guide, name) for name in dir(guide)
+            if name.startswith(("JOURNAL_", "POOL_", "CONSOLE_", "PIPELINE_"))
+            and isinstance(getattr(guide, name), str)}
+    out["pool_source_note:default"] = guide.pool_source_note(None)
+    return out
+
+
+@pytest.mark.parametrize("token", IMPLEMENTATION_TOKENS)
+def test_user_facing_copy_has_no_implementation_details(token):
+    """使用者不关心系统怎么实现的：文件路径、内部键、命令行开关、库名、版本号
+    一律不进正常状态的页面文字（设计 2026-09-05 §1）。这条钉住的是新事实，
+    防止将来"顺手写个路径更清楚"又把它们带回来。"""
+    hits = {name: text for name, text in _user_copy().items() if re.search(token, text)}
+    assert hits == {}, f"面板文案里出现了实现细节 {token!r}：{list(hits)}"
+
+
+def test_the_userdata_section_names_only_the_two_user_files():
+    """例外只有那一节、只有那两个文件。别的路径混进去，这条会红。"""
+    body = guide.section("userdata").body
+    stripped = body
+    for path in USER_FILES:
+        stripped = stripped.replace(path, "")
+    for token in ("config/", "output/", "data/", "journal/", ".csv", ".yaml", ".bak"):
+        assert token not in stripped, f"「你的数据与备份」一节除那两个文件外还写了 {token!r}"
+
+
+def test_no_copy_talks_about_the_document_itself():
+    """"这一页讲……""上一版这里写的是假话""有测试钉着"是作者在跟自己对话，
+    使用者看了没有任何可做的事。"""
+    for name, text in _user_copy().items():
+        for phrase in ("这一页讲", "上一版这里", "假话", "测试钉", "不是 bug"):
+            assert phrase not in text, f"{name} 里还在讲文档自己：「{phrase}」"
 
 
 # ================================================================ 纯净性

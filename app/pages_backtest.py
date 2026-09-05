@@ -33,7 +33,7 @@ def page_backtest() -> None:
     # 区别只在 config_snapshot 里）。所以先铺一张总览表，再选。
     with st.expander(f"全部 {len(runs)} 次回测一览", expanded=False):
         ui.data_table(ui.runs_overview(runs), {}, "无",
-                      hint="叠加层两列为 — 的是 v0.5.0 之前的产物（那时还没有这个配置段），"
+                      hint="叠加层两列为 — 的是较早的回测（那时还没有这项设置），"
                            "不是「当时关着」。「标的数」不同就不是同一个池子，收益不可直接比。",
                       height=ui.SCAN_TABLE_HEIGHT)
     # 显示「策略显示名 时间」，底层值仍是产物目录（目录名存键，是数据不是界面）
@@ -49,9 +49,10 @@ def page_backtest() -> None:
         skipped_path = run / "skipped.csv"
         skipped = (pd.read_csv(skipped_path, dtype={"symbol": str})
                    if skipped_path.exists() else None)
-    except (ValueError, OSError) as e:
-        st.error(f"回测目录 {run.name} 数据残缺（{type(e).__name__}），"
-                 f"多半是回测中途被打断；请删除该目录后刷新页面。")
+    except (ValueError, OSError):
+        # 错误信息可以指名目录：使用者只能手工删它，目录名就是修法。但先说怎么办。
+        st.error(f"这次回测（{fmt.run_label(run.name)}）的结果不完整，多半是中途被打断。"
+                 f"重跑一次回测即可；若它一直出现，删掉结果目录 `{run.name}`。")
         return
     ui.metric_grid(metrics)
     # src 直接给 Path：st.iframe 会自己读这个 HTML 文件并内嵌（report.html 约 5 MB，
@@ -80,13 +81,12 @@ def page_kline() -> None:
     try:
         trades_df = pd.read_csv(run / "trades.csv", dtype={"symbol": str})
     except (ValueError, OSError):
-        st.error(f"回测目录 {run.name} 的 trades.csv 读取失败，"
-                 f"多半是回测中途被打断；请删除该目录后刷新页面。")
+        st.error(f"这次回测（{fmt.run_label(run.name)}）的成交记录读不出来，多半是中途被打断。"
+                 f"重跑一次回测即可；若它一直出现，删掉结果目录 `{run.name}`。")
         return
     symbols = ui.run_symbols(run)
     if not symbols:
-        st.warning(f"回测目录 {run.name} 里读不出标的清单（config_snapshot.json 缺失或损坏，"
-                   f"且没有 kline_*.html 可以兜底）。重跑一次回测即可。")
+        st.warning(f"这次回测（{fmt.run_label(run.name)}）里读不出标的清单，重跑一次回测即可。")
         return
     # 名称让人看得出这是哪家公司（§2.4）。查不到就只显示代码——扫描 CSV 是唯一的
     # 离线名称来源，而它只记录出信号的标的，所以缺名是常态。
@@ -97,7 +97,7 @@ def page_kline() -> None:
     _symbol_summary(rows)
     raw = BarCache(ui.CACHE_DIR).load(sym)
     if raw is None:
-        st.error(f"缓存中无 {sym} 行情")
+        st.error(f"本地还没有 {sym} 的行情数据；跑一次回测或信号跟踪就有了。")
         return
     df, _ = prepare_bars(raw)
     sym_trades = [

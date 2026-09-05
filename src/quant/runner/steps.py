@@ -57,18 +57,19 @@ def scan_status(scan_dir: Path | str, today: date | None = None) -> StepStatus:
     return StepStatus(f"最近一次 {day}，{scope}，报了 {meta.signals} 条{tail}", ready=True)
 
 
-def pool_status(symbols: tuple[str, ...] | None, source: str = "") -> StepStatus:
-    """② 信号池：现在盯着几只、这份池子来自哪个文件。
+def pool_status(symbols: tuple[str, ...] | None) -> StepStatus:
+    """② 信号池：现在盯着几只。
 
     `symbols` 为 None 表示**读不出来**（配置坏了），与"池子是空的"必须分开说：
     前者要去修文件，后者要去加票，给错提示等于把人支到另一个方向。
+    池子来自哪个文件不再写在这里（2026-09-05）：那是实现细节，使用者关心的只是
+    "现在盯着几只"；坏文件的名字由「信号池」页的错误信息指出。
     """
     if symbols is None:
-        return StepStatus("读不到信号池配置——去「信号池」页看具体是哪个文件", ready=False)
+        return StepStatus("读不到信号池配置——去「信号池」页看具体原因", ready=False)
     if not symbols:
         return StepStatus("池子是空的——没有任何标的会被跟踪卖出", ready=False)
-    where = f"（{source}）" if source else ""
-    return StepStatus(f"正在跟踪 {len(symbols)} 只{where}", ready=True)
+    return StepStatus(f"正在跟踪 {len(symbols)} 只", ready=True)
 
 
 def signal_status(signal_dir: Path | str, today: date | None = None) -> StepStatus:

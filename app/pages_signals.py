@@ -42,8 +42,8 @@ def _scan_columns(df: pd.DataFrame, symbols: tuple[str, ...],
             pool.ADD_COLUMN, on_click=pool.on_add,
             args=(symbols, ui.CONFIG_PATH, frozenset(symbols)),
             key=pool.ADD_CLICK_KEY,
-            help="把这一行的标的加进信号池（写入本地 config/universe.local.yaml），"
-                 "此后「信号跟踪」会替你盯它的卖出信号。已在池中的行不可点。"),
+            help="把这一行的标的加进信号池，此后「信号跟踪」会替你盯它的卖出信号。"
+                 "已在池中的行不可点。"),
         **_record_column(df, names, journal_ui.SCAN_CLICK_KEY),
     }
 
@@ -88,7 +88,7 @@ def _scan_table(df: pd.DataFrame, names: dict[str, str]) -> None:
         in_pool = pool.current(ui.CONFIG_PATH)
     except pool.CONFIG_ERRORS as e:
         st.caption(f"读不到信号池配置（{type(e).__name__}: {e}），本表暂不提供「＋ 加入」；"
-                   "详情见「信号池」页。「＋ 记一笔」不依赖配置，照常可用。")
+                   "「＋ 记一笔」照常可用。详情见「信号池」页。")
         # 策略列只在**显示层**换中文显示名（map_strategy_labels 返回新表）：
         # 预填与按钮回调（_record_column）拿的仍是原 df——journal 的 source 存键。
         ui.data_table(fmt.map_strategy_labels(journal_ui.record_table(df)),

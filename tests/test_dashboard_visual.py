@@ -559,7 +559,8 @@ def test_half_written_run_dir_still_gets_the_friendly_hint(tmp_path, files):
 
 
 def test_truncated_metrics_json_still_says_delete_the_dir(tmp_path):
-    """三件套齐全但 metrics.json 只写了一半：给"删除该目录"的提示，不崩页。"""
+    """三件套齐全但 metrics.json 只写了一半：先说怎么办（重跑），再指名残缺目录
+    （错误信息是唯一允许出现目录名的地方），不崩页。"""
     run = tmp_path / "output" / "ma_cross_20260824_151600"
     run.mkdir(parents=True)
     (run / "metrics.json").write_text('{"total_return": 0.48', encoding="utf-8")
@@ -567,7 +568,8 @@ def test_truncated_metrics_json_still_says_delete_the_dir(tmp_path):
     (run / "trades.csv").write_text(TRADES_HEADER, encoding="utf-8")
     at = _page(tmp_path)
     assert not at.exception, at.exception
-    assert any("删除" in e.value for e in at.error), [e.value for e in at.error]
+    errors = [e.value for e in at.error]
+    assert any("重跑" in e and "删掉" in e and run.name in e for e in errors), errors
 
 
 def test_empty_output_still_guides_the_user(tmp_path):

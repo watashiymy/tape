@@ -176,6 +176,53 @@ def _backup(path: Path) -> None:
         raise
 
 
+def restore_backup(path: str | Path = TRADES_PATH) -> int:
+    """把上一版备份**换回来**：正式文件 ← 备份，备份 ← 刚才的正式文件。返回换回来的记录数。
+
+    面板「记账」页的「↶ 恢复上一版」按钮调它（2026-09-05）。之前页面上写的是备份文件
+    叫什么、在哪，要使用者自己去文件系统里换文件——"知道路径"被"一个按钮"替掉了。
+
+    是**交换**而不是单向覆盖：换回之后 `.bak` 里躺着的是刚才那版，再调一次就回去了。
+    于是它可以只要一个确认框，误点的代价是零。
+
+    纪律与 save_trades 相同：
+    - 全程在同一把锁里（另一个标签页正在记账时不许中途插进来换文件）；
+    - **先校验备份能读**（load_trades 对坏文件响亮抛错），任何文件都还没动；
+    - 每一步都是原子替换，正式文件与备份文件在任何时刻都是**完整**的一版：
+      先把当前版写进临时文件（留在磁盘上），再原子换正式文件，最后把临时文件
+      原子换成备份。两次替换之间崩掉，最坏是当前版留在一个临时文件里——
+      不会有半截文件，也不会丢任何一版。
+    - 没有备份 → FileNotFoundError（第一次保存之后才有备份，这不是坏文件）。
+    """
+    path = Path(path)
+    bak = backup_path(path)
+    with locked(path):
+        if not bak.exists():
+            raise FileNotFoundError("还没有上一版备份：第一次保存之后才会有。")
+        restored = load_trades(bak)             # 坏备份在这里响亮抛错，什么都还没动
+        current = path.read_bytes() if path.exists() else None
+        tmp_current = None
+        if current is not None:
+            fd, tmp_current = tempfile.mkstemp(dir=bak.parent, prefix=bak.name + ".",
+                                               suffix=".tmp")
+            with os.fdopen(fd, "wb") as f:
+                f.write(current)
+        fd, tmp_restored = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".",
+                                            suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(bak.read_bytes())
+            os.replace(tmp_restored, path)      # 正式文件 = 上一版
+        except BaseException:
+            Path(tmp_restored).unlink(missing_ok=True)
+            if tmp_current is not None:
+                Path(tmp_current).unlink(missing_ok=True)
+            raise
+        if tmp_current is not None:
+            os.replace(tmp_current, bak)        # 备份 = 刚才那版
+    return len(restored)
+
+
 def append_trade(row: Mapping, path: str | Path = TRADES_PATH, *,
                  now: datetime | None = None) -> str:
     """追加一笔，返回新生成的 trade_id。

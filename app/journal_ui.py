@@ -93,6 +93,8 @@ FILTER_REASON_KEY = "journal_filter_reason"
 
 EDITOR_KEY = "journal_editor"
 SAVE_KEY = "journal_save"
+RESTORE_KEY = "journal_restore"                  # 「↶ 恢复上一版」按钮
+RESTORE_CONFIRM_KEY = "journal_restore_confirm"  # 它前面那个确认框
 CSV_KEY = "journal_export_csv"
 XLSX_KEY = "journal_export_xlsx"
 
@@ -413,6 +415,27 @@ def clear_entry_form() -> None:
         st.session_state.pop(key, None)
 
 
+def restore_backup(*, path: str | Path) -> None:
+    """「↶ 恢复上一版」按钮的 on_click：换回上一版备份，结论走 flash 留到下一轮。
+
+    交换语义（store.restore_backup）：当前这版成为新的备份，所以点错了再点一次
+    就换回来了——这也是为什么它敢只要一个确认框。确认框在这里复位：回调期间
+    改 session_state 是允许的，而在脚本主体里改一个已渲染控件的值会被拒绝。
+    """
+    st.session_state[RESTORE_CONFIRM_KEY] = False
+    try:
+        n = store.restore_backup(path)
+    except FileNotFoundError as e:
+        flash("error", str(e))
+        return
+    except (OSError, ValueError, RuntimeError) as e:
+        flash("error", f"恢复失败（{type(e).__name__}: {e}），记录未被修改。")
+        return
+    # 编辑区的改动按行号存着，整表换了之后留着会落到别人身上（同 save_edits）。
+    st.session_state.pop(EDITOR_KEY, None)
+    flash("ok", f"已恢复上一版（{n} 条记录）。刚才那版成了备份，再点一次可以换回。")
+
+
 # ================================================================ 编辑与删除（§5.2）
 
 def editor_frame(filtered: pd.DataFrame) -> pd.DataFrame:
@@ -431,7 +454,7 @@ def editor_columns() -> dict:
     """
     columns: dict = {
         "trade_id": st.column_config.TextColumn(LOG_LABELS["trade_id"], disabled=True,
-                                                help="store 生成的主键，改删都靠它定位。"),
+                                                help="系统生成的记录编号，改删都靠它定位。"),
         "date": st.column_config.DateColumn(LOG_LABELS["date"], format="YYYY-MM-DD"),
         "kind": st.column_config.SelectboxColumn(LOG_LABELS["kind"],
                                                  options=list(schema.KINDS)),
@@ -598,7 +621,7 @@ def positions_columns() -> dict:
             help="持仓成本 ÷ 股数，留四位小数：送股摊薄之后两位小数会把每股几厘的差抹掉。"),
         PRICE_COLUMN: st.column_config.TextColumn(
             PRICE_COLUMN, alignment="right",
-            help="本地缓存 data/cache/ 里最后一根日线的收盘价。没取过数的标的显示 —。"),
+            help="本地已下载行情里最后一天的收盘价。还没有行情的标的显示 —。"),
         FLOAT_PNL_COLUMN: st.column_config.TextColumn(
             FLOAT_PNL_COLUMN, alignment="right",
             help="（最新价 × 股数）− 持仓成本。最新价拿不到时显示 —，不按 0 算。"),

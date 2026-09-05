@@ -83,13 +83,16 @@ def test_pool_status_separates_broken_config_from_empty_pool():
     broken = steps.pool_status(None)
     empty = steps.pool_status(())
     assert "读不到" in broken.text and broken.ready is False
+    assert "文件" not in broken.text, "别把人支去找文件——「信号池」页的错误会指名"
     assert "空的" in empty.text and empty.ready is False
     assert broken.text != empty.text
 
 
-def test_pool_status_counts_and_names_the_source():
-    got = steps.pool_status(("600519", "000333"), "config/universe.local.yaml")
-    assert "2 只" in got.text and "universe.local.yaml" in got.text
+def test_pool_status_counts_without_naming_any_file():
+    """2026-09-05：只说"盯着几只"。池子来自哪个文件是实现细节，坏文件由「信号池」页
+    的错误信息指名。"""
+    got = steps.pool_status(("600519", "000333"))
+    assert "2 只" in got.text and "yaml" not in got.text
     assert got.ready is True
 
 

@@ -32,7 +32,8 @@ GUIDE = "使用说明"
 # 「记账」与「持仓与盈亏」两个子页（侧栏成组）。页表本身（分组/顺序/图标/URL）
 # 由 tests/test_dashboard_nav.py 对账，这里只借它来遍历"每页都要成立"的断言。
 # v0.5.0：说明拆成四页，后三页单独成「手册」组，紧跟主组。
-PAGES = [GUIDE, "读懂回测", "自定义策略", "边界与安全",
+# 2026-09-05：「自定义策略」搬去 docs/，手册组剩两页。
+PAGES = [GUIDE, "读懂回测", "边界与安全",
          "任务控制台", "信号", "记账", "持仓与盈亏",
          "信号池", "回测报告", "个股K线"]
 
@@ -129,11 +130,14 @@ def test_guide_is_the_default_landing_page(tmp_path):
     assert f'class="qd-title">{GUIDE}<' in heads[0], heads[0]
 
 
-def test_sidebar_points_new_users_at_the_guide(tmp_path):
-    """侧栏得有一句把人指过去——落地页会被切走，切走之后就没有入口提示了。"""
+def test_the_sidebar_carries_only_the_disclaimer(tmp_path):
+    """2026-09-05：侧栏只留导航 + 免责声明。原先常驻的"第一次用先看使用说明"
+    与"本面板可在本机启动任务，详情见控制台"都是在讲面板自己，删了。
+    安全警告只在监听地址不是本机时出现（见 test_dashboard_control_bar.py）。"""
     at = _page(tmp_path, "任务控制台")
-    text = " ".join(c.value for c in at.sidebar.caption)
-    assert GUIDE in text, text
+    captions = [c.value for c in at.sidebar.caption]
+    assert len(captions) == 1 and "投资建议" in captions[0], captions
+    assert GUIDE not in captions[0]
 
 
 # ================================================================ 说明页本体
@@ -162,8 +166,8 @@ def test_every_section_of_the_guide_gets_a_serif_heading(tmp_path):
     for page in guide.GUIDE_PAGES:
         at = _page(tmp_path, page.title)
         titles = [h for h in _htmls(at) if 'class="qd-section"' in h]
-        # 落地页尾多一个「手册还有三页」的目录小标题，它不是正文节
-        seen += [h for h in titles if "手册还有" not in h]
+        # 落地页尾多一个「更多说明」的目录小标题，它不是正文节
+        seen += [h for h in titles if guide.GUIDE_MORE_TITLE not in h]
     assert len(seen) == len(guide.SECTIONS), \
         f"四页加起来应有 {len(guide.SECTIONS)} 个小标题，实际 {len(seen)}"
     for html, sec in zip(seen, guide.SECTIONS):
@@ -181,10 +185,10 @@ def test_every_section_body_is_on_some_guide_page(tmp_path):
         assert head in blob, f"「{sec.title}」的正文在四页里都没渲染出来: {head!r}"
 
 
-def test_the_landing_page_links_to_the_other_three(tmp_path):
-    """落地页页尾的目录：另外三页各一个链接。
+def test_the_landing_page_links_to_the_other_pages(tmp_path):
+    """落地页页尾的目录：其余各页各一个链接。
 
-    拆页最大的风险是"另外三页没人找得到"。侧栏里有它们，但落地页也必须有
+    拆页最大的风险是"另外几页没人找得到"。侧栏里有它们，但落地页也必须有
     一条明路——第一次用的人是从这一页开始读的。
     """
     at = _page(tmp_path)
@@ -222,19 +226,7 @@ def test_the_safety_block_is_a_warning_not_plain_text(tmp_path):
     at = _page(tmp_path, guide.guide_page("guide_limits").title)
     warnings = [w.value for w in at.main.warning]
     assert len(warnings) == 1, f"该页应恰好一个警告块，实际 {len(warnings)}"
-    assert "0.0.0.0" in warnings[0], warnings[0]
-    assert guide.FACTS["bind_flag"] in warnings[0], \
-        f"安全块里没有显式绑回环的开关: {warnings[0]}"
-
-
-@pytest.mark.parametrize("page", PAGES)
-def test_the_sidebar_tells_every_page_how_to_bind_the_loopback(tmp_path, page):
-    """侧栏那条安全提示要给**可执行**的建议。原先写的是"仅限 localhost 使用"
-    ——正确但没法照做；实测 streamlit 默认监听所有网卡，所以必须点名那个开关。"""
-    at = _page(tmp_path, page)
-    text = " ".join(w.value for w in at.sidebar.warning)
-    assert guide.FACTS["bind_flag"] in text, f"{page} 页侧栏没给绑回环的开关: {text}"
-    assert "0.0.0.0" in text, text
+    assert "局域网" in warnings[0], warnings[0]
 
 
 @pytest.mark.parametrize("page", [p.title for p in guide.GUIDE_PAGES])

@@ -386,9 +386,10 @@ def test_the_universe_page_lists_the_pool_with_a_remove_button(tmp_path):
     assert pool.ACTION_COLUMN in dict(at.get("dataframe")[0].proto.button_click_widgets), \
         "移除列没注册成按钮列（on_click 不会被调用）"
     assert str(len(pool.current(path))) in _texts(at), \
-        "底部没说当前池子有多少只（§3.4 A）"
-    assert "universe.local.yaml" in _texts(at), \
-        "底部没说改动会写进 config/universe.local.yaml（v0.3.2 起写的是本地文件）"
+        "没说当前池子有多少只（§3.4 A）"
+    assert "立即生效" in _texts(at), "底部没说改动立即生效"
+    assert "universe.local.yaml" not in _texts(at), \
+        "改动写进哪个文件是实现细节，正常状态的页面上不写（2026-09-05）"
 
 
 def test_clicking_remove_rewrites_the_config_and_toasts(tmp_path):
@@ -754,28 +755,32 @@ def test_adding_from_the_search_box_leaves_settings_yaml_byte_identical(tmp_path
     assert load_settings(path).universe == ("600519", "000333")
 
 
-def test_the_page_says_the_pool_comes_from_the_local_file(tmp_path):
-    """来源必须写在脸上：两个文件都有 universe，看不出用的是哪个的话，
-    用户会以为自己在跟踪 A 池子而脚本每天在跑 B 池子。"""
+def test_the_page_shows_your_own_pool_without_naming_any_file(tmp_path):
+    """已经是自己的池子时什么都不说（2026-09-05）：那是常态，池子存在哪个文件是
+    实现细节。以前这里写"来自本地文件 config/universe.local.yaml"，使用者看了没有
+    任何可做的事；真正要防的"跟踪 A 池子、脚本跑 B 池子"由「这是默认池子」那句
+    （下一条测试）与坏文件时的错误信息负责。"""
     path = _config(tmp_path, ("600519",))
     pool.add("000333", config_path=path, allowed={"000333"})   # 造出本地覆盖
     at = _at(tmp_path)
 
     assert not at.exception, at.exception
     text = _texts(at)
-    assert "本地" in text and "universe.local.yaml" in text, text
+    assert "universe.local.yaml" not in text and "settings.yaml" not in text, text
+    assert "默认池子" not in text, "已经是自己的池子了，别再说它是默认池子"
     assert list(_table(at)["代码"]) == ["600519", "000333"]
 
 
 def test_the_page_says_the_pool_is_the_default_when_there_is_no_local_file(tmp_path):
-    """新克隆的样子：还没有本地文件 → 说清"这是默认池子"，别让人以为这就是他自己的。"""
+    """新克隆的样子：还没有本地文件 → 说清"这是默认池子"，别让人以为这就是他自己的。
+    但不点名文件：默认池子存在哪里是实现细节。"""
     _config(tmp_path, ("600519", "000333"))
     at = _at(tmp_path)
 
     assert not at.exception, at.exception
     text = _texts(at)
-    assert "默认" in text, text
-    assert "settings.yaml" in text, text
+    assert "默认池子" in text, text
+    assert "settings.yaml" not in text, text
 
 
 def test_a_broken_local_file_degrades_the_page_and_names_it(tmp_path):

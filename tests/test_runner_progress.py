@@ -100,10 +100,12 @@ def test_market_scan_truncated_header_gives_no_total():
 
 
 def test_market_scan_done_phase_and_output_path():
-    """完整日志（含"已保存:"）→ 完成态，并给出 CSV 路径供面板渲染结果。"""
+    """完整日志（含"已保存:"）→ 完成态，并给出 CSV 路径供面板渲染结果。
+    路径只进 outputs（机器可读），**不进** extras——extras 是直接铺给使用者看的，
+    一条 output/….csv 是实现细节，结果表本身就渲染在下面（2026-09-05）。"""
     p = parse_market_scan(SCAN_LOG)
     assert p.phase == "完成"
-    assert p.extras["输出"] == "output/scan/2026-08-24.csv"
+    assert "输出" not in p.extras
     assert p.outputs == ("output/scan/2026-08-24.csv",)
 
 
@@ -112,7 +114,7 @@ def test_market_scan_done_keeps_progress_extras():
     真实日志（片段，进度行截到 [1800/3010]）跑完时 extras 得同时有计数和输出路径。"""
     p = parse_market_scan(SCAN_LOG)
     assert p.extras["信号"] == "58 条" and p.extras["失败"] == "0 只"
-    assert p.extras["输出"].endswith(".csv")
+    assert p.outputs and p.outputs[0].endswith(".csv")
 
 
 def test_market_scan_running_phase_is_not_done():
@@ -179,7 +181,7 @@ logout success!
 def test_daily_signal_done_phase_and_output_path():
     p = parse_daily_signal(DAILY_TAIL)
     assert p.phase == "完成"
-    assert p.extras["输出"] == "output/signals/2026-08-25.csv"
+    assert "输出" not in p.extras
     assert p.outputs == ("output/signals/2026-08-25.csv",)
 
 
@@ -214,12 +216,13 @@ def test_backtest_has_no_eta():
 
 
 def test_backtest_done_phase_and_report_dir():
+    """报告目录只进 outputs（机器可读），不进给人看的 extras（2026-09-05）。"""
     p = parse_backtest(BACKTEST_LOG)
     assert p.phase == "完成"
     assert p.outputs == ("output/ma_cross_20260826_112606",
                          "output/donchian_20260826_112606")
-    for d in p.outputs:
-        assert d in p.extras["报告目录"]
+    assert "报告目录" not in p.extras
+    assert not any("output/" in v for v in p.extras.values())
 
 
 def test_backtest_keeps_every_strategy_report_dir():
@@ -243,6 +246,16 @@ def test_backtest_first_report_dir_is_not_completion():
     assert p.outputs == ("output/ma_cross_20260826_112606",)   # 已出的那份不丢
 
 
+def test_backtest_phase_names_the_strategy_by_display_name():
+    """日志表头是内部键（===== ma_cross =====），阶段文案要换成显示名——
+    内部键不进给人看的文字（2026-09-05）。"""
+    from quant.strategy import REGISTRY, strategy_label
+
+    p = parse_backtest(BACKTEST_HALF)
+    assert any(strategy_label(k) in p.phase for k in REGISTRY), p.phase
+    assert not any(k in p.phase for k in REGISTRY), p.phase
+
+
 def test_backtest_done_needs_the_all_finished_marker():
     """两个报告目录都出齐了，但循环外的"全部完成:"还没打 → 仍不算完成。
     唯一可信的整轮完成痕迹就是那一行（脚本里只打一次）。"""
@@ -259,7 +272,7 @@ def test_backtest_fetching_phase_midway():
 def test_backtest_running_phase_after_strategy_header():
     upto = BACKTEST_LOG.split("        total_return")[0]
     p = parse_backtest(upto)
-    assert "ma_cross" in p.phase
+    assert p.phase == "回测中: 双均线交叉", p.phase     # 显示名，不是键 ma_cross
 
 
 def test_backtest_truncated_data_line_not_counted():

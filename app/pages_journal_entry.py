@@ -122,8 +122,8 @@ def _entry_section(report: pnl.PnlReport) -> None:
     tail = st.columns([1, 1, 1.4, 1], vertical_alignment="bottom")
     fee = tail[0].number_input("佣金", min_value=0.0, step=0.01, format="%.2f",
                               key=journal_ui.FEE_KEY,
-                              help="默认按 config/settings.yaml 的成本模型算"
-                                   "（与回测同口径），改成券商实际值即可。")
+                              help="默认按系统的成本模型算（与回测同口径），"
+                                   "改成券商实际值即可。")
     tax = tail[1].number_input("印花税", min_value=0.0, step=0.01, format="%.2f",
                               key=journal_ui.TAX_KEY,
                               help="A 股只在卖出时收，按**成交日**的税率算。")
@@ -169,7 +169,7 @@ def _entry_hint(symbol: str, name: str, day, span) -> str:
         return "填入 6 位代码后，这里会带出名称与该日的价格区间（都取自本地数据，离线可用）。"
     parts = [f"**{symbol}**", name or "名称查不到（新股/退市股？照记即可）"]
     if span is None:
-        parts.append(f"本地缓存里没有 {day} 的行情，无法核对价格区间")
+        parts.append(f"本地还没有 {day} 的行情数据，无法核对价格区间")
     else:
         parts.append(f"{day} 区间 [{span[0]:.2f}, {span[1]:.2f}]")
     return " · ".join(parts)
@@ -248,9 +248,10 @@ def _log_section(trades) -> None:
         st.write("没有符合条件的记录——把上面的筛选条件放宽些看看。")
     else:
         _editor(trades, filtered)
-    # 备份说明**不放在 if/else 里面**：一笔都还没记的时候正是用户即将大批量录入的
-    # 时刻，那时更需要知道"改错了还有救"。位置紧跟历史表（设计 §3）。
-    st.caption(guide.journal_backup_note(store.backup_path(ui.JOURNAL_PATH)))
+    # 备份说明与「恢复上一版」**不放在 if/else 里面**：一笔都还没记的时候正是用户
+    # 即将大批量录入的时刻，那时更需要知道"改错了还有救"。位置紧跟历史表（设计 §3）。
+    st.caption(guide.JOURNAL_BACKUP_NOTE)
+    _restore_block()
     _exports(filtered)
 
 
@@ -289,6 +290,28 @@ def _editor(trades, filtered) -> None:
         journal_ui.save_edits(edited, path=ui.JOURNAL_PATH, today=date.today())
         st.rerun()
     row[1].caption(guide.JOURNAL_EDIT_HINT)
+
+
+def _restore_block() -> None:
+    """「↶ 恢复上一版」：用自动备份换回上一版（2026-09-05）。
+
+    这是"易用的功能"替代"知道路径"的一例：以前这里写着备份文件叫什么、在哪，
+    要使用者自己去文件系统里换文件；现在按钮就在旁边。两步（勾确认 + 点按钮）
+    与删除同一套纪律——这份记录不可再生。没有备份时按钮禁用并说明为什么。
+
+    落盘走 `on_click` 回调而不是 if 语句：回调里可以顺手把确认框复位
+    （运行期间改一个已渲染控件的 session_state 会被 Streamlit 拒绝，回调里不会），
+    否则确认框一直勾着，手一抖再点一次就又换回去了。
+    """
+    has_backup = store.backup_path(ui.JOURNAL_PATH).exists()
+    cols = st.columns([1, 2.2, 2], vertical_alignment="center")
+    confirmed = cols[1].checkbox("确认用上一版覆盖当前记录", key=journal_ui.RESTORE_CONFIRM_KEY,
+                                 disabled=not has_backup)
+    cols[0].button("↶ 恢复上一版", key=journal_ui.RESTORE_KEY,
+                   disabled=not (has_backup and confirmed),
+                   help=guide.JOURNAL_RESTORE_HELP if has_backup
+                   else "还没有上一版备份：第一次保存之后才会有。",
+                   on_click=journal_ui.restore_backup, kwargs={"path": ui.JOURNAL_PATH})
 
 
 def _exports(filtered) -> None:

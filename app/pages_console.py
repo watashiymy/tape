@@ -16,7 +16,6 @@ import guide
 import pool
 import theme
 import ui
-from quant.config import universe_source
 from quant.report import fmt
 from quant.runner import jobs, process, progress, steps, view
 from quant.strategy import strategy_label
@@ -60,8 +59,8 @@ def _result_table(path_str: str, config: dict, hint: str,
     """扫描/信号的产物 CSV。symbol 必须按字符串读，否则 000333 变成 333。"""
     try:
         df = pd.read_csv(ui.resolve(path_str), dtype={"symbol": str})
-    except (ValueError, OSError) as e:
-        st.warning(f"产物 {path_str} 读取失败（{type(e).__name__}），可能已被删除或仍在写。")
+    except (ValueError, OSError):
+        st.warning("结果暂时读不出来，可能还在写入；稍后刷新试试。")
         return
     # 策略列只在显示层换中文显示名，磁盘上的 CSV 照旧存键
     ui.data_table(fmt.map_strategy_labels(df), config, "当次无新信号",
@@ -95,10 +94,11 @@ def _result_metrics(dir_str: str) -> None:
     """
     try:
         metrics = json.loads((ui.resolve(dir_str) / "metrics.json").read_text(encoding="utf-8"))
-    except (ValueError, OSError) as e:
-        st.warning(f"产物 {dir_str} 读取失败（{type(e).__name__}），可能已被删除或仍在写。")
+    except (ValueError, OSError):
+        st.warning("结果暂时读不出来，可能还在写入；稍后刷新试试。")
         return
-    st.caption(dir_str)
+    # 目录名是给机器看的（策略键 + 时间戳）；这里显示「策略 时间」，同「回测报告」页的下拉框。
+    st.caption(fmt.run_label(Path(dir_str).name))
     ui.metric_grid(metrics)
 
 
@@ -247,20 +247,6 @@ def _check_roster() -> None:
             f"多了 {sorted(placed - set(jobs.JOBS))}")
 
 
-def _short_path(path) -> str:
-    """路径显示成**相对仓库根**的样子。
-
-    绝对路径在这种一栏宽的卡片里会折成三行，而且把机器上的用户名一起摊在屏幕上
-    ——面板截图发出去就带着它。相对路径同时也正是文档里到处写的那个写法。
-    """
-    if path is None:
-        return ""
-    try:
-        return str(Path(path).relative_to(ui.ROOT))
-    except ValueError:                      # 不在仓库里（测试夹具、别处的配置）
-        return Path(path).name
-
-
 def _step_status(job_name: str):
     """链上那两个任务的「就绪状态」。返回 None 表示这一步不需要状态行。
 
@@ -287,10 +273,9 @@ def _manual_step_card() -> None:
         st.markdown(guide.PIPELINE_MANUAL_HELP)
     try:
         symbols = pool.current(ui.CONFIG_PATH)
-        source = universe_source(ui.CONFIG_PATH)
     except pool.CONFIG_ERRORS:
-        symbols, source = None, None
-    st.caption(steps.pool_status(symbols, _short_path(source)).text)
+        symbols = None
+    st.caption(steps.pool_status(symbols).text)
     st.caption(guide.PIPELINE_MANUAL_NOTE)
     st.page_link(ui.page_ref("signals"), label="去「信号」看扫描结果",
                  icon=":material/notifications:")
@@ -304,7 +289,7 @@ def page_console() -> None:
     ui.page_head("任务控制台")
     # 互斥这件事不在这里常驻预告：页头已有一句，而按钮被禁用时 view.start_button_state
     # 的 notice 会当场点名是谁在跑——比预告有用。这里只留"独立进程"这条动作现场的信息。
-    st.caption("任务在独立进程里运行：关掉浏览器、甚至停掉本面板都不会中断它。")
+    st.caption("任务在后台运行：关掉浏览器也不会中断它，回来还能看到进度。")
     try:
         busy = process.any_running(ui.RUNS_DIR)
     except RuntimeError as e:

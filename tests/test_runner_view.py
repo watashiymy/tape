@@ -183,12 +183,14 @@ def test_caption_keeps_phase_when_progress_known():
     assert caption.startswith("异常退出，1800/3010（60%）")
 
 
-def test_caption_of_finished_backtest_lists_every_strategy():
-    """默认配置两个策略，两个报告目录都要出现（只留第一个 = donchian 的产物人间蒸发）。"""
-    caption = _joined(parse_backtest(BACKTEST_LOG), elapsed_s=243, status="success")
-    assert caption.startswith("完成，已用 4分3秒")
-    assert "output/ma_cross_20260826_112606" in caption
-    assert "output/donchian_20260826_112606" in caption
+def test_caption_of_finished_backtest_carries_no_paths():
+    """两个策略的报告目录都在 outputs 里（渲染层各出一组指标卡，缺一个 = donchian 的
+    产物人间蒸发），但**不进**给人看的那两行——output/… 是实现细节（2026-09-05）。"""
+    p = parse_backtest(BACKTEST_LOG)
+    assert len(p.outputs) == 2
+    caption = _joined(p, elapsed_s=243, status="success")
+    assert caption == "完成，已用 4分3秒", caption
+    assert "output/" not in caption
 
 
 def test_caption_never_shows_elapsed_when_unknown():

@@ -101,9 +101,9 @@ def _dashboard_section(report: pnl.PnlReport, trades) -> None:
         for col, (label, text, color) in zip(st.columns(3), metrics[start:start + 3]):
             col.html(theme.metric(label, text, color))
     if unpriced:
-        st.caption(f"{unpriced} 只持仓无市价未计入市值与浮动盈亏"
-                   "（本地缓存 `data/cache/` 里没有它们的日线——"
-                   "跑一次回测或信号跟踪就有了），显示的是可算部分，不按 0 顶包。")
+        st.caption(f"{unpriced} 只持仓无市价，未计入市值与浮动盈亏"
+                   "（本地还没有它们的行情数据——跑一次回测或信号跟踪就有了）；"
+                   "显示的是可算部分，不按 0 顶包。")
     st.caption(guide.JOURNAL_PNL_HINT)
 
     curve_col, weights_col = st.columns(2)

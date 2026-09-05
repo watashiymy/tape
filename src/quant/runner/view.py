@@ -174,8 +174,8 @@ def start_button_state(busy: str | None, job_name: str) -> tuple[bool, str]:
     """
     if busy is None:
         return False, ""
-    return True, (f"「{job_label(busy)}」正在运行，"
-                  f"同时只允许一个任务（baostock 单会话）")
+    # 不写"baostock 单会话"：为什么只能一个是实现原因，使用者要知道的是"等谁"。
+    return True, f"「{job_label(busy)}」正在运行，同时只能跑一个任务"
 
 
 def no_output_note(p: Progress, *, status: str) -> str:

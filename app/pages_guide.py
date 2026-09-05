@@ -1,10 +1,11 @@
-"""说明手册（v0.5.0 拆成四页；原为单页「使用说明」，设计 §3.1 / v0.5.0 §5）。
+"""说明手册（v0.5.0 拆成多页；原为单页「使用说明」，设计 §3.1 / v0.5.0 §5）。
 
 拆分的由来：十节 10931 字堆在一页，实测渲染出 9598 字——是第二重那一页
 （任务控制台 4059）的 2.4 倍，全站三分之二的文字压在同一屏。
+2026-09-05 起是三页：「自定义策略」是写代码的说明，搬去了 docs/custom-strategy.md。
 
 拆的是**呈现**不是内容：分页表 `guide.GUIDE_PAGES` 只是 `guide.SECTIONS` 之上的
-一层索引，正文一节没改、一节没重排，并集在 import 期就查过不重不漏。
+一层索引，并集在 import 期就查过不重不漏。
 
 **刻意不放控制条**：这几页没有任何产物可看，也不该让人在读说明时误点一次
 十几分钟的全量扫描。
@@ -37,17 +38,17 @@ def _render(page_key: str) -> None:
 
 
 def _contents() -> None:
-    """落地页页尾的目录：手册还有哪几页、什么时候需要点进去。
+    """落地页页尾的目录：手册还有哪几页、各讲什么。
 
-    **只在落地页出现**。子页顶部不放面包屑、页尾不放「下一页」：四页全在侧栏里
-    看得见，再加一层页内导航就是纯噪声。
+    **只在落地页出现**。子页顶部不放面包屑、页尾不放「下一页」：几页全在侧栏里
+    看得见，再加一层页内导航就是纯噪声。标题下也不放导语——"日常只需要上面那些"
+    是文档在讲自己，使用者看了没有任何可做的事。
 
     用 `st.page_link` 而不是 `st.button`：说明页不许出现按钮
     （tests/test_dashboard_guide.py 钉着——一个"读文档"的页面上出现按钮，
     在这个面板里意味着"会起进程"）。page_link 只是导航，不触发任何任务。
     """
-    st.html(theme.section("手册还有这几页"))
-    st.caption("日常操作只需要上面那些。下面几页是「读一次就放着」的参考。")
+    st.html(theme.section(guide.GUIDE_MORE_TITLE))
     for page in guide.GUIDE_PAGES[1:]:
         st.page_link(ui.page_ref(page.key), label=page.title, icon=page.icon,
                      help=page.lead)
@@ -63,10 +64,6 @@ def page_guide_metrics() -> None:
     _render("guide_metrics")
 
 
-def page_guide_custom() -> None:
-    _render("guide_custom")
-
-
 def page_guide_limits() -> None:
     _render("guide_limits")
 
@@ -76,6 +73,5 @@ def page_guide_limits() -> None:
 RENDERERS = {
     "guide": page_guide,
     "guide_metrics": page_guide_metrics,
-    "guide_custom": page_guide_custom,
     "guide_limits": page_guide_limits,
 }

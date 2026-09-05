@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
+import streamlit as st
 from streamlit.testing.v1 import AppTest
 
 from quant.runner import jobs, process, view
@@ -73,32 +74,68 @@ def _htmls(at: AppTest) -> list[str]:
 
 
 # ------------------------------------------------------------------ §4.3 侧边栏
+def _sidebar_text(at: AppTest) -> str:
+    return " ".join(e.value for e in [*at.sidebar.caption, *at.sidebar.warning,
+                                      *at.sidebar.markdown, *at.sidebar.info])
+
+
+@pytest.fixture
+def exposed_address():
+    """把面板的监听地址临时改成 0.0.0.0（streamlit 的全局配置，AppTest 的脚本线程
+    读的就是它），用完恢复成本仓库 config.toml 里的 127.0.0.1。"""
+    from streamlit import config as st_config
+    before = st.get_option("server.address")
+    st_config.set_option("server.address", "0.0.0.0")
+    try:
+        yield
+    finally:
+        st_config.set_option("server.address", before)
+
+
 def test_sidebar_no_longer_claims_the_panel_is_read_only(tmp_path):
     """M2 之后面板已经能在本机起进程，侧边栏还写着"本面板纯只读；回测与信号请用命令行
-    运行"——这是 HEAD 上一句关于**可执行能力**的假话（设计 §7 的 M3 第一件事）。"""
+    运行"——这是 HEAD 上一句关于**可执行能力**的假话（设计 §7 的 M3 第一件事）。
+    2026-09-05 起侧栏只剩免责声明，那句关于"能不能执行"的话干脆不再出现。"""
     at = _page(tmp_path, "回测报告")
     text = " ".join(c.value for c in at.sidebar.caption)
     assert "只读" not in text, f"侧边栏仍自称只读: {text}"
-    assert "任务控制台" in text, f"侧边栏应说明可执行任务并指向控制台: {text}"
 
 
-def test_sidebar_warns_against_exposing_the_panel_to_the_lan(tmp_path):
-    """§4.3 + §5.3：面板能执行本机命令，暴露到网络等同于远程命令执行漏洞。
-    这句提示原先只在模块 docstring 里（用户看不见），必须出现在侧边栏。"""
+def test_sidebar_has_no_security_warning_when_bound_to_loopback(tmp_path):
+    """2026-09-05：本仓库的 .streamlit/config.toml 已把默认绑到 127.0.0.1（从项目
+    根目录启动时生效，pytest 也在根目录跑）。这时天天亮一条"请绑回环地址"的警告
+    等于没有警告——所以监听本机时侧栏**没有**安全警告。"""
+    assert st.get_option("server.address") == "127.0.0.1", \
+        "测试得在项目根目录跑，才吃得到 .streamlit/config.toml"
     at = _page(tmp_path, "回测报告")
-    text = " ".join(e.value for e in [*at.sidebar.caption, *at.sidebar.warning,
-                                      *at.sidebar.markdown, *at.sidebar.info])
-    assert "--server.address" in text and "0.0.0.0" in text, f"缺少暴露风险提示: {text}"
+    assert at.sidebar.warning == [], [w.value for w in at.sidebar.warning]
+
+
+def test_sidebar_warns_when_the_panel_listens_on_all_interfaces(tmp_path, exposed_address):
+    """§4.3 + §5.3：面板能执行本机命令，暴露到网络等同于远程命令执行漏洞。
+    监听地址不是本机时，侧栏必须警告，并给出**可执行**的修法（那个开关）。"""
+    at = _page(tmp_path, "回测报告")
+    text = _sidebar_text(at)
+    assert "--server.address 127.0.0.1" in text and "0.0.0.0" in text, \
+        f"缺少暴露风险提示: {text}"
     assert "局域网" in text, text
 
 
-def test_sidebar_warning_shows_on_every_page(tmp_path):
-    """提示写在侧边栏而不是某一页里：四页都得看得见（用户可能只待在 K 线页）。"""
+def test_sidebar_warning_shows_on_every_page_when_exposed(tmp_path, exposed_address):
+    """提示写在侧边栏而不是某一页里：每一页都得看得见（用户可能只待在 K 线页）。"""
     for page in ALL_PAGES:
         at = _page(tmp_path, page)
-        text = " ".join(e.value for e in [*at.sidebar.caption, *at.sidebar.warning,
-                                          *at.sidebar.markdown, *at.sidebar.info])
-        assert "0.0.0.0" in text, f"{page} 页的侧边栏没有安全提示"
+        assert "局域网" in _sidebar_text(at), f"{page} 页的侧边栏没有安全提示"
+
+
+@pytest.mark.parametrize("address, loopback", [
+    ("127.0.0.1", True), ("localhost", True), ("::1", True), ("LOCALHOST", True),
+    ("0.0.0.0", False), ("192.168.1.8", False), ("", False), (None, False),
+])
+def test_is_loopback_treats_the_factory_default_as_exposed(address, loopback):
+    """空串 / None 是 streamlit 的出厂默认——监听所有网卡，必须归到"不是本机"。"""
+    from tests.conftest import app_module
+    assert app_module("ui").is_loopback(address) is loopback
 
 
 def test_page_title_is_not_stale():

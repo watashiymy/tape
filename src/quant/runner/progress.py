@@ -9,6 +9,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from quant.strategy import strategy_label
+
 STARTING = "启动中"
 DONE = "完成"
 CRASHED = "异常退出"
@@ -85,14 +87,16 @@ def _saved_terminal(text: str, phase: str,
                     extras: dict[str, str]) -> tuple[str, dict[str, str], tuple[str, ...]]:
     """两个信号脚本共用的收尾：`已保存: <csv>` → 完成 + 输出路径，崩溃压倒完成态。
 
-    收尾态一律**并入**已有 extras（`|=`）而不是顶掉：顶掉的话完成时
+    崩溃信息一律**并入**已有 extras（`|=`）而不是顶掉：顶掉的话
     "信号 58 条 / 失败 0 只"这类进度计数会凭空消失。
     """
     outputs: tuple[str, ...] = ()
     saved = _SAVED.search(text)
     if saved:
+        # 路径只进 outputs（机器可读，渲染层据此读产物），**不进 extras**：
+        # extras 是直接铺给使用者看的，一条 output/scan/….csv 是实现细节，
+        # 结果表本身就渲染在下面（2026-09-05）。
         phase, outputs = DONE, (saved.group(1),)
-        extras |= {"输出": saved.group(1)}
     crash = _crash(text)
     if crash:
         phase = CRASHED         # 崩溃优先，但已解析到的进度与产物都留着
@@ -163,11 +167,13 @@ def parse_backtest(log_text: str, total: int | None = None) -> Progress:
         phase = "取数中"
     strat = _STRATEGY_HEADER.findall(log_text)
     if strat:
-        phase = f"回测中: {strat[-1]}"
+        # 日志里的表头是内部键（===== ma_cross =====），给人看要换显示名（2026-09-05）。
+        phase = f"回测中: {strategy_label(strat[-1])}"
     extras: dict[str, str] = {}
+    # 报告目录只进 outputs（渲染层据此读每个策略的 metrics.json），**不进 extras**：
+    # 那是 output/ma_cross_… 这种给机器看的路径，而结果卡片就渲染在下面、每张都带
+    # 「策略 时间」的标题（2026-09-05）。
     outputs = tuple(_REPORT_DIR.findall(log_text))    # 每个策略一个，全取
-    if outputs:
-        extras["报告目录"] = "、".join(outputs)
     if _ALL_DONE.search(log_text):
         phase = DONE
     crash = _crash(log_text)

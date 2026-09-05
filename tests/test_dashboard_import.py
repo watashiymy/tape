@@ -175,7 +175,8 @@ def test_half_written_run_dir_is_excluded_not_crashing(tmp_path, files):
 
 def test_truncated_metrics_json_shows_error_not_crash(tmp_path):
     """metrics.json 本身写了一半（无效 JSON）但其余文件齐全：
-    页面不能抛 JSONDecodeError，要用 st.error 提示删除残缺目录。"""
+    页面不能抛 JSONDecodeError，要用 st.error 先说怎么办（重跑），
+    再指名残缺目录（错误信息是唯一允许出现目录名的地方，2026-09-05）。"""
     run = tmp_path / "output" / "ma_cross_20260824_151600"
     run.mkdir(parents=True)
     (run / "metrics.json").write_text('{"total_return": 0.48', encoding="utf-8")  # 截断
@@ -183,7 +184,8 @@ def test_truncated_metrics_json_shows_error_not_crash(tmp_path):
     (run / "trades.csv").write_text("symbol,action\n", encoding="utf-8")
     at = _at_page(tmp_path)
     assert not at.exception, f"残缺 metrics.json 不该崩页: {at.exception}"
-    assert any("删除" in e.value for e in at.error), "应出现提示删除残缺目录的 st.error"
+    errors = [e.value for e in at.error]
+    assert any("重跑" in e and "删掉" in e and run.name in e for e in errors), errors
 
 
 @pytest.mark.parametrize("page", ["回测报告", "个股K线"])
@@ -252,12 +254,15 @@ def _goto_signals(tmp_path) -> AppTest:
     return _at_page(tmp_path, "信号")
 
 
-def test_scan_block_prompts_command_when_no_csv(tmp_path):
-    """无 output/scan/ 或其中无 CSV 时，区块应 st.info 提示运行扫描命令。"""
+def test_scan_block_prompts_the_start_button_when_no_csv(tmp_path):
+    """无 output/scan/ 或其中无 CSV 时，区块应 st.info 指路到「开始」按钮并给耗时。
+    2026-09-05 起不再在页面上给命令行（实现细节，README 有）。"""
     at = _goto_signals(tmp_path)
     assert not at.exception
-    assert any("run_market_scan" in i.value for i in at.info), \
-        f"无扫描 CSV 时应提示运行 run_market_scan.py，实际 info: {[i.value for i in at.info]}"
+    infos = [i.value for i in at.info]
+    assert any("全市场扫描" in i and "开始" in i for i in infos), \
+        f"无扫描 CSV 时应指路到「全市场扫描」的「开始」，实际 info: {infos}"
+    assert not any("run_market_scan" in i for i in infos), "空态不该再给命令行"
 
 
 def test_scan_block_shows_latest_csv_even_without_daily_signals(tmp_path, monkeypatch):

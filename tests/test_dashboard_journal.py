@@ -607,30 +607,72 @@ def test_an_unreadable_config_disables_only_the_entry_form(tmp_path):
     assert "3,425.87" in _texts(at), "配置坏了不该连盈亏一起藏起来"
 
 
-# ================================================ 备份兜底（v0.3.2 §3）
+# ================================================ 备份兜底（v0.3.2 §3；2026-09-05 改成按钮）
 #
 # 日志移出版本控制之后，"误删一行用 git 找回"这条路没了。替代品是每次写盘前
-# 自动另存的 `journal/trades.csv.bak`。**用户必须知道它存在**——一个没人知道的
-# 备份文件等于没有备份：真出事的那一刻，他只会以为数据没了。
+# 自动另存的上一版。**用户必须知道它存在**——一个没人知道的备份等于没有备份。
+# v0.3.2 的做法是把备份文件名写在页面上，让人自己去文件系统里换；2026-09-05 起
+# 页面上是一个「↶ 恢复上一版」按钮（勾确认再点，交换语义），不再要求使用者
+# 认识 .bak 文件——"易用的功能"替代"知道路径"。
 
-def test_the_entry_page_says_where_the_backup_file_is(tmp_path):
+def test_the_entry_page_offers_restore_instead_of_naming_the_backup_file(tmp_path):
     root = _root(tmp_path)
-    _journal(root, _buy(), _sell())
+    path = _journal(root, _buy(), _sell())
+    store.save_trades(store.load_trades(path), path)     # 造出一份备份
     at = _page(root)
 
     assert not at.exception, at.exception
     text = _texts(at)
-    assert "trades.csv.bak" in text, f"记账页没说备份文件在哪：{text}"
-    assert "上一版" in text, f"没说清 .bak 里是什么（紧邻的上一版）：{text}"
+    assert "trades.csv.bak" not in text, f"记账页还在要求使用者认识备份文件：{text}"
+    assert "上一版" in text, f"没说清有「上一版」可以换回：{text}"
+    button = at.button(key=jui.RESTORE_KEY)
+    assert button.label == "↶ 恢复上一版"
+    assert button.disabled, "没勾确认之前按钮必须是禁用的（两步纪律，同删除）"
+    assert not at.checkbox(key=jui.RESTORE_CONFIRM_KEY).disabled
 
 
-def test_the_backup_note_is_there_before_the_first_trade_too(tmp_path):
-    """一笔都没记过的时候也要说：那正是用户会大批量录入的时刻。"""
+def test_the_restore_button_is_disabled_and_explained_before_the_first_save(tmp_path):
+    """一笔都没记过、也没有任何备份的时候：按钮在（让人知道有这回事），但禁用，
+    tooltip 说清为什么——而不是点下去报错。"""
     root = _root(tmp_path)
     at = _page(root)
 
     assert not at.exception, at.exception
-    assert "trades.csv.bak" in _texts(at)
+    assert "上一版" in _texts(at)
+    button = at.button(key=jui.RESTORE_KEY)
+    assert button.disabled
+    assert "第一次保存" in button.proto.help, button.proto.help
+    assert at.checkbox(key=jui.RESTORE_CONFIRM_KEY).disabled
+
+
+def test_restoring_swaps_the_journal_with_its_backup_end_to_end(tmp_path):
+    """端到端：删一行并保存（造出备份）→ 勾确认 → 点恢复 → 日志回到两行、
+    备份里躺着刚才那一行的版本；确认框复位；再来一次就换回去。"""
+    root = _root(tmp_path)
+    path = _journal(root, _buy(), _sell())
+    two_rows = path.read_bytes()
+    at = _page(root)
+    at = edit_table(at, {1: {jui.DELETE_COLUMN: True}},
+                    dataframe=_log_table_index(at), click=jui.SAVE_KEY)
+    assert len(store.load_trades(path)) == 1
+    one_row = path.read_bytes()
+
+    at.checkbox(key=jui.RESTORE_CONFIRM_KEY).check().run()
+    assert not at.button(key=jui.RESTORE_KEY).disabled
+    at.button(key=jui.RESTORE_KEY).click().run()
+
+    assert not at.exception, at.exception
+    assert path.read_bytes() == two_rows, "没换回上一版"
+    assert store.backup_path(path).read_bytes() == one_row, "刚才那版该成为新的备份"
+    # 成功走 st.toast（journal_ui.show_flash 的 ok 档），不在 _texts 里
+    assert any("已恢复上一版" in t.value for t in at.toast), [t.value for t in at.toast]
+    assert not at.checkbox(key=jui.RESTORE_CONFIRM_KEY).value, "确认框没复位，手一抖就再换一次"
+    assert at.button(key=jui.RESTORE_KEY).disabled
+
+    at.checkbox(key=jui.RESTORE_CONFIRM_KEY).check().run()
+    at.button(key=jui.RESTORE_KEY).click().run()
+    assert path.read_bytes() == one_row, "再点一次应该换回来"
+    assert store.backup_path(path).read_bytes() == two_rows
 
 
 def test_saving_edits_really_leaves_a_backup_behind(tmp_path):
@@ -1146,7 +1188,7 @@ def test_the_page_shows_the_known_limits_too(tmp_path):
     拆页后数字在「持仓与盈亏」页，局限就得跟着数字走。"""
     at = _page(_root(tmp_path), REPORT_PAGE)
     text = _texts(at)
-    assert "浮动盈亏" in text and "缓存" in text, text
+    assert "浮动盈亏" in text and "行情" in text, text
 
 
 def test_the_entry_page_still_explains_the_record_types(tmp_path):

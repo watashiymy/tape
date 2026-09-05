@@ -96,25 +96,29 @@ NAME_LOOKBACK_FILES = 30
 # 按 AST 读这个字典的键（`k.value`），推导式里的键在 AST 里是 None，那条测试会
 # 以 AttributeError 炸掉——而它守的正是"每页都有页头文案"这件事。
 PAGE_INTRO = {
-    "使用说明": guide.PAGE_INTRO,
+    "使用说明": guide.guide_page("guide").lead,
     "读懂回测": guide.guide_page("guide_metrics").lead,
-    "自定义策略": guide.guide_page("guide_custom").lead,
     "边界与安全": guide.guide_page("guide_limits").lead,
-    "任务控制台": "在本机启动三个任务并盯进度、日志与结果；"
-             "同时只允许一个任务（baostock 单会话）。",
+    "任务控制台": "启动任务、盯进度与结果；同时只跑一个。",
     # 「17:30」只留在空态文案里：那才是用户问"为什么是空的"的时刻，
     # 而空态每天都会出现（绝大多数日子没有新信号）。页头这句覆盖面更广但不可执行。
-    "信号": "固定池的每日买卖信号，页尾是全市场扫描当日新 BUY。",
-    "记账": "记你**真实成交**的每一笔；历史日志可筛选、可改删、"
-          "可导出（CSV / Excel）。",
-    "持仓与盈亏": "按整本日志算出的当前持仓、已实现盈亏与来源对比；"
-             "不受「记账」页筛选的影响。",
-    # 「改动写进哪个文件」交给页内那句**动态**说明（它知道当前到底是本地文件
-    # 还是种子），这里只说这页是干什么的。
-    "信号池": "增删「信号跟踪」跟踪的固定池；命令行运行同样生效。",
-    "回测报告": "历史检验的结果：绩效指标、净值报告与逐笔成交，读自 output/ 里已完成的回测。",
-    "个股K线": "单只标的的日线走势，叠加本次回测在它身上的买卖点。",
+    "信号": "信号池的最新买卖信号，页尾是全市场扫描发现的新 BUY。",
+    "记账": "记你**真实成交**的每一笔；历史记录可筛选、可改删、可导出。",
+    "持仓与盈亏": "按全部记录算出的当前持仓、已实现盈亏与来源对比。",
+    "信号池": "增删「信号跟踪」每天盯着的那批标的。",
+    "回测报告": "历史检验的结果：绩效指标、净值曲线与逐笔成交。",
+    "个股K线": "单只标的的日线走势，叠加这次回测在它身上的买卖点。",
 }
+
+
+#: 监听地址算不算"只有本机"。侧栏的安全警告只在**不是**时出现（dashboard.py）。
+#: 空串 / None 是 streamlit 的出厂默认——监听所有网卡，所以归到"不是"。
+LOOPBACK_ADDRESSES = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def is_loopback(address) -> bool:
+    return str(address or "").strip().lower() in LOOPBACK_ADDRESSES
+
 
 # run_backtest.py 的 {策略键}_{YYYYMMDD}_{HHMMSS}。定义在 fmt（run_label 也用它），
 # 这里只转发：排序键与显示名对同一个形态各写一份正则，迟早有一份悄悄过期。
@@ -126,8 +130,7 @@ _REQUIRED_FILES = ("metrics.json", "report.html", "trades.csv")
 
 SCAN_COLOR_COLUMNS = ("pct_chg",)   # 扫描表里唯一有方向的列（红涨绿跌）
 
-CONSOLE_HINT = ("进度、实时日志与完整结果见侧边栏「任务控制台」页；"
-                "这里按默认参数运行（要指定 --limit / --date / 策略请去控制台）。")
+CONSOLE_HINT = "这里按默认参数运行；要改参数请去「任务控制台」。"
 
 
 def page_head(page: str) -> None:
@@ -390,7 +393,7 @@ def control_bar(*job_names: str) -> None:
     st.caption(CONSOLE_HINT)
     # 灰字换成真链接（v0.5.0）：点完 ▶ 之后这一页 15 分钟不会自己动一下，
     # 而"该去哪看进度"过去只是一句话。一步到位。
-    st.page_link(page_ref("console"), label="去「任务控制台」看实时进度与日志",
+    st.page_link(page_ref("console"), label="去「任务控制台」看进度与日志",
                  icon=":material/play_circle:")
     st.divider()
 

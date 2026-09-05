@@ -49,9 +49,9 @@ EXPECTED_GROUPS = {
         ("任务控制台", ":material/play_circle:", "console"),
         ("信号", ":material/notifications:", "signals"),
     ],
+    # 2026-09-05：「自定义策略」是写代码的说明，搬去 docs/custom-strategy.md，手册剩两页。
     "手册": [
         ("读懂回测", ":material/insights:", "guide-metrics"),
-        ("自定义策略", ":material/code:", "guide-custom"),
         ("边界与安全", ":material/shield:", "guide-limits"),
     ],
     "交易日志": [

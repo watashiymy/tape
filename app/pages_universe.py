@@ -36,12 +36,15 @@ def page_universe() -> None:
                  "本页在此期间不做任何修改。")
         return
     st.html(theme.section(f"当前信号池（{len(symbols)} 只）"))
-    st.caption(guide.pool_source_note(source, pool.local_path(ui.CONFIG_PATH)))
+    # 只在还是默认池子时说一句；已经是自己的池子时这一行不出现（空串 = 不渲染）。
+    # 必须是 if **语句**：裸三元会被 streamlit 的 magic 整条包进 st.write。
+    if note := guide.pool_source_note(source):
+        st.caption(note)
     ui.data_table(pool.pool_table(symbols, ui.symbol_names(), ui.CACHE_DIR),
                   _pool_columns(symbols), "信号池是空的",
                   hint=guide.TABLE_HINTS["universe"])
     _add_block(symbols)
-    st.caption(f"当前信号池 {len(symbols)} 只。{guide.POOL_NOTE}")
+    st.caption(guide.POOL_NOTE)
 
 
 def _pool_columns(symbols: tuple[str, ...]) -> dict:
@@ -54,18 +57,17 @@ def _pool_columns(symbols: tuple[str, ...]) -> dict:
         # 而这张表多数行本来就没有缓存。值已由 fmt.fmt_amount 格式化（缺值 = —）。
         "最新价": st.column_config.TextColumn(
             "最新价", alignment="right",
-            help="本地缓存 data/cache/ 里最后一根日线的收盘价（后复权前的原始价）。"
-                 "没取过数的标的显示 —。"),
+            help="本地已下载行情里最后一天的收盘价（未复权的原始价）。"
+                 "还没有行情的标的显示 —。"),
         pool.ACTION_COLUMN: st.column_config.ButtonColumn(
             pool.ACTION_COLUMN, on_click=pool.on_remove,
             args=(symbols, ui.CONFIG_PATH), key=pool.REMOVE_CLICK_KEY,
-            help="把这只标的移出信号池（写入本地 config/universe.local.yaml）。"
-                 "至少要留 1 只；移错了在下面搜名字加回来即可。"),
+            help="把这只标的移出信号池。至少要留 1 只；移错了在下面搜名字加回来即可。"),
     }
 
 
 def _add_block(symbols: tuple[str, ...]) -> None:
-    """搜索添加（§3.4 A）。候选清单要联网拉约 2–4 分钟，所以**点了才拉**：
+    """搜索添加（§3.4 A）。候选清单可能要联网拉约 2–4 分钟，所以**点了才拉**：
     一打开这页就卡两分钟是不可接受的，而只想移除标的的人根本不需要这份清单。"""
     st.html(theme.section("添加标的"))
     if not st.session_state.get(pool.LOAD_FLAG):
@@ -80,9 +82,9 @@ def _add_block(symbols: tuple[str, ...]) -> None:
     except pool.FETCH_ERRORS as e:
         # 如实报出类型与原因（多半是"网络不可达"或"当日清单未更新"），
         # 并说清哪些功能还能用——只说"失败了"等于让人去猜。
-        st.warning(f"拉不到扫描池清单（{type(e).__name__}: {e}）。"
-                   "「加入」需要这份清单来核对标的是否在扫描池内，暂不可用；"
-                   "上面的池子表格与 − 移除不依赖它，照常可用。")
+        st.warning(f"拉不到候选清单（{type(e).__name__}: {e}）。"
+                   "「加入」需要这份清单核对标的是否在扫描范围内，暂不可用；"
+                   "上面的表格与 − 移除照常可用。")
         if st.button("↻ 重试", key=pool.RETRY_BUTTON_KEY):
             pool.scan_pool.clear()     # 失败不进缓存，但清一下更直白
             st.rerun()
