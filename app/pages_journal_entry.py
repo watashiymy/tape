@@ -167,7 +167,7 @@ def _entry_hint(symbol: str, name: str, day, span) -> str:
     """
     if not symbol:
         return "填入 6 位代码后，这里会带出名称与该日的价格区间（都取自本地数据，离线可用）。"
-    parts = [f"**{symbol}**", name or "名称查不到（新股/退市股？照记即可）"]
+    parts = [f"**{symbol}**", name or "查不到名称（可能是新股或退市股，照常记录即可）"]
     if span is None:
         parts.append(f"本地还没有 {day} 的行情数据，无法核对价格区间")
     else:

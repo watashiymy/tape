@@ -185,7 +185,7 @@ def main() -> None:
     # allow_abbrev=False 是**必须**的：argparse 默认认前缀缩写，而 `--refresh` 恰好是
     # `--refresh-symbols` 的唯一前缀。回测脚本有个 `--refresh`（刷行情缓存），
     # 手顺打到这里就会被静默解释成"重拉清单"——白等 2-4 分钟，还以为行情重拉了。
-    ap = argparse.ArgumentParser(description="全市场每日 BUY 信号扫描（沪深主板非 ST）",
+    ap = argparse.ArgumentParser(description="全市场每日买入信号扫描（沪深主板非 ST）",
                                  allow_abbrev=False)
     ap.add_argument("--config", default="config/settings.yaml")
     ap.add_argument("--limit", type=int, default=None, help="只扫前 N 只（试跑用）")
@@ -279,7 +279,7 @@ def main() -> None:
         sys.exit(f"\n{reason}（扫描 {total} 只，失败 {len(failures)} 只，"
                  f"总耗时 {time.monotonic() - t0:.0f}s）")
 
-    print(f"\n===== {expected} 全市场新 BUY 信号 =====")
+    print(f"\n===== {expected} 全市场新增买入信号 =====")
     if not signals:
         print("今日无新信号")
     else:

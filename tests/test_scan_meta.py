@@ -223,7 +223,7 @@ def test_a_trial_badge_says_it_is_a_trial_and_how_small():
     text, tip = scan_meta.scope_badge(_meta(scanned=3, pool_total=3010, limit=3,
                                             signals=0))
     assert text == "试跑 3 只"
-    assert "3010" in tip and "limit" in tip
+    assert "3010" in tip and "只扫前 3 只" in tip, tip     # 用使用者的话，不写 --limit
 
 
 def test_no_meta_says_unknown_and_explains_why():

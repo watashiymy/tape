@@ -871,7 +871,7 @@ def test_the_title_reports_how_many_rows_are_on_screen(tmp_path):
               "2026-08-27,600036,招商银行,donchian,38.0,0.9,2200000000,1.6\n")
     at = _at(tmp_path, SIGNALS_PAGE)
     blob = " ".join(e.proto.body for e in at.get("html"))
-    assert "报了 2 条" in blob, blob[:400]
+    assert "报出 2 条信号" in blob, blob[:400]
 
 
 def test_filtering_keeps_the_table_and_the_plus_buttons_on_the_same_rows(tmp_path):

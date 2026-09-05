@@ -61,7 +61,8 @@ def page_backtest() -> None:
     # 不能换成 st.html：那个不套 iframe 且默认忽略 JavaScript，plotly 报告会是空白页。
     st.iframe(run / "report.html", height=650)
     st.html(theme.section("交易明细"))
-    ui.data_table(trades, fmt.trades_column_config(), "本次回测没有任何成交",
+    ui.data_table(fmt.map_action_labels(trades), fmt.trades_column_config(),
+                  "本次回测没有任何成交",
                   hint=guide.TABLE_HINTS["trades"])
     if skipped is not None:
         st.html(theme.section("被跳过的订单（涨跌停/资金不足等）"))
@@ -120,7 +121,7 @@ def page_kline() -> None:
     # 是前端行为，图对象自己开不了（见 charts.KLINE_CONFIG）。
     kline_view.render(charts.kline_chart(df, sym_trades, sym, freq=freq, span=span),
                       config=charts.KLINE_CONFIG, bg=palette.SURFACE)
-    st.caption("悬停看开高低收与量额；滚轮或触控板双指缩放，拖动平移，双击复位。"
+    st.caption("悬停查看开高低收与成交量、成交额；滚轮或触控板双指缩放，拖动平移，双击复位。"
                "▲▼ 标在 K 线外侧：▲ 在最低价下方是买入，▼ 在最高价上方是卖出。"
                "横轴按交易日紧排，不留周末与节假日的空档。")
 

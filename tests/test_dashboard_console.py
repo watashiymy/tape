@@ -254,7 +254,7 @@ def test_running_job_without_parsable_progress_shows_spinner(tmp_path):
     at = _console(tmp_path)
     assert at.get("progress") == [], "无 current/total 时不许画进度条"
     assert len(at.status) == 1 and at.status[0].state == "running"
-    assert at.status[0].label == "取数中", at.status[0].label
+    assert at.status[0].label == "获取数据中", at.status[0].label
     assert any("已用" in c.value for c in at.main.caption), \
         [c.value for c in at.main.caption]
 

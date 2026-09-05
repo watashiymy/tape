@@ -269,7 +269,7 @@ def test_dashboard_shows_the_six_hand_computed_metrics(tmp_path):
 
     assert not at.exception, at.exception
     blob = "".join(e.proto.body for e in at.get("html"))
-    for label, value in [("总已实现（含分红）", "1,712.93"),
+    for label, value in [("已实现总收益（含分红）", "1,712.93"),
                          ("当前持仓市值", "38,000.00"),
                          ("浮动盈亏", "2,241.06"),
                          ("总盈亏（已实现+浮动）", "3,953.99")]:
@@ -339,7 +339,7 @@ def test_dashboard_metrics_hand_computed_with_a_price_gap():
 
     assert unpriced == 1
     by_label = {label: (text, color) for label, text, color in metrics}
-    assert by_label["总已实现（含分红）"] == ("1,712.93", jui.fmt.UP)
+    assert by_label["已实现总收益（含分红）"] == ("1,712.93", jui.fmt.UP)
     assert by_label["当前持仓市值"][0] == "38,000.00"
     assert by_label["浮动盈亏"] == ("2,241.06", jui.fmt.UP)
     assert by_label["总盈亏（已实现+浮动）"] == ("3,953.99", jui.fmt.UP)
@@ -371,7 +371,7 @@ def test_dashboard_metrics_hide_the_total_when_floating_is_unknowable():
 
     assert unpriced == 1
     by_label = {label: text for label, text, _c in metrics}
-    assert by_label["总已实现（含分红）"] == "1,712.93"
+    assert by_label["已实现总收益（含分红）"] == "1,712.93"
     assert by_label["当前持仓市值"] == "—"
     assert by_label["浮动盈亏"] == "—"
     assert by_label["总盈亏（已实现+浮动）"] == "—"

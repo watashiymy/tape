@@ -38,7 +38,7 @@ RATIO_BAR_MAX = 6.0
 # （最该先看到的数）。键必须与 quant.report.metrics.compute_metrics 的输出逐一对齐。
 METRIC_LABELS = {
     "total_return": "总收益率", "cagr": "年化收益率", "max_drawdown": "最大回撤",
-    "sharpe": "夏普比率(rf=0)", "n_trades": "交易次数", "win_rate": "胜率",
+    "sharpe": "夏普比率（无风险利率按 0）", "n_trades": "交易次数", "win_rate": "胜率",
     "profit_factor": "盈亏比", "avg_holding_days": "平均持仓天数",
 }
 # 比率类指标：显示成百分号。其余（夏普、盈亏比、持仓天数）是无单位数字。
@@ -193,6 +193,28 @@ def map_strategy_labels(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+#: 方向列的显示名。信号 CSV 里存的是 BUY / SELL，回测成交表里是 buy / sell——
+#: 都是内部值（文件与命令行认它），页面上一律显示中文（2026-09-05：
+#: 中文句子里夹着 BUY / SELL 是最别扭的一类表述）。
+ACTION_LABELS = {"BUY": "买入", "SELL": "卖出", "buy": "买入", "sell": "卖出"}
+
+
+def map_action_labels(df: pd.DataFrame) -> pd.DataFrame:
+    """把表的 action 列换成中文显示名，返回**新的** DataFrame；没有该列原样返回。
+    未知值与缺值原样保留（同 map_strategy_labels 的口径：显示层绝不因旧数据抛错）。"""
+    if "action" not in df.columns:
+        return df
+    out = df.copy()
+    out["action"] = [ACTION_LABELS.get(v, v) if isinstance(v, str) else v
+                     for v in out["action"]]
+    return out
+
+
+def for_display(df: pd.DataFrame) -> pd.DataFrame:
+    """喂给 st.dataframe 之前那一下：策略键 → 显示名，方向值 → 中文。磁盘上的文件不动。"""
+    return map_action_labels(map_strategy_labels(df))
+
+
 def scan_column_config() -> dict:
     """全市场扫描 / 信号跟踪表的列配置（列名取自 run_market_scan.CSV_COLUMNS）。
 
@@ -233,7 +255,7 @@ def signal_column_config() -> dict:
         "symbol": column_config.TextColumn("代码", width="small"),
         "strategy": column_config.TextColumn("策略", width="small"),
         "action": column_config.TextColumn("方向", width="small",
-                                           help="buy=进场信号，sell=出场信号。"),
+                                           help="买入 = 进场信号，卖出 = 出场信号。"),
         "close": column_config.NumberColumn("收盘价", format="%.2f", alignment="right"),
     }
 

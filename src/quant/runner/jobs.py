@@ -124,7 +124,7 @@ JOBS: dict[str, Job] = {
         params=(
             Param("strategy", "--strategy", "choice", "策略（留空=全部）",
                   choices=tuple(REGISTRY)),
-            Param("refresh", "--refresh", "flag", "强制全量刷新行情缓存"),
+            Param("refresh", "--refresh", "flag", "重新下载全部行情（忽略本地缓存）"),
         ),
         parser=progress.parse_backtest, result_kind="backtest_run"),
 }

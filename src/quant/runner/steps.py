@@ -3,6 +3,7 @@
 控制台把三件事摆成一条链：
 
     ① 全市场扫描（发现） → ② 加进信号池（人工） → ③ 信号跟踪（每天跟踪）
+    文案面向使用者：说「信号池」不说「固定池 / 池子」，说「报出 N 条信号」不说「报了 N 条」。
 
 每一步顶上一行小字回答同一个问题：**这一步现在是什么状态，我该不该做它。**
 
@@ -44,7 +45,7 @@ def scan_status(scan_dir: Path | str, today: date | None = None) -> StepStatus:
     """
     latest = scan_meta.latest_scan(Path(scan_dir))
     if latest is None:
-        return StepStatus(f"{UNKNOWN}——固定池之外的机会还没扫过", ready=False)
+        return StepStatus(f"{UNKNOWN}——信号池之外的机会还没扫过", ready=False)
     day = scan_meta.scan_day(latest)
     meta = scan_meta.load_meta(latest)
     scope, _ = scan_meta.scope_badge(meta)
@@ -54,7 +55,7 @@ def scan_status(scan_dir: Path | str, today: date | None = None) -> StepStatus:
         return StepStatus(f"最近一次 {day}，{scope}", ready=True)
     fresh = today is not None and day == today.isoformat()
     tail = "" if fresh else "——不是今天的"
-    return StepStatus(f"最近一次 {day}，{scope}，报了 {meta.signals} 条{tail}", ready=True)
+    return StepStatus(f"最近一次 {day}，{scope}，报出 {meta.signals} 条信号{tail}", ready=True)
 
 
 def pool_status(symbols: tuple[str, ...] | None) -> StepStatus:
@@ -68,7 +69,7 @@ def pool_status(symbols: tuple[str, ...] | None) -> StepStatus:
     if symbols is None:
         return StepStatus("读不到信号池配置——去「信号池」页看具体原因", ready=False)
     if not symbols:
-        return StepStatus("池子是空的——没有任何标的会被跟踪卖出", ready=False)
+        return StepStatus("信号池是空的——没有任何标的会被跟踪", ready=False)
     return StepStatus(f"正在跟踪 {len(symbols)} 只", ready=True)
 
 
@@ -87,7 +88,7 @@ def signal_status(signal_dir: Path | str, today: date | None = None) -> StepStat
     files = sorted((p for p in d.glob("*.csv") if scan_meta.is_day(p)),
                    key=lambda p: p.stem, reverse=True) if d.is_dir() else []
     if not files:
-        return StepStatus(f"{UNKNOWN}——池子里的买卖点还没人盯", ready=False)
+        return StepStatus(f"{UNKNOWN}——信号池里的买卖信号还没人盯", ready=False)
     day = files[0].stem
     fresh = today is not None and day == today.isoformat()
     return StepStatus(f"最新一份是 {day}" + ("" if fresh else "——不是今天的"), ready=True)

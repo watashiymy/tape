@@ -496,7 +496,7 @@ def test_a_healthy_run_still_produces_the_csv(tmp_path, monkeypatch, cached, cap
     _run_scan(tmp_path, monkeypatch, [])
 
     out = capsys.readouterr().out
-    assert "全市场新 BUY 信号" in out and "已保存" in out
+    assert "全市场新增买入信号" in out and "已保存" in out
     assert _csvs(tmp_path) == [f"{BASE_DAY}.csv"]
     df = pd.read_csv(tmp_path / "output" / "scan" / f"{BASE_DAY}.csv", dtype={"symbol": str})
     assert list(df.columns) == run_market_scan.CSV_COLUMNS

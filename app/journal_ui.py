@@ -140,8 +140,8 @@ LOG_LABELS = {
 
 #: 一致性标记的短标签（长句在 pnl 的 Inconsistency.message 里，会单独显眼地列出来）。
 ISSUE_LABELS = {
-    pnl.OVERSELL: "卖超", pnl.ADJUST_WITHOUT_POSITION: "调整无持仓",
-    pnl.NEGATIVE_SHARES: "股数为负", pnl.UNUSABLE_ROW: "有行读不懂",
+    pnl.OVERSELL: "卖出超过持仓", pnl.ADJUST_WITHOUT_POSITION: "调整时无持仓",
+    pnl.NEGATIVE_SHARES: "股数为负", pnl.UNUSABLE_ROW: "有记录读不出",
 }
 
 #: 读缓存能出的错：文件不在（None）、损坏（RuntimeError）、不是 parquet（OSError/
@@ -380,7 +380,7 @@ def submit(row: Mapping, *, path: str | Path, costs: Costs,
         trade_id = store.append_trade(record, path)
     except (OSError, ValueError, RuntimeError) as e:
         # 写盘失败必须如实说，不能只 toast 一句"已记录"：用户会以为记下了。
-        flash("error", f"落盘失败（{type(e).__name__}: {e}），这一笔没有记下来。")
+        flash("error", f"保存失败（{type(e).__name__}: {e}），这一笔没有记下来。")
         return False
     flash("ok", f"已记下 {KIND_LABELS.get(record['kind'], record['kind'])} "
                 f"{record['symbol']}（记录号 {trade_id}）")
@@ -509,7 +509,7 @@ def save_edits(edited: pd.DataFrame, *, path: str | Path, today: date) -> bool:
     """
     keep, deleted = split_editor_result(edited)
     if broken := blocking_rows(keep, today=today):
-        flash("error", "**没有保存**（下面这些行改坏了，落盘会让盈亏静默算错）：\n\n"
+        flash("error", "**没有保存**（下面这些行改坏了，保存后盈亏会悄悄算错）：\n\n"
               + "\n\n".join(f"- {line}" for line in broken))
         return False
     try:
@@ -714,7 +714,7 @@ def dashboard_metrics(summary: Mapping, positions: Iterable, prices: Mapping[str
 
     out: list[tuple[str, str, str | None]] = []
     for label, (text, color) in (
-            ("总已实现（含分红）", money(realized, realized_known)),
+            ("已实现总收益（含分红）", money(realized, realized_known)),
             ("当前持仓市值", money(market, priced > 0, directional=False)),
             ("浮动盈亏", money(floating, priced > 0)),
             ("总盈亏（已实现+浮动）", money(total, total_known))):
@@ -754,7 +754,7 @@ def by_source_columns() -> dict:
                for label in labels}}
 
 
-MATCH_COLUMNS = ("卖出日", "代码", "名称", "股数", "成本", "净得", "盈亏",
+MATCH_COLUMNS = ("卖出日", "代码", "名称", "股数", "成本", "卖出净额", "盈亏",
                  "持仓天数", "建仓来源", "买入日", "买入记录号", "卖出记录号")
 
 
@@ -767,7 +767,7 @@ def matches_table(matches: Iterable) -> pd.DataFrame:
     """
     rows = [{
         "卖出日": f"{m.sell_date}", "代码": m.symbol, "名称": m.name or fmt.MISSING,
-        "股数": m.shares, "成本": m.cost, "净得": m.proceeds, "盈亏": m.pnl,
+        "股数": m.shares, "成本": m.cost, "卖出净额": m.proceeds, "盈亏": m.pnl,
         "持仓天数": m.holding_days,
         "建仓来源": SOURCE_LABELS.get(m.buy_source, m.buy_source or fmt.MISSING),
         "买入日": f"{m.buy_date}", "买入记录号": m.buy_trade_id,
@@ -777,7 +777,7 @@ def matches_table(matches: Iterable) -> pd.DataFrame:
 
 
 def matches_columns() -> dict:
-    money = ("成本", "净得", "盈亏")
+    money = ("成本", "卖出净额", "盈亏")
     columns = {name: st.column_config.TextColumn(name, width="small")
                for name in ("卖出日", "代码", "名称", "建仓来源", "买入日",
                             "买入记录号", "卖出记录号")}

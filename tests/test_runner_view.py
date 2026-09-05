@@ -172,8 +172,8 @@ def test_caption_of_running_scan_uses_real_log():
 
 def test_caption_without_progress_falls_back_to_phase_and_elapsed():
     """信号跟踪没有可解析的进度行：只能给阶段 + 已用时长，不许出现百分比或 ETA。"""
-    caption = _joined(Progress(phase="取数中"), elapsed_s=12, status="running")
-    assert caption == "取数中，已用 12秒"
+    caption = _joined(Progress(phase="获取数据中"), elapsed_s=12, status="running")
+    assert caption == "获取数据中，已用 12秒"
 
 
 def test_caption_keeps_phase_when_progress_known():
@@ -318,7 +318,7 @@ def test_no_output_note_speaks_up_when_a_stopped_run_left_nothing():
     p = Progress(phase="已停止", current=2500, total=3012,
                           extras={"信号": "130 条"}, outputs=())
     note = view.no_output_note(p, status=STOPPED)
-    assert "没有产物" in note
+    assert "没有保存任何结果" in note
     assert "上一次" in note, "没说清页面上看到的是哪一次的结果"
     assert "第 1 只" in note, "没说清重跑是从头开始（不存在断点续跑）"
 

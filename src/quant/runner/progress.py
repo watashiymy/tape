@@ -122,7 +122,7 @@ def parse_market_scan(log_text: str) -> Progress:
     # 对不确定态的处理）。分钟数不在这里写死：那个值的唯一出处是
     # guide.FACTS["pool_fetch"]，而本模块是纯函数层、不许 import app。
     if _FETCH_LISTING.search(log_text) and not _GOT_LISTING.search(log_text):
-        phase = "拉取全市场清单（首次或过期时才有，比扫描本身慢）"
+        phase = "拉取全市场清单（第一次或清单过期时才需要，比扫描本身慢）"
     phase, extras, outputs = _saved_terminal(log_text, phase, extras)
     return Progress(current=current, total=total, elapsed_s=elapsed,
                     eta_s=_eta(current, total, elapsed), phase=phase, extras=extras,
@@ -140,7 +140,7 @@ def parse_daily_signal(log_text: str) -> Progress:
     current = len(_DATA_LINE.findall(log_text)) or None
     phase = STARTING
     if log_text.strip():
-        phase = "取数中"
+        phase = "获取数据中"
     if _SIGNAL_HEADER.search(log_text):
         phase = "汇总信号"
     stale = _STALE.search(log_text)
@@ -164,7 +164,7 @@ def parse_backtest(log_text: str, total: int | None = None) -> Progress:
     current = len(_DATA_LINE.findall(log_text)) or None
     phase = STARTING
     if log_text.strip():
-        phase = "取数中"
+        phase = "获取数据中"
     strat = _STRATEGY_HEADER.findall(log_text)
     if strat:
         # 日志里的表头是内部键（===== ma_cross =====），给人看要换显示名（2026-09-05）。

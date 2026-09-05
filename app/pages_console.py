@@ -63,7 +63,7 @@ def _result_table(path_str: str, config: dict, hint: str,
         st.warning("结果暂时读不出来，可能还在写入；稍后刷新试试。")
         return
     # 策略列只在显示层换中文显示名，磁盘上的 CSV 照旧存键
-    ui.data_table(fmt.map_strategy_labels(df), config, "当次无新信号",
+    ui.data_table(fmt.for_display(df), config, "当次无新信号",
                   hint=hint, color_columns=color_columns)
 
 

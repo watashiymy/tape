@@ -194,9 +194,9 @@ def no_output_note(p: Progress, *, status: str) -> str:
     """
     if status not in (STOPPED, FAILED) or p.outputs:
         return ""
-    return ("本次**没有产物**：结果整轮跑完才落盘，上面那些计数没有写进任何文件。"
-            "页尾/「信号」页看到的是上一次的结果（注意标题里的日期）。"
-            "重跑是从第 1 只开始，不接着跑——缓存省的是流量不是时间。")
+    return ("本次**没有保存任何结果**：结果要整轮跑完才会写入文件，上面那些计数都没有保存下来。"
+            "页尾与「信号」页看到的是上一次的结果（注意标题里的日期）。"
+            "重跑会从第 1 只开始、不会接着跑，耗时与完整跑一遍相同。")
 
 
 def rerun_hint(job_name: str, argv: list[str]) -> str:

@@ -219,7 +219,7 @@ def scan_day(csv_path: str | Path) -> str:
 # 老产物（v0.2.4 之前）读不到 meta 时的说法。**不猜、不编**：无论显示"全量"还是
 # "试跑"都可能是错的，而这两个词恰恰是用户拿来做决定的依据。
 UNKNOWN_SCOPE = "范围未知"
-UNKNOWN_TIP = ("该文件产生于记录扫描范围之前（v0.2.4），无法判断是全量还是试跑；"
+UNKNOWN_TIP = ("这份结果产生于记录扫描范围之前，无法判断是全量还是试跑；"
                "重跑一次扫描即可得到确切范围")
 
 
@@ -243,18 +243,18 @@ def scope_badge(meta: ScanMeta | None) -> tuple[str, str]:
         return UNKNOWN_SCOPE, UNKNOWN_TIP
     if meta.is_full:
         text = f"全量 {meta.scanned} 只"
-        tip = f"这一趟扫满了扫描池全部 {meta.pool_total} 只标的"
+        tip = f"这一趟扫完了全部 {meta.pool_total} 只标的"
     else:
         text = f"试跑 {meta.scanned} 只"
-        tip = (f"这是一次 --limit {meta.limit} 的试跑，只扫了扫描池 {meta.pool_total} 只里的前 "
-               f"{meta.scanned} 只；结论不代表全市场。全量结果另存一份，不会被它覆盖")
+        tip = (f"这是一次只扫前 {meta.scanned} 只的试跑（全部共 {meta.pool_total} 只）；"
+               f"结论不代表全市场。全量结果另存一份，不会被它覆盖")
     if meta.failed:
-        text += f"（{meta.failed} 只取数失败）"
+        text += f"（{meta.failed} 只未取到数据）"
         # 措辞刻意不写"真正有结论的是 N 只"：judged 里还含着因流动性/ST/历史不足
         # 被**主动筛掉**的那些（它们走完了判定链，只是没进策略），把它们说成
         # "有结论"是往另一个方向夸大。这里只说"走完判定"，并点明它含哪些。
-        tip += (f"；其中 {meta.failed} 只取数失败、连判定都没走到。"
-                f"走完判定的是 {meta.judged} 只（含被流动性/ST/历史不足筛掉的）"
-                f"——失败的票不等于没信号。重跑一次可以补上，而且不会覆盖"
-                f"比它更完整的那份（CSV 是整份重写、不是累加，所以更差的一趟会另存）")
+        tip += (f"；其中 {meta.failed} 只没取到数据，没有走到判定。"
+                f"走完判定的是 {meta.judged} 只（含因流动性、ST、历史不足被筛掉的）"
+                f"——没取到数据不等于没信号，重跑一次可以补上，而且不会覆盖"
+                f"比它更完整的那份结果")
     return text, tip

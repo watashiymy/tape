@@ -92,7 +92,7 @@ def _add_block(symbols: tuple[str, ...]) -> None:
     choices = [o for o in pool.options(listing) if pool.symbol_of(o) not in set(symbols)]
     st.caption(f"清单基准日 {as_of}，可选 {len(choices)} 只（已在池中的不再列出）。")
     if not choices:
-        st.write("扫描池里的标的都已在信号池中。")
+        st.write("候选清单里的标的都已在信号池中。")
         return
     picked = st.selectbox("搜索代码或名称", choices, index=None, key=pool.PICK_KEY,
                           placeholder="输入代码或名称筛选，例如 600519 / 茅台")

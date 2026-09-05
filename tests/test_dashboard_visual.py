@@ -273,6 +273,24 @@ def test_report_html_is_embedded_between_metrics_and_trades(tmp_path):
     assert len(at.get("iframe")) == 1, "回测报告页应恰好嵌一次 report.html"
 
 
+# ================================================================ 信号表的方向列（2026-09-05）
+
+def test_signal_table_shows_direction_in_chinese_not_buy_sell(tmp_path):
+    """信号 CSV 里存的是 BUY / SELL（内部值，命令行与文件认它），页面上必须显示 买入 / 卖出。"""
+    sig = tmp_path / "output" / "signals"
+    sig.mkdir(parents=True)
+    (sig / "2026-08-25.csv").write_text(
+        "date,symbol,strategy,action,close\n"
+        "2026-08-25,000333,ma_cross,BUY,10.0\n2026-08-25,600519,donchian,SELL,1500.0\n",
+        encoding="utf-8")
+    at = _page(tmp_path, "信号")
+    assert not at.exception, at.exception
+    shown = at.get("dataframe")[0].value
+    assert shown["action"].tolist() == ["买入", "卖出"], shown["action"].tolist()
+    assert shown["strategy"].tolist() == ["双均线交叉", "唐奇安通道突破"]
+    assert (sig / "2026-08-25.csv").read_text(encoding="utf-8").count("BUY") == 1, "文件本身不动"
+
+
 # ================================================================ 个股 K 线页
 
 def test_symbol_selector_shows_code_and_name(tmp_path):

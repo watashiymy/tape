@@ -91,7 +91,7 @@ def _scan_table(df: pd.DataFrame, names: dict[str, str]) -> None:
                    "「＋ 记一笔」照常可用。详情见「信号池」页。")
         # 策略列只在**显示层**换中文显示名（map_strategy_labels 返回新表）：
         # 预填与按钮回调（_record_column）拿的仍是原 df——journal 的 source 存键。
-        ui.data_table(fmt.map_strategy_labels(journal_ui.record_table(df)),
+        ui.data_table(fmt.for_display(journal_ui.record_table(df)),
                       {**fmt.scan_column_config(),
                        **_record_column(df, names, journal_ui.SCAN_CLICK_KEY)},
                       "当日无新信号", hint=guide.TABLE_HINTS["scan"],
@@ -99,7 +99,7 @@ def _scan_table(df: pd.DataFrame, names: dict[str, str]) -> None:
                       height=ui.SCAN_TABLE_HEIGHT)
         return
     symbols = tuple(str(s) for s in df["symbol"])
-    ui.data_table(fmt.map_strategy_labels(
+    ui.data_table(fmt.for_display(
                       journal_ui.record_table(pool.scan_table(df, in_pool))),
                   _scan_columns(df, symbols, names),
                   "当日无新信号", hint=guide.TABLE_HINTS["scan"],
@@ -133,11 +133,11 @@ def scan_section(names: dict[str, str]) -> None:
     # **筛选必须排在这里**（见 _filter_by_strategy 的 docstring）：筛后的这一份
     # 同时喂给表格、＋ 加入的 symbols 与记一笔的预填，三处按行序绑定。
     shown = _filter_by_strategy(df)
-    # 标题带条数，用词与控制台那行就绪状态对齐（steps.scan_status 也说"报了 N 条"）。
+    # 标题带条数，用词与控制台那行就绪状态对齐（steps.scan_status 也说"报出 N 条信号"）。
     # 数的是**屏幕上这张表**的行数，不是磁盘 meta 里的 signals——筛过之后那两个数
     # 就不是一回事了，而用户看的是屏幕。筛过时两个数都给，才看得出自己筛掉了多少。
-    count = (f"报了 {len(df)} 条" if len(shown) == len(df)
-             else f"筛出 {len(shown)} / {len(df)} 条")
+    count = (f"报出 {len(df)} 条信号" if len(shown) == len(df)
+             else f"筛出 {len(shown)} / {len(df)} 条信号")
     st.html(theme.section(f"全市场扫描（{scan_meta.scan_day(latest)}）· {count}",
                           ui.scan_scope_pill(latest)))
     _scan_table(shown, names)
@@ -186,7 +186,8 @@ def _latest_signals(files: list, names: dict[str, str]) -> None:
     # streamlit 的 magic 会把裸三元（ast.IfExp）整条包进 st.write()，
     # 于是 st.dataframe 的返回值被当对象内省，把整份 API 手册糊在信号表下面。
     # 策略列显示中文显示名；预填（_record_column 里的 prefills）仍读原 df 的键
-    ui.data_table(fmt.map_strategy_labels(journal_ui.record_table(df)),
+    # 方向列显示 买入/卖出（文件里是 BUY/SELL）；预填仍读原 df 的值
+    ui.data_table(fmt.for_display(journal_ui.record_table(df)),
                   {**fmt.signal_column_config(),
                    **_record_column(df, names, journal_ui.SIGNAL_CLICK_KEY)},
                   "当日无新信号", hint=guide.TABLE_HINTS["signal"])
@@ -208,4 +209,4 @@ def _latest_signals(files: list, names: dict[str, str]) -> None:
     # 历史表不再重复那行灰字：同一页里连着出现两遍等于噪声。
     # 也刻意**不**带「记一笔」：补记几个月前的老交易走录入表单更合适，
     # 而这张表可能有几百行，多一列按钮只会让"今天该做什么"更难看清。
-    ui.data_table(fmt.map_strategy_labels(hist), fmt.signal_column_config(), "无")
+    ui.data_table(fmt.for_display(hist), fmt.signal_column_config(), "无")

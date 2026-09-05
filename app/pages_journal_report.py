@@ -103,7 +103,7 @@ def _dashboard_section(report: pnl.PnlReport, trades) -> None:
     if unpriced:
         st.caption(f"{unpriced} 只持仓无市价，未计入市值与浮动盈亏"
                    "（本地还没有它们的行情数据——跑一次回测或信号跟踪就有了）；"
-                   "显示的是可算部分，不按 0 顶包。")
+                   "显示的是可算部分，不按 0 计。")
     st.caption(guide.JOURNAL_PNL_HINT)
 
     curve_col, weights_col = st.columns(2)
@@ -123,7 +123,7 @@ def _dashboard_section(report: pnl.PnlReport, trades) -> None:
     # 分号后面那半截（路线图 + 内部设计文档编号）删掉：用户看了没有任何可做的事。
     # 「为什么不做收益率」的完整理由留在本函数的 docstring 里，给下一个改代码的人。
     st.caption("金额一律是**元**而非收益率：日志不记本金与出入金，"
-               "收益率的分母只能编造。")
+               "收益率没有可靠的分母。")
 
 
 def _positions_section(report: pnl.PnlReport) -> None:

@@ -249,7 +249,8 @@ def test_metric_labels_are_chinese_and_ordered_return_first():
     """2×4 网格按字典顺序铺：第一格必须是总收益率（最该先看到的数）。"""
     assert list(fmt.METRIC_LABELS)[0] == "total_return"
     assert fmt.METRIC_LABELS["total_return"] == "总收益率"
-    assert "rf=0" in fmt.METRIC_LABELS["sharpe"], "夏普的 rf=0 口径必须写在标签里"
+    assert "无风险利率" in fmt.METRIC_LABELS["sharpe"], \
+        "夏普的「无风险利率按 0」口径必须写在标签里（2026-09-05 起用中文说，不写 rf=0）"
 
 
 @pytest.mark.parametrize("key, value, text", [
@@ -580,3 +581,39 @@ def test_map_strategy_labels_keeps_a_missing_strategy_cell_missing():
     assert got[0] == "双均线交叉"
     assert isinstance(got[1], float) and math.isnan(got[1]), \
         f"缺值被改成了 {got[1]!r}"
+
+
+# ================================================================ 方向列显示名（2026-09-05）
+# 信号 CSV 存 BUY / SELL、回测成交表存 buy / sell，都是内部值；页面上一律显示中文——
+# 中文句子与表格里夹着 BUY / SELL 是最别扭的一类表述。
+
+def test_map_action_labels_turns_both_casings_into_chinese_and_keeps_the_file_untouched():
+    df = pd.DataFrame({"action": ["BUY", "SELL", "buy", "sell"], "close": [1.0, 2.0, 3.0, 4.0]})
+    out = fmt.map_action_labels(df)
+    assert out["action"].tolist() == ["买入", "卖出", "买入", "卖出"]
+    assert df["action"].tolist() == ["BUY", "SELL", "buy", "sell"], "只在显示层换，原表不动"
+    assert out["close"].tolist() == [1.0, 2.0, 3.0, 4.0]
+
+
+def test_map_action_labels_passes_unknown_values_missing_cells_and_absent_column_through():
+    df = pd.DataFrame({"action": ["HOLD", None], "x": [1, 2]})
+    got = fmt.map_action_labels(df)["action"].tolist()
+    assert got[0] == "HOLD" and pd.isna(got[1])      # 缺值保持缺值（None / NA 都算）
+    plain = pd.DataFrame({"symbol": ["600519"]})
+    assert fmt.map_action_labels(plain) is plain
+
+
+def test_for_display_maps_strategy_keys_and_actions_together():
+    df = pd.DataFrame({"strategy": ["ma_cross"], "action": ["BUY"]})
+    out = fmt.for_display(df)
+    assert out["strategy"].tolist() == ["双均线交叉"] and out["action"].tolist() == ["买入"]
+
+
+def test_sharpe_label_and_action_help_speak_chinese():
+    """标签与列帮助里不留 rf=0 / buy / sell 这类夹生写法。"""
+    assert fmt.METRIC_LABELS["sharpe"] == "夏普比率（无风险利率按 0）"
+    cfg = fmt.signal_column_config()["action"]     # st.column_config 返回的是 dict 形态
+    help_text = cfg["help"] if isinstance(cfg, dict) else cfg.help
+    assert "买入" in help_text and "卖出" in help_text
+    assert "buy" not in help_text and "sell" not in help_text
+

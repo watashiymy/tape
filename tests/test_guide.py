@@ -333,7 +333,7 @@ def test_the_limits_section_lists_the_five_named_approximations():
     """§3.1 第 6 条点名的五项：涨跌停近似、除权按分红再投资、夏普 rf=0、
     沪深300 不含分红、扫描池仅主板非 ST。"""
     body = guide.section("limits").body
-    for word in ("涨跌停", "分红再投资", "rf = 0", "沪深300", "主板"):
+    for word in ("涨跌停", "分红再投资", "无风险利率", "沪深300", "主板"):
         assert word in body, f"已知局限一节缺「{word}」"
 
 
