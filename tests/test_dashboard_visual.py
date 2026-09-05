@@ -291,6 +291,27 @@ def test_signal_table_shows_direction_in_chinese_not_buy_sell(tmp_path):
     assert (sig / "2026-08-25.csv").read_text(encoding="utf-8").count("BUY") == 1, "文件本身不动"
 
 
+# ================================================================ 回测总览表的列类型（2026-09-05）
+
+def test_runs_overview_is_arrow_compatible_when_only_some_runs_have_a_snapshot(tmp_path):
+    """「标的数」列里既有整数（有配置快照的回测）又有 —（老回测没有快照）时，Arrow 转不过去：
+    Streamlit 自动降级并在控制台打一整段 traceback（真机出现过）。整张表一律字符串。"""
+    import json
+
+    import pyarrow as pa
+
+    new = _run_dir(tmp_path, name="ma_cross_20260905_100000")
+    (new / "config_snapshot.json").write_text(
+        json.dumps({"universe": ["600519", "000333"], "overlays": {}}), encoding="utf-8")
+    _run_dir(tmp_path, name="donchian_20260826_112606")          # 老回测：没有快照
+    at = _page(tmp_path, "回测报告")
+    assert not at.exception, at.exception
+    overview = at.get("dataframe")[0].value                       # 折叠区里那张总览表排第一
+    assert set(overview["标的数"]) == {"2", fmt.MISSING}, overview["标的数"].tolist()
+    assert all(isinstance(v, str) for v in overview["标的数"])
+    pa.Table.from_pandas(overview)                                # 不该抛 ArrowInvalid
+
+
 # ================================================================ 个股 K 线页
 
 def test_symbol_selector_shows_code_and_name(tmp_path):

@@ -435,7 +435,10 @@ def runs_overview(runs: list[Path]) -> pd.DataFrame:
         except (ValueError, OSError):
             snap = {}
         if snap.get("universe"):
-            row["标的数"] = len(snap["universe"])
+            # 存成字符串而不是 int：这一列还会有 —（老回测没有快照），int 与 str 混在一列里
+            # Arrow 转不过去，Streamlit 会自动降级并在控制台打一整段 traceback（真机出现过）。
+            # 整张总览表全是字符串，这一列也一样。
+            row["标的数"] = str(len(snap["universe"]))
         overlays = snap.get("overlays") or {}
         for col, key in (("趋势过滤", "trend_filter"), ("ATR止损", "atr_stop")):
             cfg = overlays.get(key)
