@@ -342,31 +342,55 @@ def test_kline_page_offers_day_week_month_year(tmp_path):
     span = at.radio(key="kline_span")
     assert list(span.options) == ["120 根", "250 根", "500 根", "全部"]
     assert span.value == "120", "默认只画最近 120 根：一次画全部就是「太细太密」"
-    assert len(at.get("plotly_chart")) == 1
+    assert len(_kline_components(at)) == 1
     at = span.set_value("all").run()
     assert not at.exception, at.exception
     at = radio.set_value("W").run()
     assert not at.exception, at.exception
-    chart = at.get("plotly_chart")[0]
-    spec = json.loads(chart.proto.spec)
+    spec = _kline_args(at)["spec"]
     candles = [tr for tr in spec["data"] if tr["type"] == "candlestick"][0]
     # 夹具是 08-20/21（周四五）与 08-24/25（周一二）：周K正好两根
     assert len(candles["x"]) == 2, candles["x"]
 
 
-def test_kline_page_enables_scroll_zoom_and_explains_the_gestures(tmp_path):
-    """滚轮/双指缩放是**前端配置**，图对象自己开不了——必须经 st.plotly_chart(config=)
-    真的传到前端；图下面一句话说清手势与 ▲▼ 的位置。"""
-    import json
+def _kline_components(at: AppTest) -> list:
+    """K 线走项目自己的 iframe 组件（app/kline_view.py），AppTest 里是 component_instance。"""
+    return [e for e in at.get("component_instance")
+            if e.proto.component_name.endswith(".tape_kline")]
 
+
+def _kline_args(at: AppTest) -> dict:
+    import json
+    return json.loads(_kline_components(at)[0].proto.json_args)
+
+
+def test_kline_page_enables_scroll_zoom_and_explains_the_gestures(tmp_path):
+    """滚轮/双指缩放是**前端配置**，图对象自己开不了——必须真的传到前端（组件 args 里的
+    config）；图下面一句话说清手势与 ▲▼ 的位置。"""
     _run_dir(tmp_path, klines=("600519",))
     _cache_bars(tmp_path, "600519")
     at = _page(tmp_path, "个股K线")
     assert not at.exception, at.exception
-    config = json.loads(at.get("plotly_chart")[0].proto.config)
-    assert config.get("scrollZoom") is True, config
+    args = _kline_args(at)
+    assert args["config"].get("scrollZoom") is True, args["config"]
+    assert args["config"].get("responsive") is True
     captions = " ".join(c.value for c in at.caption)
     assert "双指" in captions and "双击" in captions and "▲" in captions, captions
+
+
+def test_kline_page_does_not_use_st_plotly_chart(tmp_path):
+    """2026-09-05：st.plotly_chart 在缩放中途反复重画整图（Streamlit 的 onUpdate 把每个
+    plotly_relayouting 中间态写回 state），触控板双指缩放会抽动——真机实测 20 次事件里
+    横轴范围回弹三轮。K 线必须走自己的 iframe 组件；这条钉住别改回去。"""
+    _run_dir(tmp_path, klines=("600519",))
+    _cache_bars(tmp_path, "600519")
+    at = _page(tmp_path, "个股K线")
+    assert not at.exception, at.exception
+    assert at.get("plotly_chart") == [], "K 线又走回 st.plotly_chart 了"
+    args = _kline_args(at)
+    assert args["plotly_js"].startswith("../") and args["plotly_js"].endswith("/plotly.min.js")
+    assert args["height"] == 550 and args["bg"]
+    assert [tr["type"] for tr in args["spec"]["data"]][0] == "candlestick"
 
 
 def test_kline_page_still_reports_a_missing_cache_clearly(tmp_path):

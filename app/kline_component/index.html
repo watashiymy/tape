@@ -1,0 +1,79 @@
+<!doctype html>
+<!--
+  TAPE 的 K 线宿主页（2026-09-05）。为什么不用 st.plotly_chart：Streamlit 的图表组件在
+  onUpdate 里把每一次缩放中间态写回 React state 并重画整图，而 react-plotly 在缩放过程中的
+  每个 plotly_relayouting 事件上都触发 onUpdate——于是触控板双指缩放时横轴范围反复被
+  冲回初始值（真机实测 20 次事件里回弹三轮），画面抽动。放进自己的 iframe 后 plotly 独占
+  事件循环，缩放是单调平滑的。
+
+  与 Streamlit 的通信走组件协议的最小子集（不依赖 streamlit-component-lib）：
+    父页 → 本页：{type: "streamlit:render", args: {...}}
+    本页 → 父页：{isStreamlitMessage: true, type: "streamlit:componentReady" | "streamlit:setFrameHeight"}
+  plotly.min.js 由 app/kline_view.py 从已安装的 plotly 包目录里提供（args.plotly_js 是相对本页的
+  路径），版本与生成 JSON 的 Python 端一致；不联网、不复制文件。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: transparent; }
+  #kline { width: 100%; }
+  #note { font: 13px/1.6 -apple-system, "PingFang SC", sans-serif; color: #999; padding: 8px 12px; }
+</style>
+</head>
+<body>
+<div id="kline"></div>
+<div id="note"></div>
+<script>
+(function () {
+  "use strict";
+  var el = document.getElementById("kline");
+  var note = document.getElementById("note");
+  var loading = null;
+
+  function send(type, data) {
+    var msg = Object.assign({ isStreamlitMessage: true, type: type }, data || {});
+    window.parent.postMessage(msg, "*");
+  }
+
+  function loadPlotly(src) {
+    if (window.Plotly) { return Promise.resolve(); }
+    if (loading) { return loading; }
+    loading = new Promise(function (resolve, reject) {
+      var s = document.createElement("script");
+      s.src = src;
+      s.onload = resolve;
+      s.onerror = function () { reject(new Error("plotly.js 加载失败: " + src)); };
+      document.head.appendChild(s);
+    });
+    return loading;
+  }
+
+  function draw(args) {
+    var spec = args.spec || {};
+    var config = Object.assign({ responsive: true }, args.config || {});
+    var height = args.height || 550;
+    el.style.height = height + "px";
+    if (args.bg) { document.body.style.background = args.bg; }
+    return loadPlotly(args.plotly_js).then(function () {
+      // Plotly.react：同一 iframe 里重复渲染时按 uirevision 保留用户缩放到的位置
+      return window.Plotly.react(el, spec.data || [], spec.layout || {}, config);
+    }).then(function () {
+      note.textContent = "";
+      send("streamlit:setFrameHeight", { height: height });
+    }).catch(function (err) {
+      note.textContent = String(err && err.message || err);
+      send("streamlit:setFrameHeight", { height: 60 });
+    });
+  }
+
+  window.addEventListener("message", function (event) {
+    var data = event.data || {};
+    if (data.type !== "streamlit:render") { return; }
+    draw(data.args || {});
+  });
+  send("streamlit:componentReady", { apiVersion: 1 });
+})();
+</script>
+</body>
+</html>

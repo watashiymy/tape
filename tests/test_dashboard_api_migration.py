@@ -19,7 +19,11 @@ DEPRECATED = [
     ("use_container_width", 'width="stretch"（True）/ width="content"（False）'),
     ("components.html", "st.iframe"),
     ("components.v1.html", "st.iframe"),
-    ("streamlit.components", "st.iframe（连 import 一起删）"),
+    # v0.2.x 用 components.iframe 内嵌回测报告，1.61 起换成 st.iframe。2026-09-05 起
+    # app/kline_view.py 又需要 streamlit.components.v1.declare_component（K 线的 iframe 组件，
+    # 没有 st.* 顶层等价物；官方推荐的写法就是 import 这个模块再调），所以只禁那两个老调用。
+    ("components.iframe(", "st.iframe"),
+    ("components.html(", "st.html，或像 app/kline_view.py 那样声明自己的组件"),
 ]
 
 

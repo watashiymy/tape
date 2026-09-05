@@ -12,12 +12,13 @@ import pandas as pd
 import streamlit as st
 
 import guide
+import kline_view
 import theme
 import ui
 from quant.backtest.portfolio import Trade
 from quant.data.cache import BarCache
 from quant.data.pipeline import prepare_bars
-from quant.report import charts, fmt
+from quant.report import charts, fmt, palette
 
 
 def page_backtest() -> None:
@@ -114,9 +115,11 @@ def page_kline() -> None:
         Trade(r.symbol, r.action, pd.Timestamp(r.date), r.price, r.shares, r.commission)
         for r in rows.itertuples()
     ]
-    # config 必须传：滚轮/双指缩放是前端行为，图对象自己开不了（见 charts.KLINE_CONFIG）
-    st.plotly_chart(charts.kline_chart(df, sym_trades, sym, freq=freq, span=span),
-                    width="stretch", config=charts.KLINE_CONFIG)
+    # 不走 st.plotly_chart：它在缩放中途反复重画整图，触控板双指缩放会抽动
+    # （根因与实测见 app/kline_view.py 的模块 docstring）。config 必须传：滚轮/双指缩放
+    # 是前端行为，图对象自己开不了（见 charts.KLINE_CONFIG）。
+    kline_view.render(charts.kline_chart(df, sym_trades, sym, freq=freq, span=span),
+                      config=charts.KLINE_CONFIG, bg=palette.SURFACE)
     st.caption("悬停看开高低收与量额；滚轮或触控板双指缩放，拖动平移，双击复位。"
                "▲▼ 标在 K 线外侧：▲ 在最低价下方是买入，▼ 在最高价上方是卖出。"
                "横轴按交易日紧排，不留周末与节假日的空档。")

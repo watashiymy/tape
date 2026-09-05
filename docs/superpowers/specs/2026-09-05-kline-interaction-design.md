@@ -44,3 +44,28 @@
   映射再只留窗口内的（直接在窗口上 searchsorted 会把窗口前的成交全堆到第一根）。
 - K 线描边 2px → 1px：几百根挤在一起时描边比实体还宽，整根看着像一条线。
 - `uirevision` 加入范围维度。
+
+## 5. 第三轮：触控板双指缩放"画面抽动"（同日，macOS）
+
+**根因（真机对照实验）**：同一张 120 根日K，各发 20 次带 ctrlKey 的 wheel 事件（macOS 触控板
+双指缩放在浏览器里就是这种事件），记录每次之后横轴范围的起点：
+
+| 宿主 | 横轴起点序列 |
+|---|---|
+| `st.plotly_chart` | 0.1 → 0.7 → … → 3.0 → **−0.5（回到初始）** → 0.1 → … → 3.0 → −0.5 → …（三轮锯齿） |
+| 独立 plotly 页面 | 0.1 → 0.7 → … → 10.4（单调） |
+
+Streamlit 的图表组件在 `onUpdate` 里 `setElementState(...); setFigure(n)`，而 react-plotly 在缩放
+过程中的每个 `plotly_relayouting` 事件上都调用 `onUpdate`——于是每隔几次事件就有一次
+`Plotly.react` 重建 `_fullLayout`，把 plotly 正在进行的缩放预览冲回初始范围。这是 Streamlit
+组件的行为，图对象上没有任何开关能关掉它。
+
+**修法**：K 线不再走 `st.plotly_chart`，改由项目自己的 iframe 组件承载（`app/kline_view.py` +
+`app/kline_component/index.html`，只实现组件协议最小子集：componentReady / render /
+setFrameHeight，不依赖 streamlit-component-lib）。plotly.min.js 通过
+`declare_component(path=<已安装 plotly 包的 package_data 目录>)` 挂成静态路径，宿主页按
+相对路径 `../<组件名>/plotly.min.js` 加载——不联网、不复制 4.8 MB 进仓库、版本与 Python 端一致。
+`Plotly.react` + `uirevision` 让同一 iframe 跨重跑保留缩放位置。真机复测：单调推进，无回弹。
+
+**代价**：K 线不再受 Streamlit 主题/选择事件管理（本项目本来就显式设色、不用选择）；
+首次打开多加载一次 4.8 MB 的 plotly.js（本地，毫秒级）。

@@ -83,7 +83,8 @@ KLINE_FREQS: dict[str, tuple[str, str | None]] = {
 
 #: 交给 st.plotly_chart(config=...) 的前端配置。scrollZoom 让滚轮与触控板双指直接缩放
 #: （不必去右上角工具栏找放大镜）；双击复位；plotly 的 logo 去掉。
-KLINE_CONFIG: dict = {"scrollZoom": True, "doubleClick": "reset", "displaylogo": False}
+KLINE_CONFIG: dict = {"scrollZoom": True, "doubleClick": "reset", "displaylogo": False,
+                      "responsive": True}    # iframe 里随容器宽度自适应（kline_view）
 
 #: 显示最近多少根：内部键 → (显示名, 根数；None = 全部)。密度由根数决定而不是由时间跨度
 #: 决定——同样 120 根，日K是半年、周K是两年多、年K是全部，屏幕上一样疏密。
@@ -239,7 +240,9 @@ def kline_chart(df: pd.DataFrame, trades: list[Trade], title: str, *,
         if sells:
             fig.add_trace(_marker_trace(bars, sells, action="sell"))
     fig.update_layout(
-        title=title, height=550,
+        # 标题靠左：这张图在自己的 iframe 里渲染（kline_view），没有 Streamlit 主题替它把
+        # 默认居中的标题挪到左边；与面板其余图表保持同一个观感。
+        title=dict(text=title, x=0, xanchor="left"), height=550,
         xaxis=dict(type="category", categoryorder="category ascending",
                    rangeslider_visible=False,    # 底部那条缩略滑块又占地方又不好用：滚轮就够
                    nticks=8),                    # 类目轴默认会试着标每一根，8 个刻度够定位
