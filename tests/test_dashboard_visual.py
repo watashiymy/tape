@@ -508,8 +508,9 @@ def _card_columns(at: AppTest) -> list:
 def test_the_pipeline_puts_the_two_chained_jobs_in_equal_columns(tmp_path):
     """v0.5.0 §6：控制台改成「每日流水线」+「研究工具」两区。
 
-    流水线区是 columns([1, .14, 1, .14, 1])：链上那两个**可运行**任务各占一个
-    等宽列，中间夹着人工步骤，两条窄轨放箭头。回测不进这几列——它不在链上。
+    流水线区是 columns([1, .14, 1])：链上那两个**可运行**任务各占半幅，中间一条窄轨
+    放箭头；人工那一步 2026-09-14 起是闭环图下面的一行，不再占一列（用户：它在页面
+    正中间却什么都不能操作，布局奇怪）。回测不进这几列——它不在链上。
 
     改掉的老形态是三卡等宽并排（v0.2.0），当时唯一的理由是"纵向堆叠要滚很久"，
     列的来源就是 jobs.JOBS 的字典序，语义为零。
@@ -523,25 +524,25 @@ def test_the_pipeline_puts_the_two_chained_jobs_in_equal_columns(tmp_path):
             for c in card_cols} == {(f"start_{n}",) for n in chained}, \
         "两列应分别是扫描与信号跟踪；回测不在链上"
     weights = sorted(c.proto.weight for c in at.get("column"))
-    # [1, .14, 1, .14, 1] 归一化后：三个 0.3049 与两个 0.0427
-    wide = [w for w in weights if abs(w - 1 / 3.28) < 1e-3]
-    rails = [w for w in weights if abs(w - 0.14 / 3.28) < 1e-3]
-    assert len(wide) == 3 and len(rails) == 2, \
-        f"流水线列宽不对（应三宽两窄轨）: {weights}"
+    # [1, .14, 1] 归一化后：两个 0.4673 与一个 0.0654
+    wide = [w for w in weights if abs(w - 1 / 2.14) < 1e-3]
+    rails = [w for w in weights if abs(w - 0.14 / 2.14) < 1e-3]
+    assert len(wide) == 2 and len(rails) == 1, \
+        f"流水线列宽不对（应两宽一窄轨）: {weights}"
 
 
 def test_the_backtest_card_is_out_of_the_pipeline_and_full_width(tmp_path):
     """回测在「研究工具」区、整幅宽渲染：它是历史检验，不产生今天的信号。
     摆回流水线里等于告诉用户"每天还得跑一次回测"。"""
     at = _page(tmp_path, "任务控制台")
-    # 只看**流水线那三个宽列**（权重 1/3.28）。不能查"任不任何列里"——
+    # 只看**流水线那两个宽列**（权重 1/2.14）。不能查"任不任何列里"——
     # 每张卡片自己就用 st.columns(3) 摆开始/停止/重跑，那三列谁都躲不开。
     pipeline_cols = [c for c in at.get("column")
-                     if abs(c.proto.weight - 1 / 3.28) < 1e-3]
-    # 前提断言：3.28 这个常量与 pages_console 的 [1,.14,1,.14,1] 绑着，改了列宽比例
+                     if abs(c.proto.weight - 1 / 2.14) < 1e-3]
+    # 前提断言：2.14 这个常量与 pages_console 的 [1,.14,1] 绑着，改了列宽比例
     # 而不改这里的话，上面这个筛选会**筛出空集**，下面的 not in 就恒真了。
-    assert len(pipeline_cols) == 3, \
-        f"权重常量 3.28 与 pages_console 对不上了: {sorted(c.proto.weight for c in at.get('column'))}"
+    assert len(pipeline_cols) == 2, \
+        f"权重常量 2.14 与 pages_console 对不上了: {sorted(c.proto.weight for c in at.get('column'))}"
     inside = {k for c in pipeline_cols for k in _keys_under(c)}
     assert "start_backtest" not in inside, f"回测被摆进流水线的列里了: {sorted(inside)}"
     assert at.button("start_backtest"), "回测卡片整个不见了"

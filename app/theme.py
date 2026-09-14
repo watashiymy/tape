@@ -266,6 +266,18 @@ CSS = f"""@import url("{FONT_IMPORT}");
 /* 「人工步骤」标记：这一步没有开始按钮，是你自己动手的一环。
    刻意用灰而不是琥珀——琥珀在本主题里只给**可操作**元素（config.toml 的
    primaryColor 就是这个约定），给一个没有按钮的卡片上琥珀等于在骗手。 */
+.qd-manual-row {{
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-height: 2.1rem;
+}}
+.qd-manual-row .qd-manual {{ flex: none; white-space: nowrap; }}
+.qd-manual-text {{
+  font-family: var(--qd-sans);
+  font-size: 0.85rem;
+  color: var(--qd-muted);
+}}
 .qd-manual {{
   font-family: var(--qd-sans);
   font-size: 0.72rem;
@@ -358,6 +370,13 @@ def rail() -> str:
     streamlit 窄屏会把列竖着堆起来，那时横箭头是错的。
     """
     return '<div class="qd-rail"></div>'
+
+
+def manual_row(tag: str, text: str) -> str:
+    """一行式的人工步骤（控制台「每日流水线」区，2026-09-14）：灰标签 + 一句说明。
+    取代 v0.5.0 的整张人工卡片——那张卡在页面正中间却什么都不能操作。"""
+    return (f'<div class="qd-manual-row">{manual_tag(tag)}'
+            f'<span class="qd-manual-text">{_esc(text)}</span></div>')
 
 
 def manual_tag(text: str) -> str:

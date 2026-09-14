@@ -78,8 +78,9 @@ st.logo(theme.BRAND_LOGO, size=theme.BRAND_LOGO_SIZE)
 #   -「研究」组（信号池 / 回测报告 / 个股K线）殿后。
 # 注意 streamlit 的规则：default=True 那页挂在根路径 `/`，它自己的 url_path 不参与路由
 # （st.Page 文档原话："If you set default=True, url_path is ignored"）；不认识的路径一律
-# 回落到默认页。2026-09-05 真机实测：/console、/ 与任何乱写的路径都打开控制台，
-# /guide 现在能直接打开了——老书签一个都不断。页对象上的 url_path 仍写着，测试侧按它算哈希。
+# 回落到默认页，**但会先弹「Page not found」**（2026-09-14 截图确认；09-05 只读了页面文字，
+# 漏看了那个弹窗）。所以老的 /console 书签能落到控制台但不体面，请改用根地址；
+# /guide 现在能直接打开。页对象上的 url_path 仍写着，测试侧按它算哈希。
 # url_path 显式给短英文：不给的话会取函数名，地址栏出现 /page_backtest 这种内部名。
 # 「记一笔」要跳到的那一页单独留个名字：st.switch_page 收的是 Page 对象
 # （函数页没有文件路径可给），而按下标从组里取第几个日后一定会错位。

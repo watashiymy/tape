@@ -307,9 +307,9 @@ def test_page_intro_covers_every_page(tmp_path):
 
 # ================================================================ 就地帮助：卡片 popover
 
-#: 控制台上带 `?` 的卡片数：三个任务 + v0.5.0 的「加进信号池」人工步骤。
-#: 人工那一步**尤其**需要帮助——它是唯一一张没有按钮的卡片，不解释就像是坏了。
-CARDS_WITH_HELP = len(jobs.JOBS) + 1
+#: 控制台上带 `?` 的卡片数 = 三个任务。「加进信号池」那一步 2026-09-14 起只占一行
+#: （详细说明挂在「去信号池」链接的 tooltip 上），不再是带 ? 的卡片。
+CARDS_WITH_HELP = len(jobs.JOBS)
 
 
 def test_every_card_has_a_help_popover(tmp_path):

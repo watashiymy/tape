@@ -225,7 +225,8 @@ def _card_for(busy: str | None):
 #
 # 拆分前三张卡片等宽并排，顺序就是 jobs.JOBS 的字典序——**语义为零**。
 # 而真实的闭环是：全市场扫描（发现）→ 人工研究 → 加进信号池 → 信号跟踪（跟踪），
-# 其中「加进信号池」不是可运行的任务、「回测」根本不在这条链上。
+# 其中「加进信号池」不是可运行的任务（2026-09-14 起只占一行，不再是第三张卡片）、
+# 「回测」根本不在这条链上。
 #
 # 刻意**不加 ①②③ 编号**：说明页的命令行一节已经在用一套编号，README §2 的
 # 「四个入口」是第三套。再引入一套流水线编号，用户会在两页之间看到互相矛盾的数字，
@@ -261,27 +262,29 @@ def _step_status(job_name: str):
     return None                     # 回测不在链上，没有"就绪"这回事
 
 
-def _manual_step_card() -> None:
-    """第二步：加进信号池。**没有开始按钮**——这一步是你自己动手的一环。
+def _manual_step_strip() -> None:
+    """中间那步「加进信号池」：一行，不是一张卡（2026-09-14）。
 
-    卡片形状与另外两张一致（标题行 + 状态行 + 一块内容），否则并排看过去像
-    缺了一块。灰色「人工步骤」标记代替状态 pill：琥珀在本主题里只给可操作元素。
+    v0.5.0 把它做成与两张任务卡片同形的第三张卡片摆在正中间。用户的话：这一步在
+    控制台上进行不了任何操作，却占了相当大的面积、还在页面正中间，整个布局很奇怪。
+    它在这一页唯一的价值是三样：说清这是人工动作、现在盯着几只、去哪两页操作——
+    一行放得下。闭环图（上面那行）已经把它画在两个任务之间，顺序不靑靠卡片位置表达。
+    详细说明挂在「去信号池」那个链接的 tooltip 上，不再单独开 ? 弹窗。
     """
-    head, help_col = st.columns([5, 1], vertical_alignment="center")
-    head.html(theme.section("加进信号池", theme.manual_tag("人工步骤")))
-    with help_col.popover("?"):
-        st.markdown(guide.PIPELINE_MANUAL_HELP)
     try:
         symbols = pool.current(ui.CONFIG_PATH)
     except pool.CONFIG_ERRORS:
         symbols = None
-    st.caption(steps.pool_status(symbols).text)
-    st.caption(guide.PIPELINE_MANUAL_NOTE)
-    st.page_link(ui.page_ref("signals"), label="去「信号」看扫描结果",
-                 icon=":material/notifications:")
-    st.page_link(ui.page_ref("universe"), label="去「信号池」增删标的",
-                 icon=":material/list:")
-    st.divider()
+    status = steps.pool_status(symbols)
+    text, to_signals, to_universe = st.columns([3, 1.25, 1.25], vertical_alignment="center")
+    text.html(theme.manual_row("人工步骤",
+                               f"加进信号池：{status.text}。{guide.PIPELINE_MANUAL_NOTE}"))
+    with to_signals:
+        st.page_link(ui.page_ref("signals"), label="去看扫描结果",
+                     icon=":material/notifications:", help="到「信号」页看最近一次扫描的结果")
+    with to_universe:
+        st.page_link(ui.page_ref("universe"), label="去增删信号池",
+                     icon=":material/list:", help=guide.PIPELINE_MANUAL_HELP)
 
 
 def _first_run_hint() -> None:
@@ -316,16 +319,14 @@ def page_console() -> None:
     st.html(theme.section("每日流水线"))
     st.html(theme.flow(guide.CONSOLE_FLOW))
     st.caption(guide.CONSOLE_FLOW_NOTE)
-    # 三卡两轨。箭头列很窄（0.14）；窄屏 streamlit 会竖着堆，那时 CSS 把箭头换成 ↓。
+    # 人工那一步一行带过（见 _manual_step_strip），两张任务卡片各占半幅。
+    _manual_step_strip()
+    # 两卡一轨。箭头列很窄（0.14）；窄屏 streamlit 会竖着堆，那时 CSS 把箭头换成 ↓。
     # fragment 写进列里是允许的（实测过）——列就是它的父容器，局部重跑只动这一列。
-    scan_col, rail1, manual_col, rail2, signal_col = st.columns(
-        [1, 0.14, 1, 0.14, 1], vertical_alignment="top")
+    scan_col, rail, signal_col = st.columns([1, 0.14, 1], vertical_alignment="top")
     with scan_col:
         card(_PIPELINE[0], busy or "")
-    rail1.html(theme.rail())
-    with manual_col:
-        _manual_step_card()
-    rail2.html(theme.rail())
+    rail.html(theme.rail())
     with signal_col:
         card(_PIPELINE[1], busy or "")
 

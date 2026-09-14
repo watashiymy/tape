@@ -146,8 +146,12 @@ def test_empty_state_when_nothing_ever_ran(tmp_path):
     plain = [h for h in _sections(at) if "qd-pill-" not in h]
     assert [h for h in plain if "每日流水线" in h], plain
     assert [h for h in plain if "研究工具" in h], plain
-    assert [h for h in plain if "加进信号池" in h and "人工步骤" in h], plain
-    assert len(plain) == 3, plain     # 两个区标题 + 一张人工卡片，设计 §6 定死
+    assert len(plain) == 2, plain     # 只有两个区标题：人工那一步不再是卡片（2026-09-14）
+    # 人工那一步是一行：灰标签「人工步骤」+「加进信号池：正在跟踪 N 只…」+ 两个跳转链接
+    rows = [e.proto.body for e in at.get("html") if 'class="qd-manual-row"' in e.proto.body]
+    assert len(rows) == 1 and "人工步骤" in rows[0] and "加进信号池" in rows[0], rows
+    links = [el.proto.label for el in at.get("page_link")]
+    assert "去看扫描结果" in links and "去增删信号池" in links, links
 
 
 def test_console_page_starts_no_process(tmp_path, monkeypatch):

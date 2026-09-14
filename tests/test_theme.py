@@ -381,3 +381,13 @@ def test_rail_is_a_bare_container_with_the_arrow_in_css():
     assert theme.rail() == '<div class="qd-rail"></div>'
     assert ".qd-rail::after" in theme.CSS and '"→"' in theme.CSS
     assert '"↓"' in theme.CSS, "窄屏没有换成下箭头"
+
+
+def test_manual_row_wraps_tag_and_text_and_has_css():
+    """一行式人工步骤（2026-09-14）：灰标签 + 说明，两段都转义，类名在 CSS 里有规则。"""
+    html = theme.manual_row("人工步骤", "加进信号池：<b>x</b>")
+    assert 'class="qd-manual-row"' in html and 'class="qd-manual"' in html
+    assert "&lt;b&gt;" in html and "<b>" not in html
+    for cls in ("qd-manual-row", "qd-manual-text"):
+        assert f".{cls} {{" in theme.CSS
+
