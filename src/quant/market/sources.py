@@ -137,3 +137,48 @@ def parse_tencent_breadth(raw: bytes) -> Breadth:
     if not 4000 <= total <= 7000:
         raise ParseError(f"沪深 A 股总数 {total} 不在合理范围")
     return Breadth(up=up, flat=flat, down=down, total=total, scope=SCOPE_TENCENT)
+
+
+# ---------------------------------------------------------------- 新浪行情（兜底）
+SINA_HEADERS = {"Referer": "https://finance.sina.com.cn"}   # 不带就 5 秒后 403（实测）
+_SINA_LINE = re.compile(r'hq_str_(\w+)="([^"]*)"')
+_S_MIN_FIELDS = 33
+
+
+def sina_quote_url(codes: list[str]) -> str:
+    return "https://hq.sinajs.cn/list=" + ",".join(codes)
+
+
+def parse_sina_quotes(raw: bytes, codes: list[str],
+                      expected_day: date | None) -> dict[str, IndexQuote]:
+    """expected_day 是 §3「预期交易日」；None 表示三个来源都没有，允许用新浪自己的日期。"""
+    text = raw.decode("gb18030", errors="replace")
+    segs = {m.group(1): m.group(2) for m in _SINA_LINE.finditer(text)}
+    out: dict[str, IndexQuote] = {}
+    for code in codes:
+        body = segs.get(code)
+        if not body:
+            raise ParseError(f"新浪返回里 {code} 是空的（代码不被识别或未返回）")
+        f = body.split(",")
+        if len(f) < _S_MIN_FIELDS:
+            raise ParseError(f"{code} 只有 {len(f)} 段，少于 {_S_MIN_FIELDS}")
+        if f[32] != "00":
+            raise ParseError(f"{code} 状态码 {f[32]!r} 不是 00")
+        try:
+            day = datetime.strptime(f[30], "%Y-%m-%d").date()
+            ts = datetime.combine(day, time.fromisoformat(f[31]))
+        except ValueError as e:
+            raise ParseError(f"{code} 日期/时间解析失败：{f[30]} {f[31]}") from e
+        if expected_day is not None and day != expected_day:
+            raise ParseError(f"{code} 日期 {day} ≠ 预期交易日 {expected_day}")
+        opn, prev, price = _num(f, 1, code), _num(f, 2, code), _num(f, 3, code)
+        high, low = _num(f, 4, code), _num(f, 5, code)
+        if price <= 0 or prev <= 0:
+            raise ParseError(f"{code} 价格非正")
+        if opn > 0 and (high < max(opn, price) - 1e-9 or low > min(opn, price) + 1e-9):
+            raise ParseError(f"{code} 高低价关系不成立")
+        change = price - prev
+        out[code] = IndexQuote(code=code, name=f[0], price=price, prev_close=prev, open=opn,
+                               high=high, low=low, change=change, pct=100 * change / prev,
+                               amount_wan=_num(f, 9, code) / 1e4, ts=ts, source="sina")
+    return out

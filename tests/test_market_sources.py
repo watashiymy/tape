@@ -110,3 +110,38 @@ def test_default_http_get_wraps_requests_errors(monkeypatch):
     monkeypatch.setattr(requests, "get", boom)
     with pytest.raises(FetchError):
         sources.default_http_get("https://example.invalid/")
+
+
+def test_sina_headers_carry_the_referer():
+    assert sources.SINA_HEADERS["Referer"].startswith("https://finance.sina.com.cn")
+
+
+def test_parse_sina_quotes_from_recording():
+    expected_day = sources.parse_tencent_quotes(_fix("tencent_quotes.bin"), CODES)["sh000001"].ts.date()
+    quotes = sources.parse_sina_quotes(_fix("sina_quotes.bin"), CODES, expected_day)
+    assert set(quotes) == set(CODES)
+    q = quotes["sh000001"]
+    assert q.source == "sina" and q.price > 0
+    assert abs(q.change - (q.price - q.prev_close)) < 1e-6      # 自己算的，恒等
+    assert q.ts is not None and q.ts.date() == expected_day
+    t = sources.parse_tencent_quotes(_fix("tencent_quotes.bin"), CODES)["sh000001"]
+    assert abs(q.price - t.price) < 0.02                       # 两家同一时刻数值一致（实测）
+
+
+def test_sina_wrong_date_is_rejected():
+    from datetime import date
+    with pytest.raises(ParseError, match="日期"):
+        sources.parse_sina_quotes(_fix("sina_quotes.bin"), CODES, date(2000, 1, 1))
+
+
+def test_sina_empty_segment_is_rejected():
+    raw = b'var hq_str_sh000001="";\n'
+    with pytest.raises(ParseError, match="sh000001"):
+        sources.parse_sina_quotes(raw, ["sh000001"], None)
+
+
+def test_sina_bad_status_code_is_rejected():
+    text = _fix("sina_quotes.bin").decode("gb18030")
+    text = text.replace(",00,", ",01,")
+    with pytest.raises(ParseError, match="状态"):
+        sources.parse_sina_quotes(text.encode("gb18030"), CODES, None)
