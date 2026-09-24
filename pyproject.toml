@@ -8,7 +8,9 @@ requires-python = ">=3.12"
 dependencies = [
     "pandas>=3.0,<4",
     "pyarrow>=15,<25",   # 本机实测环境是 24.0.0；上界写 <21 会把它降级到从没跑过的版本
-    "baostock>=0.8.8,<1",
+    "baostock>=0.9.3,<1",   # query_daily_history_k_AStock（收盘数据任务）是 0.9.3 才有的；
+                            # 装着 0.8.x 的环境在 pip 看来也满足 >=0.8.8，跑到任务才崩
+    "requests>=2.34,<3",    # 首页盘中行情的 HTTP 客户端。本机实测 2.34.2；此前它只是 streamlit 的传递依赖
     "PyYAML>=6,<7",
     "plotly>=5.20,<7",
     # 1.61 而不是 1.30：st.navigation / st.Page / st.logo / st.iframe /
@@ -32,4 +34,4 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-m 'not network' --strict-markers"
-markers = ["network: 需要联网访问 baostock 的集成测试"]
+markers = ["network: 需要联网的集成测试（baostock、腾讯/新浪行情、东方财富）"]

@@ -6,6 +6,7 @@ __pycache__/
 *.pyc
 *.egg-info/
 data/symbols.parquet
+data/market/
 journal/trades.csv
 journal/trades.csv.bak
 config/universe.local.yaml
