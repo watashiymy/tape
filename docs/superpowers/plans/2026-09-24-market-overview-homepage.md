@@ -140,9 +140,8 @@ for code in ("sh000001", "sz399001"):
 
 
 def pool_url(kind: str, day: str) -> str:
-    sort = "fbt:asc" if kind == "getTopicZTPool" else "fund:asc"
     return (f"https://push2ex.eastmoney.com/{kind}?ut={UT}&dpt=wz.ztzt&Pageindex=0"
-            f"&pagesize=10000&sort={sort}&date={day}")
+            f"&pagesize=10000&sort=fbt:asc&date={day}")     # 与 sources.em_pool_url 同一串参数
 
 
 def main() -> None:
@@ -286,6 +285,7 @@ git commit -m "feat(market): quant.market 包骨架——now()、BREADTH_READY�
 
 ```python
 # tests/test_market_sources.py（追加）
+import json
 from pathlib import Path
 
 import pytest
@@ -1079,7 +1079,8 @@ from quant.market.session import Calendar, State, TradeDay
 WED = date(2026, 9, 23)          # 周三，交易日
 SAT = date(2026, 9, 26)
 CAL = Calendar(first=date(2026, 9, 1), last=date(2026, 10, 31),
-               trading=frozenset({date(2026, 9, 23), date(2026, 9, 24), date(2026, 9, 28)}))
+               trading=frozenset({date(2026, 9, 21), date(2026, 9, 22), date(2026, 9, 23),
+                                  date(2026, 9, 24), date(2026, 9, 28)}))
 
 
 def at(h, m, s=0, day=WED):
@@ -1148,9 +1149,10 @@ def test_transitions_change_the_decision(a, b, changes):
 
 # ---------------------------------------------------------------- 过期判据（§4.3）
 def test_stale_by_last_minute_point():
-    # 最后一点标 10:00（表示 09:59-10:00 那分钟），现在 10:03:30 → 已过 3 分钟 → 延迟
-    assert session.is_stale(at(10, 3, 30), time(10, 0), None) is True
-    assert session.is_stale(at(10, 2, 59), time(10, 0), None) is False
+    # 最后一点标 10:00（表示 09:59-10:00 那分钟，数据新到 09:59）：
+    # 10:02:00 → 落后 180 秒，不算；10:02:01 → 181 秒 → 延迟
+    assert session.is_stale(at(10, 2, 1), time(10, 0), None) is True
+    assert session.is_stale(at(10, 2, 0), time(10, 0), None) is False
 
 
 def test_stale_falls_back_to_quote_timestamp_when_no_minute():
@@ -1169,15 +1171,15 @@ def test_stale_is_only_judged_in_continuous_auction(now):
 
 
 def test_expected_trade_day_order():
-    assert session.expected_trade_day(WED, CAL, time(10, 0), None) == WED        # 本轮源日期优先
-    assert session.expected_trade_day(None, CAL, time(10, 0), None) == WED       # 日历：今天已开盘
-    assert session.expected_trade_day(None, CAL, time(9, 0), None) == date(2026, 9, 22) or \
-        session.expected_trade_day(None, CAL, time(9, 0), None) < WED             # 开盘前 → 上一交易日
-    assert session.expected_trade_day(None, None, time(10, 0), date(2026, 9, 22)) == date(2026, 9, 22)
-    assert session.expected_trade_day(None, None, time(10, 0), None) is None
+    e = session.expected_trade_day
+    assert e(WED, CAL, time(10, 0), None, today=WED) == WED                       # 本轮源日期优先
+    assert e(None, CAL, time(10, 0), None, today=WED) == WED                      # 日历：今天已开盘
+    assert e(None, CAL, time(9, 0), None, today=WED) == date(2026, 9, 22)         # 开盘前 → 上一交易日
+    assert e(None, None, time(10, 0), date(2026, 9, 22), today=WED) == date(2026, 9, 22)   # 上一轮成功的
+    assert e(None, None, time(10, 0), None, today=WED) is None
 ```
 
-注意 `expected_trade_day` 的第三个断言：日历的 `trading` 集合里没有 9-22，所以「上一交易日」按集合算是 9-21 之前——测试只断言它早于今天。实现按日历 `trading` 集合往前找。
+`expected_trade_day` 的 `today` **必须传**（页面传 `market.now().date()`），测试全部显式传。
 
 - [ ] **Step 2: 跑，确认失败**
 
@@ -1328,11 +1330,11 @@ def is_stale(now: datetime, last_point: time | None, quote_ts: datetime | None) 
 
 
 def expected_trade_day(source_date: date | None, calendar: Calendar | None, now_t: time,
-                       last_known: date | None, today: date | None = None) -> date | None:
-    """§3「预期交易日」：本轮源日期 → 日历推算 → 上一轮成功的源日期 → None。"""
+                       last_known: date | None, *, today: date) -> date | None:
+    """§3「预期交易日」：本轮源日期 → 日历推算 → 上一轮成功的源日期 → None。
+    `today` 由调用方传（页面传 market.now().date()）——本模块不看时钟。"""
     if source_date is not None:
         return source_date
-    today = today or datetime.now().date()
     if calendar is not None and calendar.covers(today):
         if calendar.is_trading(today) and now_t >= AUCTION_START:
             return today
@@ -1340,12 +1342,10 @@ def expected_trade_day(source_date: date | None, calendar: Calendar | None, now_
     return last_known
 ```
 
-`expected_trade_day` 里那个 `datetime.now()` 只是缺省值兜底，页面调用时**必须传 `today`**（Task 21 里传 `market.now().date()`），测试也传。
-
 - [ ] **Step 4: 跑测试**
 
 Run: `.venv/bin/python -m pytest tests/test_market_session.py -q`
-Expected: PASS。（`test_expected_trade_day_order` 第二个断言：把测试里的调用都补上 `today=WED`。）
+Expected: PASS。
 
 - [ ] **Step 5: Commit**
 
@@ -1596,8 +1596,10 @@ def _pick(current: Block | None, key: str, store: LiveStore, snap: LiveSnapshot,
     last = store.get(key)
     if last is None:
         return None
-    if not allow_cross_day and last.trade_date != snap.trade_date:
-        return None                       # 交易时段里不显示跨交易日的旧值（§3）
+    # 交易时段里不显示跨交易日的旧值（§3）。比较对象是**今天**，不是 snap.trade_date：
+    # 分时全失败时 snap.trade_date 可能就是从 store 抄来的昨天，拿它比永远相等。
+    if not allow_cross_day and last.trade_date != snap.fetched_at.date():
+        return None
     return Block(last.value, last.source, last.scope, last.ts, last.trade_date, fallback=True)
 
 
@@ -1914,9 +1916,8 @@ def test_snapshot_roundtrip_is_atomic_and_lists_by_date(tmp_path):
     ms.save_snapshot(D("2026-09-23"), _snap())
     (ms.daily_dir / "notes.txt").write_text("x")
     (ms.daily_dir / "2026-09-24.parquet.tmp").write_text("half")
-    assert ms.snapshot_dates() == [D("2026-09-22"), D("2026-09-23")]
+    assert ms.snapshot_dates() == [D("2026-09-22"), D("2026-09-23")], "只认文件名严格是日期的 .parquet"
     assert list(ms.load_snapshot(D("2026-09-22")).columns) == list(_snap().columns)
-    assert not list(ms.daily_dir.glob("*.tmp")) or True   # tmp 由 clean_tmp 管
 
 
 def test_clean_tmp_covers_both_directories(tmp_path):
@@ -2838,7 +2839,7 @@ def test_failed_log_is_failed_after_zombie_reaping(tmp_path):
     log = (FIX / "market_breadth_failed.log").read_text("utf-8")
     assert not any(m in log for m in process.DONE_MARKERS)
     p = progress.parse_market_breadth(log)
-    assert p.phase != progress.DONE and "失败" in p.extras.get("错误", "") or p.phase == "补数中"
+    assert p.phase == "失败" and "2026-08-14" in p.extras["错误"]
 ```
 
 - [ ] **Step 3: 写 jobs 测试改动**
@@ -3039,7 +3040,7 @@ def test_today_not_published_is_skipped_and_still_a_success(tmp_path):
     assert code == 0
     assert re.search(r"^\[1/\d+\] 2026-09-24 跳过：", log, re.M)
     assert "2026-09-24 的收盘数据还没发布" in log and "全部完成: " in log
-    assert len(ms.snapshot_dates()) == 310 - 1 + 1 or len(ms.snapshot_dates()) >= 309
+    assert len(ms.snapshot_dates()) == 309 and TODAY not in ms.snapshot_dates()
 
 
 def test_past_day_zero_rows_is_recorded_and_run_fails_but_continues(tmp_path):
@@ -3077,8 +3078,9 @@ def test_incremental_run_only_fetches_the_gap(tmp_path):
     days, trading = _cal(TODAY)
     _run(tmp_path, FakeProvider(days, trading))
     prov = FakeProvider(days, trading)
-    _run(tmp_path, prov, today=date(2026, 9, 25))          # 中秋休市 → 没有新交易日
-    assert prov.calls == [] and "待补 0 天" in "\n".join([])  or prov.calls == []
+    # 次日 16:00：就绪时刻前，窗口末端仍是 9-24（已补）→ 一天都不请求
+    code, log, _ = _run(tmp_path, prov, today=date(2026, 9, 25), now_t=time(16, 0))
+    assert prov.calls == [] and "待补 0 天" in log and code == 0
 
 
 def test_retention_runs_even_when_fetching_failed(tmp_path):
@@ -3132,8 +3134,9 @@ def test_tmp_files_are_cleaned_at_start(tmp_path):
     全部完成: …                              # 只有成功、或只缺「当天未发布」时才打
     补数失败：…                              # 有过去的日子失败时；退出码非 0
 
-**本脚本任何路径都不许打出子串「已保存:」**——它是 process.DONE_MARKERS 之一，
-runner 用子串匹配判成败，失败的一轮打了它会在面板重启后被记成成功。
+**本脚本任何路径都不许打出 process.DONE_MARKERS 里以「已保存」开头的那个标记**（连带冒号）
+——runner 用子串匹配判成败，失败的一轮打了它会在面板重启后被记成成功。
+本文件全文都不能出现那个子串，测试用源码扫描钉着，所以这里也只能拐着弯说。
 """
 from __future__ import annotations
 
@@ -3407,7 +3410,7 @@ def page_home() -> None:
 - `tests/conftest.py::PAGE_URL_PATHS` 加 `"市场概览": "home"`。
 - `tests/test_dashboard_nav.py::EXPECTED_GROUPS[""]` 首位插 `("市场概览", ":material/monitoring:", "home")`；「第一页是控制台」「唯一默认页是控制台」「不切页渲染的是控制台」三条断言改成「市场概览」。
 - `tests/test_dashboard_console.py`：`test_console_is_the_default_landing_page` 改为 `test_home_is_the_default_landing_page`（不切页的 `qd-title` 是「市场概览」）；首次引导三条测试保留断言、不切页（引导现在在首页，默认页就是首页）；`test_three_cards_render` 遍历 `pages_console._PIPELINE + _TOOLS` 而不是 `jobs.JOBS`；其余 `len(jobs.JOBS)` 处同样改为控制台名单。
-- `tests/test_dashboard_guide.py:312`：`CARDS_WITH_HELP = len(jobs.JOBS) - len(pages_console._ELSEWHERE)`（通过 `app_module("pages_console")` 取）。
+- `tests/test_dashboard_guide.py:312`：`CARDS_WITH_HELP = len(jobs.JOBS) - 1   # market_breadth 的控件在首页（pages_console._ELSEWHERE），控制台不出它的卡片`。这是模块级常量，收集阶段还没有任何 dashboard 被 exec，**不能**用 `app_module("pages_console")` 取；另在 `test_dashboard_console.py` 里加一条测试，exec 过 dashboard 后断言 `len(app_module("pages_console")._ELSEWHERE) == 1`，两处的「1」由它对账。
 - `tests/test_dashboard_visual.py::_card_columns` 的 `starts` 只数控制台名单。
 - `tests/test_guide.py::test_every_job_has_a_popover_help` 不动——Task 19 给 `JOB_HELP["market_breadth"]`。本任务先在 `guide.JOB_HELP` 里放一条占位（Task 19 替换）：
   ```python
@@ -3527,14 +3530,12 @@ HOME_FOOTER = "盘中数据来自门户网站公开行情，可能有几秒延�
 HOME_TREND_TITLE = "趋势宽度"
 HOME_TREND_ASOF = "收盘数据截至 {day} · " + HOME_SCOPE_TREND
 HOME_TREND_NEVER = _f("趋势宽度需要约一年的收盘数据。第一次准备大约 {breadth_first_run}，可随时停止、下次接着补。")
-HOME_TREND_NOT_READY = _f("{day} 的收盘数据约 {breadth_ready} 后可更新")
+HOME_TREND_NOT_READY = _f("{{day}} 的收盘数据约 {breadth_ready} 后可更新")   # {{day}} 留给页面 .format(day=…)
 HOME_TREND_BUSY = "有任务在运行，稍后再更新"
 HOME_TREND_SHORT = "还差约 {n} 天的收盘数据，点「更新收盘数据」继续"
 HOME_TREND_GAP = "数据源缺 {days} 的数据，这几项要等窗口滚过它才有"
 HOME_BTN_START, HOME_BTN_UPDATE, HOME_BTN_STOP = "开始准备", "更新收盘数据", "停止"
 ```
-`HOME_TREND_NOT_READY` 用了 `{day}` 和 `{breadth_ready}` 两个占位，`_f` 只认 FACTS——写成 `_f("…{breadth_ready}…").replace(…)` 会乱；改成先 `_f` 再由页面 `.format(day=…)`：**把 `{day}` 写成 `{{day}}`** 让 `_f` 保留它。
-
 `JOB_HELP["market_breadth"]` 替换占位：
 ```python
     "market_breadth": _f("""**更新收盘数据**——首页「趋势宽度」的数据来源。
@@ -3573,9 +3574,19 @@ def test_stat_card_renders_label_value_and_optional_image():
     html = theme.stat_card("上证指数", "3939.76", sub="-12.37 · -0.31%", color=theme.DOWN,
                            img="data:image/svg+xml;base64,QUJD", note="成交 7767亿")
     assert 'class="qd-card"' in html and "上证指数" in html and "3939.76" in html
-    assert f'style="color: {theme.DOWN}"' in html
+    assert f'<div class="qd-card-sub" style="color: {theme.DOWN}">' in html, "有副文时颜色上副文"
     assert '<img class="qd-card-img" src="data:image/svg+xml;base64,QUJD"' in html
     assert "<svg" not in html, "小图必须走 img data URI，st.html 会删内联 svg"
+
+
+def test_stat_card_colors_the_value_when_there_is_no_sub():
+    html = theme.stat_card("涨停", "51", color=theme.UP)
+    assert f'<div class="qd-card-value" style="color: {theme.UP}">51</div>' in html
+
+
+def test_stat_card_can_be_image_only():
+    html = theme.stat_card("", "", img="data:image/svg+xml;base64,QUJD")
+    assert "qd-card-label" not in html and "qd-card-value" not in html and "qd-card-img" in html
 
 
 def test_stat_card_rejects_non_data_uri_images_and_off_palette_colors():
@@ -3668,14 +3679,17 @@ def _img(uri: str) -> str:
 
 def stat_card(label: str, value: str, *, sub: str = "", color: str | None = None,
               img: str | None = None, note: str = "") -> str:
-    """首页卡片。`color` 只给副文那一行（涨跌），白名单同 metric()。"""
+    """首页卡片。`color` 上在副文那一行（涨跌）；没有副文时上在数值上。白名单同 metric()。
+    label 与 value 都为空 = 纯图卡（比例条、柱状图），不输出那两行。"""
     style = ""
     if color is not None:
         if color not in _INLINE_COLORS:
             raise ValueError(f"内联色值必须来自色板，收到 {color!r}")
         style = f' style="color: {color}"'
-    parts = [f'<div class="qd-card"><div class="qd-card-label">{_esc(label)}</div>',
-             f'<div class="qd-card-value">{_esc(value)}</div>']
+    parts = ['<div class="qd-card">']
+    if label or value:
+        parts.append(f'<div class="qd-card-label">{_esc(label)}</div>')
+        parts.append(f'<div class="qd-card-value"{"" if sub else style}>{_esc(value)}</div>')
     if sub:
         parts.append(f'<div class="qd-card-sub"{style}>{_esc(sub)}</div>')
     if img:
@@ -3797,14 +3811,11 @@ def test_trading_hours_use_the_30s_fragment(tmp_path, monkeypatch):
     assert "数据延迟" not in status
 
 
-def test_cache_entries_have_no_spinner(tmp_path):
-    import inspect
-    import pages_home
-    src = inspect.getsource(pages_home)
-    assert src.count("show_spinner=False") >= 2, "两个缓存入口都必须关掉函数名转圈"
+def test_cache_entries_have_no_spinner():
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "app" / "pages_home.py").read_text("utf-8")
+    assert src.count("show_spinner=False") >= 3, "三个缓存入口（25 秒 / 600 秒 / 日 K）都必须关掉函数名转圈"
 ```
-
-`pages_home` 要能 import：`tests/conftest.py` 的 `app_module` 需要先 exec dashboard；这里直接 `sys.path` 已含 `app/`（`copy_app` 后 AppTest 加的）。若 import 失败，改成 `app_module("pages_home")` 并在 `_home` 之后调用。
 
 - [ ] **Step 2: 跑，确认失败**。
 
@@ -3872,9 +3883,12 @@ def _decide(snap: live.LiveSnapshot | None) -> tuple[Decision, TradeDay]:
     return session.decide(now, td), td
 
 
-def _hint(td_source: date | None) -> date | None:
+def _hint() -> date | None:
+    """池子与新浪校验用的「预期交易日」（spec §3）：本轮源日期由 live 自己拿，这里只给
+    日历推算 → 上一轮成功的日期 这两级兜底。**不能**把上一轮的日期当 source_date 传，
+    否则第一行就 return，日历永远不被咨询。"""
     now = market.now()
-    return session.expected_trade_day(td_source, _calendar(), now.time(),
+    return session.expected_trade_day(None, _calendar(), now.time(),
                                       live.STORE.last_trade_date, today=now.date())
 
 
@@ -3957,13 +3971,21 @@ def _prev_day(trade_date: date, quotes, source: str, now: datetime, today: date)
 
 
 # ---------------------------------------------------------------- 行情区（两个 fragment）
+INTERVAL_KEY = "home_interval"      # session_state：fragment 用真实快照判出的间隔，页面据此选 fragment
+
+
 def _render_live(expected_interval: int, expected_key: str) -> None:
-    hint = _hint(live.STORE.last_trade_date)
-    decision0, _ = _decide(None)
+    hint = _hint()
+    decision0, _ = _decide(None)                 # 只用来选缓存入口（25/600 秒）
     snap = _snapshot(decision0, hint)
-    decision, _ = _decide(snap)
+    decision, _ = _decide(snap)                  # 用真实源日期重判
     if decision.interval_s != expected_interval or _job_key() != expected_key:
-        st.rerun()                # 状态/间隔变了，或跨过了收盘数据就绪时刻 → 整页换 fragment
+        # 状态/间隔变了，或跨过了收盘数据就绪时刻 → 记下想要的间隔再整页重跑。
+        # 页面按 session_state 选 fragment，所以下一轮两边一致、不会来回 rerun：
+        # 没有日历的休市日，_decide(None) 是「未知」（30 秒行）而 _decide(snap) 是「休市」
+        # （60 秒行），不记下来的话就会无限重跑。
+        st.session_state[INTERVAL_KEY] = decision.interval_s
+        st.rerun()
     _status(decision, snap)
     _index_cards(snap)
     _turnover(snap, decision)
@@ -3978,6 +4000,14 @@ def _live_30(expected_key: str) -> None:
 @st.fragment(run_every=f"{session.TICK_INTERVAL_S}s")
 def _live_60(expected_key: str) -> None:
     _render_live(session.TICK_INTERVAL_S, expected_key)
+
+
+def _page_interval() -> int:
+    """页面级选 fragment：优先用 fragment 上一轮用真实快照判出的间隔，没有才按时钟。"""
+    remembered = st.session_state.get(INTERVAL_KEY)
+    if remembered in (session.LIVE_INTERVAL_S, session.TICK_INTERVAL_S):
+        return remembered
+    return _decide(None)[0].interval_s
 
 
 def _job_key() -> str:
@@ -3998,13 +4028,33 @@ def _first_run_hint() -> None:
 def page_home() -> None:
     ui.page_head("市场概览")
     _first_run_hint()
-    decision, _ = _decide(None)
     key = _job_key()
-    (_live_30 if decision.interval_s == session.LIVE_INTERVAL_S else _live_60)(key)
+    (_live_30 if _page_interval() == session.LIVE_INTERVAL_S else _live_60)(key)
     st.caption(guide.HOME_FOOTER)
 ```
 
-`_decide(None)` 在第一轮没有快照时把 `source_ok=False`；有日历就按日历，否则「未知」——节奏按时钟行走，渲染后 `_decide(snap)` 用真实源日期重判，间隔不同就 `st.rerun()`。这符合 spec §4.1「拿到可靠日期后立即重判」。
+`_decide(None)` 在第一轮没有快照时把 `source_ok=False`；有日历就按日历，否则「未知」——节奏按时钟行走，渲染后 `_decide(snap)` 用真实源日期重判，间隔不同就把想要的间隔记进 `session_state` 再 `st.rerun()`；下一轮页面按记下的间隔选 fragment，两边一致，一次重跑就收敛。这符合 spec §4.1「拿到可靠日期后立即重判」。
+
+补一条页面测试（放进 Step 1 的文件）：
+```python
+def test_holiday_without_calendar_converges_instead_of_looping(tmp_path, monkeypatch):
+    """没有日历的工作日休市（9/25 中秋 9:45 后）：_decide(None) 是未知（30 秒），
+    _decide(snap) 按源日期判休市（60 秒）。整页重跑一次后必须停下来。"""
+    from datetime import timedelta
+    frozen = datetime.combine(market.now().date() + timedelta(days=1), time(10, 0))   # 夹具日期的次日
+    monkeypatch.setattr(market, "now", lambda: frozen)
+    calls = {"n": 0}
+    real = live.fetch_round
+
+    def counting(*a, **k):
+        calls["n"] += 1
+        return real(*a, **k)
+    monkeypatch.setattr(live, "fetch_round", counting)
+    at = _home(tmp_path)
+    assert not at.exception
+    status = [h for h in _htmls(at) if 'class="qd-status"' in h][0]
+    assert "休市" in status and calls["n"] <= 2
+```
 
 - [ ] **Step 4: 跑测试**
 
@@ -4133,7 +4183,7 @@ def _thermometer(snap: live.LiveSnapshot) -> None:
     rate = fmt.MISSING if denom == 0 else f"{100 * v.zb_tc / denom:.1f}%"
     lbc = fmt.MISSING if v.max_lbc is None else f"{v.max_lbc} 板"
     c1, c2 = st.columns(2)
-    c1.html(theme.stat_card("涨停", str(v.limit_up), color=fmt.UP))
+    c1.html(theme.stat_card("涨停", str(v.limit_up), color=fmt.UP))      # 没有副文 → 颜色上数值（Task 20）
     c2.html(theme.stat_card("跌停", str(v.limit_down), color=fmt.DOWN))
     c3, c4 = st.columns(2)
     c3.html(theme.stat_card("炸板率", rate, note=f"炸板 {v.zb_tc} 只"))
@@ -4142,8 +4192,6 @@ def _thermometer(snap: live.LiveSnapshot) -> None:
         for key in ("limit_up", "limit_down", "zb_rate", "max_lbc"):
             st.markdown(guide.HOME_HELP[key])
 ```
-
-`theme.stat_card("", "", img=…)` 会渲染空 label/value——给 `stat_card` 加一个分支：label 与 value 都为空时不输出那两行（补一条主题测试）。
 
 - [ ] **Step 4: 跑测试并提交**
 
@@ -4218,10 +4266,9 @@ def test_no_calendar_means_unknown_missing_days_but_still_offers_update():
     assert _st(snapshot_dates=[D("2026-09-23")], calendar=None) is B.UPDATE
 
 
-def test_card_text_for_insufficient_history():
-    assert trend.short_text(n_missing=37, permanent_hit=False) == "还差约 37 天的收盘数据，点「更新收盘数据」继续"
-    assert "窗口" in trend.short_text(n_missing=3, permanent_hit=True)
 ```
+
+（文案不进 `trend.py`：`src/` 不 import `app/`，「还差约 N 天」那句在 `guide.HOME_TREND_SHORT`，由页面拼。）
 
 - [ ] **Step 2: 实现 trend.py**
 
@@ -4281,15 +4328,7 @@ def button_state(*, state_broken: bool, running: bool, busy_other: bool, last_fa
     if calendar.is_trading(today) and now.time() < ready and today not in set(snapshot_dates):
         return ButtonState.NOT_READY
     return ButtonState.UP_TO_DATE
-
-
-def short_text(n_missing: int, permanent_hit: bool) -> str:
-    if permanent_hit:
-        return "数据源缺了其中几天，这一项要等窗口滚过它们才有"
-    return f"还差约 {n_missing} 天的收盘数据，点「更新收盘数据」继续"
 ```
-
-（`short_text` 的两句话搬到 `guide.HOME_TREND_SHORT/GAP` 也行，但 `src/` 不能 import `app/`——这里保留字面量并让 `test_guide` 的 HOME_ 扫描不管它；或者由页面按枚举取 guide 文案。**选后者**：`short_text` 只返回枚举/数字，文案在页面拼。）
 
 - [ ] **Step 3: 写页面测试**
 
@@ -4309,24 +4348,32 @@ def _fake_run(root, status, log="", exit_code=None):
         "finished_at": None if status == "running" else "2026-09-24T19:05:00"}), encoding="utf-8")
 
 
+def _keys(at) -> set[str]:
+    """AppTest 的 `at.button(key=…)` 对不存在的 key 抛 KeyError，不是返回假值——按集合判有无。"""
+    return {b.key for b in at.button}
+
+
 def test_never_prepared_shows_the_explanation_and_a_start_button(tmp_path):
     at = _home(tmp_path)
-    assert at.button(key="home_breadth_start"), "从没准备过 → 「开始准备」"
+    assert "home_breadth_start" in _keys(at), "从没准备过 → 「开始准备」"
     assert any("大约" in c.value for c in at.caption)
 
 
 def test_running_shows_progress_and_stop(tmp_path):
     _fake_run(tmp_path, "running", log="待补 310 天\n[57/310] 2026-06-30 5220 行 用时 18.4s\n")
     at = _home(tmp_path)
-    assert at.button(key="home_breadth_stop") and not at.button(key="home_breadth_start")
-    assert any("57/310" in p.value for p in at.progress) or any("57" in c.value for c in at.caption)
+    assert "home_breadth_stop" in _keys(at) and "home_breadth_start" not in _keys(at)
+    # AppTest 没有 progress 访问器；st.progress 落在 UnknownElement，按类型名取，文案在 proto.text
+    bars = [e.proto.text for e in at.get("progress")]
+    assert any("57/310" in t for t in bars), bars
 
 
 def test_failed_first_run_shows_the_error_and_still_offers_start(tmp_path):
     _fake_run(tmp_path, "failed", log="待补 3 天\n补数失败：交易日历不完整（日历为空）\n", exit_code=2)
     at = _home(tmp_path)
-    assert at.button(key="home_breadth_start")
-    assert any("交易日历不完整" in c.value for c in at.caption + at.error)
+    assert "home_breadth_start" in _keys(at)
+    texts = [c.value for c in at.caption] + [e.value for e in at.error]     # ElementList 不能相加
+    assert any("交易日历不完整" in t for t in texts)
 
 
 def test_up_to_date_shows_only_the_date_in_the_title(tmp_path):
@@ -4335,15 +4382,15 @@ def test_up_to_date_shows_only_the_date_in_the_title(tmp_path):
     ms = MarketStore(tmp_path / "data" / "market")
     day = market.now().date()
     days = pd.date_range(day.replace(day=1), day + pd.Timedelta(days=40)).date
-    ms.save_calendar(days, {d for d in days if d.weekday() < 5})
+    ms.save_calendar(days, {day})            # 交易日只有夹具那一天 → 补齐 = 已是最新
     ms.save_snapshot(day, pd.DataFrame({"code": ["sh.600000"], "close": [1.0], "preclose": [1.0],
                                         "tradestatus": [1], "isST": [0]}))
     ms.save_breadth(pd.DataFrame({"date": [day], "above20": [1], "n20": [2], "above60": [0], "n60": [0],
                                   "above200": [0], "n200": [0], "new_high": [0], "new_low": [0], "n_hl": [0]}))
     at = _home(tmp_path)
-    assert not at.button(key="home_breadth_start") and not at.button(key="home_breadth_update")
+    assert not ({"home_breadth_start", "home_breadth_update"} & _keys(at))
     body = " ".join(_htmls(at)) + " ".join(c.value for c in at.caption)
-    assert body.count(day.isoformat()) >= 1
+    assert body.count(day.isoformat()) == 1, "日期只在宽度标题旁出现一次，按钮区不重复"
     assert "还差约" in body, "60/200 日线历史不足要说清缺多少天"
 ```
 
@@ -4416,7 +4463,10 @@ def _job_area(ms: MarketStore) -> None:
         prog = progress.parse_market_breadth(log)
         head, detail = view.progress_lines(prog, view.elapsed_seconds(state), status=state.status)
         ratio = view.progress_ratio(prog)
-        st.progress(ratio, text=head) if ratio is not None else st.caption(head)
+        if ratio is not None:              # 必须是 if 语句：裸三元会被 streamlit magic 整条包进 st.write
+            st.progress(ratio, text=head)
+        else:
+            st.caption(head)
         if detail:
             st.caption(detail)
         if st.button(f"⏹ {guide.HOME_BTN_STOP}", key="home_breadth_stop"):
