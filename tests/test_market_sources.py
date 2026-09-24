@@ -191,3 +191,57 @@ def test_kline_param_error_has_code_zero_but_is_an_error():
     raw = b'{"code":0,"msg":"param error","data":[]}'
     with pytest.raises(ParseError, match="param error"):
         sources.parse_tencent_kline(raw, "sh000001")
+
+
+def test_parse_em_fenbu_from_recording():
+    dist = sources.parse_em_fenbu(_fix("em_fenbu.bin"))
+    assert sorted(dist.buckets) == list(range(-11, 12))
+    assert dist.total == sum(dist.buckets.values()) and 4000 <= dist.total <= 7000
+    assert dist.up == sum(v for k, v in dist.buckets.items() if k > 0)
+    assert dist.flat == dist.buckets[0] and dist.down + dist.up + dist.flat == dist.total
+    assert dist.scope == sources.SCOPE_EM
+
+
+def test_fenbu_missing_bucket_is_rejected():
+    doc = json.loads(_fix("em_fenbu.bin"))
+    doc["data"]["fenbu"] = [d for d in doc["data"]["fenbu"] if "7" not in d]
+    with pytest.raises(ParseError, match="档"):
+        sources.parse_em_fenbu(json.dumps(doc).encode())
+
+
+def test_fenbu_negative_count_is_rejected():
+    doc = json.loads(_fix("em_fenbu.bin"))
+    doc["data"]["fenbu"] = [({"3": -1} if "3" in d else d) for d in doc["data"]["fenbu"]]
+    with pytest.raises(ParseError):
+        sources.parse_em_fenbu(json.dumps(doc).encode())
+
+
+def test_em_pool_url_carries_ut_date_and_a_large_pagesize():
+    url = sources.em_pool_url("zt", _date(2026, 9, 24))
+    assert "getTopicZTPool" in url and "date=20260924" in url and "ut=" in url
+    assert "pagesize=10000" in url
+
+
+def test_parse_em_pools_from_recording():
+    zt = sources.parse_em_pool(_fix("em_ztpool.bin"), "zt", _date(2026, 9, 24))
+    zb = sources.parse_em_pool(_fix("em_zbpool.bin"), "zb", _date(2026, 9, 24))
+    assert zt.tc == zt.rows and zt.max_lbc >= 1 and zb.tc == zb.rows
+    assert zt.trade_date == _date(2026, 9, 24)
+
+
+def test_pool_tc_must_equal_row_count():
+    doc = json.loads(_fix("em_ztpool.bin"))
+    doc["data"]["tc"] += 1
+    with pytest.raises(ParseError, match="家数"):
+        sources.parse_em_pool(json.dumps(doc).encode(), "zt", _date(2026, 9, 24))
+
+
+def test_pool_rc_102_is_an_error():
+    with pytest.raises(ParseError, match="102"):
+        sources.parse_em_pool(b'{"rc":102,"data":null}', "zt", _date(2026, 9, 24))
+
+
+def test_empty_pool_parses_but_max_lbc_is_none():
+    p = sources.parse_em_pool(b'{"rc":0,"data":{"tc":0,"pool":[],"qdate":"20260924"}}',
+                              "zt", _date(2026, 9, 24))
+    assert p.tc == 0 and p.max_lbc is None

@@ -272,3 +272,81 @@ def parse_tencent_kline(raw: bytes, code: str) -> list[DailyBar]:
     if any(b.day <= a.day for a, b in zip(bars, bars[1:])):
         raise ParseError(f"{code} 日K 日期不单调")
     return bars
+
+
+# ---------------------------------------------------------------- 东方财富 push2ex
+EM_UT = "7eea3edcaed734bea9cbfc24409ed989"      # 网页内置的固定值；东财改版会失效
+EM_POOL_PAGESIZE = 10000                         # 给足：极端行情涨停上千只时 tc 仍须等于明细数
+_POOL_KINDS = {"zt": ("getTopicZTPool", "fbt:asc"), "zb": ("getTopicZBPool", "fbt:asc")}
+
+
+@dataclass(frozen=True)
+class Distribution:
+    buckets: dict[int, int]     # -11..11；0=平盘；±11=封住涨停/跌停；±10=超过 9% 未封板
+    total: int
+    up: int
+    flat: int
+    down: int
+    scope: str
+
+
+@dataclass(frozen=True)
+class Pool:
+    kind: str                   # "zt" | "zb"
+    trade_date: date            # 我们请求时传的 date（qdate 不可信，不用）
+    tc: int
+    rows: int
+    max_lbc: int | None         # 涨停池的最高连板；空池为 None
+
+
+def em_fenbu_url() -> str:
+    return f"https://push2ex.eastmoney.com/getTopicZDFenBu?ut={EM_UT}&dpt=wz.ztzt"
+
+
+def em_pool_url(kind: str, day: date) -> str:
+    name, sort = _POOL_KINDS[kind]
+    return (f"https://push2ex.eastmoney.com/{name}?ut={EM_UT}&dpt=wz.ztzt&Pageindex=0"
+            f"&pagesize={EM_POOL_PAGESIZE}&sort={sort}&date={day:%Y%m%d}")
+
+
+def _em_data(raw: bytes, what: str) -> dict:
+    doc = _json(raw, what)
+    if doc.get("rc") != 0 or not isinstance(doc.get("data"), dict):
+        raise ParseError(f"{what}：rc={doc.get('rc')}，data={type(doc.get('data')).__name__}")
+    return doc["data"]
+
+
+def parse_em_fenbu(raw: bytes) -> Distribution:
+    data = _em_data(raw, "东财涨跌分布")
+    buckets: dict[int, int] = {}
+    for item in data.get("fenbu") or []:
+        for k, v in dict(item).items():
+            try:
+                key, val = int(k), int(v)
+            except (TypeError, ValueError) as e:
+                raise ParseError(f"东财涨跌分布档位不是整数：{k}:{v}") from e
+            if val < 0:
+                raise ParseError(f"东财涨跌分布第 {key} 档为负：{val}")
+            buckets[key] = val
+    if sorted(buckets) != list(range(-11, 12)):
+        raise ParseError(f"东财涨跌分布档位不全：{sorted(buckets)}")
+    total = sum(buckets.values())
+    if not 4000 <= total <= 7000:
+        raise ParseError(f"东财涨跌分布合计 {total} 不在合理范围")
+    up = sum(v for k, v in buckets.items() if k > 0)
+    down = sum(v for k, v in buckets.items() if k < 0)
+    return Distribution(buckets=buckets, total=total, up=up, flat=buckets[0], down=down,
+                        scope=SCOPE_EM)
+
+
+def parse_em_pool(raw: bytes, kind: str, requested: date) -> Pool:
+    data = _em_data(raw, f"东财{'涨停' if kind == 'zt' else '炸板'}池")
+    pool = data.get("pool") or []
+    tc = int(data.get("tc") or 0)
+    if tc != len(pool):
+        raise ParseError(f"东财池子家数 tc={tc} ≠ 明细 {len(pool)} 条（pagesize 不够或返回被截断）")
+    lbcs = [int(r.get("lbc") or 0) for r in pool] if kind == "zt" else []
+    if kind == "zt" and any(x < 1 for x in lbcs):
+        raise ParseError("涨停池 lbc 不是正整数")
+    return Pool(kind=kind, trade_date=requested, tc=tc, rows=len(pool),
+                max_lbc=(max(lbcs) if lbcs else None))
