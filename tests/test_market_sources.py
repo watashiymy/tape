@@ -1,6 +1,12 @@
-from datetime import datetime, time
+import json
+from datetime import date as _date, datetime, time
+from pathlib import Path
+
+import pytest
 
 from quant import market
+from quant.market import sources
+from quant.market.sources import FetchError, ParseError
 
 
 def test_package_constants():
@@ -9,14 +15,6 @@ def test_package_constants():
         "sh000001", "sz399001", "sz399006", "sh000688", "sh000300", "sh000852"]
     assert isinstance(market.now(), datetime)
 
-
-import json
-from pathlib import Path
-
-import pytest
-
-from quant.market import sources
-from quant.market.sources import FetchError, ParseError
 
 FIX = Path(__file__).resolve().parent / "fixtures" / "market"
 CODES = [c for c, _ in market.INDEXES]
@@ -98,7 +96,7 @@ def test_tencent_field_shift_by_one_is_caught():
     shifted = "\n".join(
         (lambda h, b: h + '="' + "~".join(["0"] + b.rstrip('";').split("~")) + '";')(*l.split('="', 1))
         if l.startswith("v_s") else l for l in text.splitlines())
-    with pytest.raises(ParseError):
+    with pytest.raises(ParseError, match="涨跌额|涨跌幅|高低价|段"):
         sources.parse_tencent_quotes(shifted.encode("gbk"), CODES)
 
 
@@ -145,9 +143,6 @@ def test_sina_bad_status_code_is_rejected():
     text = text.replace(",00,", ",01,")
     with pytest.raises(ParseError, match="状态"):
         sources.parse_sina_quotes(text.encode("gb18030"), CODES, None)
-
-
-from datetime import date as _date
 
 
 def test_parse_tencent_minute_from_recording():
@@ -212,7 +207,7 @@ def test_fenbu_missing_bucket_is_rejected():
 def test_fenbu_negative_count_is_rejected():
     doc = json.loads(_fix("em_fenbu.bin"))
     doc["data"]["fenbu"] = [({"3": -1} if "3" in d else d) for d in doc["data"]["fenbu"]]
-    with pytest.raises(ParseError):
+    with pytest.raises(ParseError, match="为负"):
         sources.parse_em_fenbu(json.dumps(doc).encode())
 
 
@@ -263,3 +258,228 @@ def test_fetch_turns_fetch_and_parse_errors_into_failed_results():
     assert not r.ok and "timeout" in r.error
     r2 = sources.fetch(lambda u, h=None: b"garbage", sources.em_fenbu_url(), sources.parse_em_fenbu)
     assert not r2.ok and r2.value is None
+
+
+def test_fetch_logs_a_warning_on_unexpected_exception(caplog):
+    def boom_parse(raw):
+        raise TypeError("boom")
+    with caplog.at_level("WARNING"):
+        r = sources.fetch(lambda u, h=None: b"x", "http://x", boom_parse)
+    assert not r.ok and "TypeError" in r.error
+    assert any("boom" in rec.message or "TypeError" in rec.message for rec in caplog.records)
+
+
+# ---------------------------------------------------------------- I-1: em pool 缺键不当空池
+def test_em_pool_missing_tc_is_rejected():
+    with pytest.raises(ParseError, match="tc"):
+        sources.parse_em_pool(b'{"rc":0,"data":{}}', "zt", _date(2026, 9, 24))
+
+
+def test_em_pool_renamed_keys_are_rejected():
+    with pytest.raises(ParseError, match="tc"):
+        sources.parse_em_pool(b'{"rc":0,"data":{"total":52,"list":[]}}', "zt", _date(2026, 9, 24))
+
+
+def test_em_pool_tc_zero_without_pool_key_is_still_empty():
+    p = sources.parse_em_pool(b'{"rc":0,"data":{"tc":0}}', "zt", _date(2026, 9, 24))
+    assert p.tc == 0 and p.rows == 0 and p.max_lbc is None
+
+
+# ---------------------------------------------------------------- I-2: 新浪「名称对上」
+def test_sina_name_matches_when_names_given():
+    quotes = sources.parse_sina_quotes(_fix("sina_quotes.bin"), CODES, None,
+                                       names=dict(market.INDEXES))
+    assert set(quotes) == set(CODES)
+
+
+def test_sina_name_mismatch_is_rejected():
+    text = _fix("sina_quotes.bin").decode("gb18030")
+    assert text.count("上证指数") == 1
+    text = text.replace('"上证指数,', '"深证成指,', 1)
+    with pytest.raises(ParseError, match="名称"):
+        sources.parse_sina_quotes(text.encode("gb18030"), CODES, None, names=dict(market.INDEXES))
+
+
+def test_sina_name_check_is_skipped_when_names_is_none():
+    quotes = sources.parse_sina_quotes(_fix("sina_quotes.bin"), CODES, None)
+    assert set(quotes) == set(CODES)
+
+
+# ---------------------------------------------------------------- I-3: 解析器只抛 ParseError
+def test_minute_row_with_colon_time_is_rejected():
+    raw = (b'{"code":0,"msg":"","data":{"sh000001":{"data":{"date":"20260923","data":'
+           b'["09:30 1.0"]},"qt":{"market":[]}}}}')
+    with pytest.raises(ParseError):
+        sources.parse_tencent_minute(raw, "sh000001")
+
+
+def test_minute_row_with_non_numeric_price_is_rejected():
+    raw = (b'{"code":0,"msg":"","data":{"sh000001":{"data":{"date":"20260923","data":'
+           b'["0930 abc"]},"qt":{"market":[]}}}}')
+    with pytest.raises(ParseError):
+        sources.parse_tencent_minute(raw, "sh000001")
+
+
+def test_minute_row_with_invalid_hour_is_rejected():
+    raw = (b'{"code":0,"msg":"","data":{"sh000001":{"data":{"date":"20260923","data":'
+           b'["2530 1.0"]},"qt":{"market":[]}}}}')
+    with pytest.raises(ParseError):
+        sources.parse_tencent_minute(raw, "sh000001")
+
+
+def test_minute_rows_not_a_list_is_rejected():
+    raw = (b'{"code":0,"msg":"","data":{"sh000001":{"data":{"date":"20260923","data":5},'
+           b'"qt":{"market":[]}}}}')
+    with pytest.raises(ParseError):
+        sources.parse_tencent_minute(raw, "sh000001")
+
+
+def test_json_top_level_non_dict_is_rejected():
+    with pytest.raises(ParseError):
+        sources._json(b"[]", "test")
+
+
+def test_fenbu_that_is_a_dict_instead_of_a_list_is_rejected():
+    doc = json.loads(_fix("em_fenbu.bin"))
+    doc["data"]["fenbu"] = {"oops": 1}
+    with pytest.raises(ParseError):
+        sources.parse_em_fenbu(json.dumps(doc).encode())
+
+
+def test_fenbu_element_that_is_a_list_is_rejected():
+    doc = json.loads(_fix("em_fenbu.bin"))
+    doc["data"]["fenbu"] = [[1, 2, 3]]
+    with pytest.raises(ParseError):
+        sources.parse_em_fenbu(json.dumps(doc).encode())
+
+
+def test_pool_tc_non_integer_is_rejected():
+    doc = json.loads(_fix("em_ztpool.bin"))
+    doc["data"]["tc"] = "abc"
+    with pytest.raises(ParseError):
+        sources.parse_em_pool(json.dumps(doc).encode(), "zt", _date(2026, 9, 24))
+
+
+def test_pool_row_that_is_not_a_dict_is_rejected():
+    doc = json.loads(_fix("em_ztpool.bin"))
+    doc["data"]["pool"] = doc["data"]["pool"] + ["oops"]
+    doc["data"]["tc"] = len(doc["data"]["pool"])
+    with pytest.raises(ParseError):
+        sources.parse_em_pool(json.dumps(doc).encode(), "zt", _date(2026, 9, 24))
+
+
+# ---------------------------------------------------------------- I-4: 钉住字段来源 / 禁用 qdate
+def test_breadth_exact_counts_from_recording():
+    b = sources.parse_tencent_breadth(_fix("tencent_quotes.bin"))
+    assert (b.up, b.flat, b.down, b.total) == (1084, 137, 4001, 5222)
+
+
+def test_tencent_amount_exact_value_from_recording():
+    q = sources.parse_tencent_quotes(_fix("tencent_quotes.bin"), CODES)
+    assert q["sh000001"].amount_wan == pytest.approx(78361300.0)
+
+
+def test_sina_amount_matches_tencent_amount_within_tolerance():
+    tencent = sources.parse_tencent_quotes(_fix("tencent_quotes.bin"), CODES)["sh000001"]
+    sina = sources.parse_sina_quotes(_fix("sina_quotes.bin"), CODES, None)["sh000001"]
+    assert abs(sina.amount_wan - tencent.amount_wan) < 1
+
+
+def test_kline_last_bar_amount_pins_the_tencent_quote_field_37():
+    bars = sources.parse_tencent_kline(_fix("tencent_kline_sh000001.bin"), "sh000001")
+    tencent = sources.parse_tencent_quotes(_fix("tencent_quotes.bin"), CODES)["sh000001"]
+    assert bars[-1].amount_wan == pytest.approx(78361300.14)
+    assert abs(bars[-1].amount_wan - tencent.amount_wan) < 1
+
+
+def test_pool_trade_date_is_the_requested_date_not_qdate():
+    """夹具的 qdate 是 20260924；传入 20260923 之后结果必须是 20260923——钉住「qdate 不可信，不用」。"""
+    zt = sources.parse_em_pool(_fix("em_ztpool.bin"), "zt", _date(2026, 9, 23))
+    assert zt.trade_date == _date(2026, 9, 23)
+
+
+def test_minute_trade_date_comes_only_from_data_date_not_qt_market():
+    raw = (b'{"code":0,"msg":"","data":{"sh000001":{"data":{"date":"20260926","data":'
+           b'["0930 1.0"]},"qt":{"market":["2026-09-27 10:00:00|SH_open_x"]}}}}')
+    m = sources.parse_tencent_minute(raw, "sh000001")
+    assert m.trade_date == _date(2026, 9, 26)
+
+
+def test_minute_from_recording_exact_trade_date_and_status():
+    m = sources.parse_tencent_minute(_fix("tencent_minute_sh000001.bin"), "sh000001")
+    assert m.trade_date == _date(2026, 9, 24) and m.sh_status == "close"
+
+
+# ---------------------------------------------------------------- I-5: 校验规则的反例
+def test_breadth_sum_mismatch_is_rejected():
+    raw = _mutate(_fix("tencent_quotes.bin"), "bkqtRank_A_sh", 5, "999999")
+    with pytest.raises(ParseError, match="≠"):
+        sources.parse_tencent_breadth(raw)
+
+
+def test_breadth_total_out_of_range_is_rejected():
+    raw = _fix("tencent_quotes.bin")
+    for key in ("bkqtRank_A_sh", "bkqtRank_A_sz"):
+        raw = _mutate(raw, key, 2, "1")
+        raw = _mutate(raw, key, 3, "0")
+        raw = _mutate(raw, key, 4, "0")
+        raw = _mutate(raw, key, 5, "1")
+    with pytest.raises(ParseError, match="合理范围"):
+        sources.parse_tencent_breadth(raw)
+
+
+def test_fenbu_total_out_of_range_is_rejected():
+    doc = json.loads(_fix("em_fenbu.bin"))
+    doc["data"]["fenbu"] = [{k: max(0, v // 100) for k, v in d.items()}
+                            for d in doc["data"]["fenbu"]]
+    with pytest.raises(ParseError, match="合理范围"):
+        sources.parse_em_fenbu(json.dumps(doc).encode())
+
+
+def test_pool_lbc_less_than_one_is_rejected():
+    doc = json.loads(_fix("em_ztpool.bin"))
+    doc["data"]["pool"][0]["lbc"] = 0
+    with pytest.raises(ParseError, match="lbc"):
+        sources.parse_em_pool(json.dumps(doc).encode(), "zt", _date(2026, 9, 24))
+
+
+def test_kline_non_monotonic_dates_is_rejected():
+    doc = json.loads(_fix("tencent_kline_sh000001.bin"))
+    rows = doc["data"]["sh000001"]["day"]
+    rows[0], rows[1] = rows[1], rows[0]
+    with pytest.raises(ParseError, match="单调"):
+        sources.parse_tencent_kline(json.dumps(doc).encode(), "sh000001")
+
+
+def test_minute_non_positive_price_is_rejected():
+    raw = (b'{"code":0,"msg":"","data":{"sh000001":{"data":{"date":"20260923","data":'
+           b'["0930 0"]},"qt":{"market":[]}}}}')
+    with pytest.raises(ParseError, match="非正"):
+        sources.parse_tencent_minute(raw, "sh000001")
+
+
+# ---------------------------------------------------------------- Minor
+def test_pool_unknown_kind_raises_value_error_not_parse_error():
+    with pytest.raises(ValueError) as exc:
+        sources.parse_em_pool(b"{}", "xx", _date(2026, 9, 24))
+    assert not isinstance(exc.value, ParseError)
+
+
+def test_fenbu_duplicate_bucket_key_is_rejected():
+    doc = json.loads(_fix("em_fenbu.bin"))
+    fenbu = doc["data"]["fenbu"]
+    dup_entry = next(d for d in fenbu if "3" in d)
+    doc["data"]["fenbu"] = fenbu + [dict(dup_entry)]
+    with pytest.raises(ParseError):
+        sources.parse_em_fenbu(json.dumps(doc).encode())
+
+
+def test_result_forbids_both_value_and_error_being_none():
+    with pytest.raises(ValueError):
+        sources.Result(value=None, error=None)
+
+
+def test_result_ok_true_only_when_value_present_and_no_error():
+    assert sources.Result(value=1).ok
+    assert not sources.Result(value=None, error="x").ok
+    assert not sources.Result(value=1, error="x").ok

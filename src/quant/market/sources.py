@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -89,6 +90,13 @@ def _num(fields: list[str], i: int, what: str) -> float:
         raise ParseError(f"{what}：第 {i} 段不是数字（{fields[i] if i < len(fields) else '缺'}）") from e
 
 
+def _int(fields: list[str], i: int, what: str) -> int:
+    try:
+        return int(fields[i])
+    except (IndexError, ValueError) as e:
+        raise ParseError(f"{what}：第 {i} 段不是整数（{fields[i] if i < len(fields) else '缺'}）") from e
+
+
 def parse_tencent_quotes(raw: bytes, codes: list[str]) -> dict[str, IndexQuote]:
     segs = _tencent_segments(raw)
     if "pv_none_match" in segs:
@@ -132,7 +140,7 @@ def parse_tencent_breadth(raw: bytes) -> Breadth:
         f = segs.get(key)
         if f is None or len(f) < 6:
             raise ParseError(f"腾讯返回里没有 {key}")
-        up, flat, down, total = (int(_num(f, i, key)) for i in (2, 3, 4, 5))
+        up, flat, down, total = (_int(f, i, key) for i in (2, 3, 4, 5))
         if up + flat + down != total:
             raise ParseError(f"{key} 涨+平+跌 ≠ 总（{up}+{flat}+{down} ≠ {total}）")
         counts.append((up, flat, down, total))
@@ -153,8 +161,11 @@ def sina_quote_url(codes: list[str]) -> str:
 
 
 def parse_sina_quotes(raw: bytes, codes: list[str],
-                      expected_day: date | None) -> dict[str, IndexQuote]:
-    """expected_day 是 §3「预期交易日」；None 表示三个来源都没有，允许用新浪自己的日期。"""
+                      expected_day: date | None, *,
+                      names: dict[str, str] | None = None) -> dict[str, IndexQuote]:
+    """expected_day 是 §3「预期交易日」；None 表示三个来源都没有，允许用新浪自己的日期。
+    names：若给出（代码 → 显示名），校验新浪返回的名称与之一致（spec §3「名称对上」）；
+    None 表示不做这项校验（调用方没有可比对的名称）。"""
     text = raw.decode("gb18030", errors="replace")
     segs = {m.group(1): m.group(2) for m in _SINA_LINE.finditer(text)}
     out: dict[str, IndexQuote] = {}
@@ -174,6 +185,11 @@ def parse_sina_quotes(raw: bytes, codes: list[str],
             raise ParseError(f"{code} 日期/时间解析失败：{f[30]} {f[31]}") from e
         if expected_day is not None and day != expected_day:
             raise ParseError(f"{code} 日期 {day} ≠ 预期交易日 {expected_day}")
+        if names is not None:
+            expected_name = names.get(code)
+            actual_name = f[0].strip()
+            if expected_name is not None and actual_name != expected_name:
+                raise ParseError(f"{code} 名称 {actual_name!r} 与预期 {expected_name!r} 不符")
         opn, prev, price = _num(f, 1, code), _num(f, 2, code), _num(f, 3, code)
         high, low = _num(f, 4, code), _num(f, 5, code)
         if price <= 0 or prev <= 0:
@@ -213,9 +229,12 @@ def tencent_kline_url(code: str, count: int = 5) -> str:
 
 def _json(raw: bytes, what: str) -> dict:
     try:
-        return json.loads(raw.decode("utf-8"))
+        doc = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as e:
         raise ParseError(f"{what}：不是合法 JSON") from e
+    if not isinstance(doc, dict):
+        raise ParseError(f"{what}：JSON 顶层不是对象（{type(doc).__name__}）")
+    return doc
 
 
 def _tencent_data(raw: bytes, code: str, what: str) -> dict:
@@ -238,13 +257,18 @@ def parse_tencent_minute(raw: bytes, code: str) -> Minute:
         rows = d["data"]["data"]
     except (KeyError, TypeError, ValueError) as e:
         raise ParseError(f"{code} 分时缺少 date/data") from e
+    if not isinstance(rows, list):
+        raise ParseError(f"{code} 分时 data 不是列表（{type(rows).__name__}）")
     points = []
     for row in rows:
-        parts = str(row).split()
-        if len(parts) < 2:
-            raise ParseError(f"{code} 分时行格式不对：{row!r}")
-        t = time(int(parts[0][:2]), int(parts[0][2:4]))
-        price = float(parts[1])
+        try:
+            parts = str(row).split()
+            if len(parts) < 2:
+                raise ValueError("段数不够")
+            t = time(int(parts[0][:2]), int(parts[0][2:4]))
+            price = float(parts[1])
+        except (ValueError, IndexError, TypeError) as e:
+            raise ParseError(f"{code} 分时行格式不对：{row!r}") from e
         if price <= 0:
             raise ParseError(f"{code} 分时价格非正：{row!r}")
         points.append((t, price))
@@ -320,15 +344,24 @@ def _em_data(raw: bytes, what: str) -> dict:
 
 def parse_em_fenbu(raw: bytes) -> Distribution:
     data = _em_data(raw, "东财涨跌分布")
+    fenbu = data.get("fenbu")
+    if fenbu is None:
+        fenbu = []
+    if not isinstance(fenbu, list):
+        raise ParseError(f"东财涨跌分布 fenbu 不是列表（{type(fenbu).__name__}）")
     buckets: dict[int, int] = {}
-    for item in data.get("fenbu") or []:
-        for k, v in dict(item).items():
+    for item in fenbu:
+        if not isinstance(item, dict):
+            raise ParseError(f"东财涨跌分布档位条目不是对象：{item!r}")
+        for k, v in item.items():
             try:
                 key, val = int(k), int(v)
             except (TypeError, ValueError) as e:
                 raise ParseError(f"东财涨跌分布档位不是整数：{k}:{v}") from e
             if val < 0:
                 raise ParseError(f"东财涨跌分布第 {key} 档为负：{val}")
+            if key in buckets:
+                raise ParseError(f"东财涨跌分布档位 {key} 重复出现")
             buckets[key] = val
     if sorted(buckets) != list(range(-11, 12)):
         raise ParseError(f"东财涨跌分布档位不全：{sorted(buckets)}")
@@ -342,14 +375,37 @@ def parse_em_fenbu(raw: bytes) -> Distribution:
 
 
 def parse_em_pool(raw: bytes, kind: str, requested: date) -> Pool:
-    data = _em_data(raw, f"东财{'涨停' if kind == 'zt' else '炸板'}池")
-    pool = data.get("pool") or []
-    tc = int(data.get("tc") or 0)
+    if kind not in _POOL_KINDS:
+        raise ValueError(f"未知的池子种类：{kind!r}")
+    what = f"东财{'涨停' if kind == 'zt' else '炸板'}池"
+    data = _em_data(raw, what)
+    if "tc" not in data:
+        raise ParseError(f"{what}：返回里没有 tc 字段")
+    try:
+        tc = int(data["tc"])
+    except (TypeError, ValueError) as e:
+        raise ParseError(f"{what}：tc 不是整数（{data['tc']!r}）") from e
+    pool = data.get("pool")
+    if pool is None:
+        if tc != 0:
+            raise ParseError(f"{what}：tc={tc} 但没有 pool 明细")
+        pool = []
+    if not isinstance(pool, list):
+        raise ParseError(f"{what}：pool 不是列表（{type(pool).__name__}）")
+    for row in pool:
+        if not isinstance(row, dict):
+            raise ParseError(f"{what}：pool 里有一条不是对象：{row!r}")
     if tc != len(pool):
         raise ParseError(f"东财池子家数 tc={tc} ≠ 明细 {len(pool)} 条（pagesize 不够或返回被截断）")
-    lbcs = [int(r.get("lbc") or 0) for r in pool] if kind == "zt" else []
-    if kind == "zt" and any(x < 1 for x in lbcs):
-        raise ParseError("涨停池 lbc 不是正整数")
+    lbcs = []
+    if kind == "zt":
+        for row in pool:
+            try:
+                lbcs.append(int(row.get("lbc") or 0))
+            except (TypeError, ValueError) as e:
+                raise ParseError(f"{what}：lbc 不是整数（{row.get('lbc')!r}）") from e
+        if any(x < 1 for x in lbcs):
+            raise ParseError("涨停池 lbc 不是正整数")
     return Pool(kind=kind, trade_date=requested, tc=tc, rows=len(pool),
                 max_lbc=(max(lbcs) if lbcs else None))
 
@@ -358,6 +414,10 @@ def parse_em_pool(raw: bytes, kind: str, requested: date) -> Pool:
 class Result(Generic[T]):
     value: T | None
     error: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.value is None and self.error is None:
+            raise ValueError("Result 不能 value 和 error 同时为空——不知道算成功还是失败")
 
     @property
     def ok(self) -> bool:
@@ -372,4 +432,6 @@ def fetch(http_get: HttpGet, url: str, parse: Callable[[bytes], T],
     except (FetchError, ParseError) as e:
         return Result(value=None, error=str(e))
     except Exception as e:                       # 解析器里没预料到的形态也不许把页面打没
+        logging.getLogger(__name__).warning(
+            "%s 解析出现未预期异常（不是 FetchError/ParseError）：%s: %s", url, type(e).__name__, e)
         return Result(value=None, error=f"{type(e).__name__}: {e}")
