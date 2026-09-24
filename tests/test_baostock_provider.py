@@ -4,6 +4,7 @@ from datetime import date
 import pandas as pd
 import pytest
 
+from quant.data import baostock_provider as bp
 from quant.data.baostock_provider import (_factors_to_series, _fetch,
                                           _filter_scan_universe, to_bs_code)
 
@@ -200,3 +201,69 @@ def test_scan_universe_output_sorted_and_reindexed():
         AS_OF)
     assert list(out["symbol"]) == ["000333", "600036", "600519"]
     assert list(out.index) == [0, 1, 2]
+
+
+class _RS:
+    """baostock ResultData 的最小替身。"""
+    def __init__(self, code="0", msg="", rows=(), fields=()):
+        self.error_code, self.error_msg, self.fields = code, msg, list(fields)
+        self._rows, self._i = list(rows), 0
+
+    def next(self):
+        if self._i < len(self._rows):
+            self._i += 1
+            return True
+        return False
+
+    def get_row_data(self):
+        return self._rows[self._i - 1]
+
+
+def test_check_raises_an_error_that_carries_the_code():
+    with pytest.raises(bp.BaostockError) as ei:
+        bp._check(_RS(code="10001001", msg="用户未登录"))
+    assert ei.value.code == "10001001" and isinstance(ei.value, RuntimeError)
+    assert bp.BaostockError("10001001", "x").is_session_error
+    assert not bp.BaostockError("10004011", "x").is_session_error
+
+
+def test_market_snapshot_converts_types_and_validates(monkeypatch):
+    rows = [["2026-09-23", "sh.600000", "9.03", "9.07", "8.97", "8.98", "9.04", "1", "1", "3", "0.16",
+             "1", "-0.6637", "5.8", "0.4", "1", "1", "0"],
+            ["2026-09-23", "sz.000001", "1", "1", "1", "1", "1", "", "", "3", "", "0", "", "", "", "", "", "0"]]
+    fields = "date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg,peTTM,pbMRQ,psTTM,pcfNcfTTM,isST".split(",")
+    monkeypatch.setattr(bp.bs, "query_daily_history_k_AStock", lambda date: _RS(rows=rows, fields=fields))
+    monkeypatch.setattr(bp, "SNAPSHOT_MIN_ROWS", 1)
+    df = bp.BaostockProvider().get_market_snapshot(pd.Timestamp("2026-09-23").date())
+    assert list(df.columns) == ["code", "close", "preclose", "tradestatus", "isST"]
+    assert df["tradestatus"].tolist() == [1, 0] and df["isST"].dtype.kind == "i"
+    assert df["close"].dtype.kind == "f"
+
+
+def test_market_snapshot_rejects_rows_of_another_day(monkeypatch):
+    rows = [["2026-09-22", "sh.600000", "9", "9", "9", "9", "9", "1", "1", "3", "0", "1", "0", "", "", "", "", "0"]]
+    fields = "date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg,peTTM,pbMRQ,psTTM,pcfNcfTTM,isST".split(",")
+    monkeypatch.setattr(bp.bs, "query_daily_history_k_AStock", lambda date: _RS(rows=rows, fields=fields))
+    monkeypatch.setattr(bp, "SNAPSHOT_MIN_ROWS", 1)
+    with pytest.raises(bp.SnapshotInvalid, match="日期"):
+        bp.BaostockProvider().get_market_snapshot(pd.Timestamp("2026-09-23").date())
+
+
+def test_market_snapshot_rejects_pctchg_mismatch_and_bad_prefix(monkeypatch):
+    fields = "date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg,peTTM,pbMRQ,psTTM,pcfNcfTTM,isST".split(",")
+    bad_pct = [["2026-09-23", "sh.600000", "9", "9", "9", "9.9", "9.0", "1", "1", "3", "0", "1", "5.0", "", "", "", "", "0"]]
+    monkeypatch.setattr(bp.bs, "query_daily_history_k_AStock", lambda date: _RS(rows=bad_pct, fields=fields))
+    monkeypatch.setattr(bp, "SNAPSHOT_MIN_ROWS", 1)
+    with pytest.raises(bp.SnapshotInvalid, match="pctChg"):
+        bp.BaostockProvider().get_market_snapshot(pd.Timestamp("2026-09-23").date())
+    bj = [["2026-09-23", "bj.920001", "9", "9", "9", "9", "9", "1", "1", "3", "0", "1", "0", "", "", "", "", "0"]]
+    monkeypatch.setattr(bp.bs, "query_daily_history_k_AStock", lambda date: _RS(rows=bj, fields=fields))
+    with pytest.raises(bp.SnapshotInvalid, match="前缀"):
+        bp.BaostockProvider().get_market_snapshot(pd.Timestamp("2026-09-23").date())
+
+
+def test_empty_snapshot_returns_empty_frame_not_error(monkeypatch):
+    """error_code=0 且 0 行 = 真空结果（当天未发布）；由调用方按 §5.2 分支处理。"""
+    monkeypatch.setattr(bp.bs, "query_daily_history_k_AStock", lambda date: _RS(rows=[], fields=[]))
+    df = bp.BaostockProvider().get_market_snapshot(pd.Timestamp("2026-09-23").date())
+    assert df.empty

@@ -20,9 +20,31 @@ def to_bs_code(symbol: str) -> str:
     return ("sh." if symbol.startswith("6") else "sz.") + symbol
 
 
+class BaostockError(RuntimeError):
+    """baostock 返回非 0 错误码。code 是字符串（baostock 的口径）。"""
+    SESSION_CODES = frozenset({"10001001", "10001003", "10001007", "10002001", "10002002",
+                               "10002003", "10002004", "10002005", "10002006", "10002007", "10002008"})
+
+    def __init__(self, code: str, msg: str):
+        super().__init__(f"baostock 错误 {code}: {msg}")
+        self.code = code
+
+    @property
+    def is_session_error(self) -> bool:
+        return self.code in self.SESSION_CODES
+
+
+class SnapshotInvalid(ValueError):
+    """全市场快照没通过校验——不存、报错说明是哪一天（spec §5.2）。"""
+
+
 def _check(rs) -> None:
     if rs.error_code != "0":
-        raise RuntimeError(f"baostock 错误 {rs.error_code}: {rs.error_msg}")
+        raise BaostockError(rs.error_code, rs.error_msg)
+
+
+SNAPSHOT_MIN_ROWS = 4000
+SNAPSHOT_COLUMNS = ["code", "close", "preclose", "tradestatus", "isST"]
 
 
 def _fetch(rs) -> pd.DataFrame:
@@ -145,3 +167,39 @@ class BaostockProvider(DataProvider):
         df = _fetch(rs)
         trading = df[df["is_trading_day"] == "1"]
         return [d.date() for d in pd.to_datetime(trading["calendar_date"])]
+
+    def get_market_snapshot(self, day: date) -> pd.DataFrame:
+        """全市场当日日线（baostock 0.9.3 的 query_daily_history_k_AStock）。
+
+        0 行 = error_code 0 的真空结果（当天未发布），**原样返回空表**由调用方分支；
+        非 0 错误码由 _fetch 抛 BaostockError。校验不过抛 SnapshotInvalid。
+        只保留首页要用的五列并转类型：baostock 全是字符串，`"1" == 1` 恒 False，
+        不转的话 `tradestatus == 1` 会静默得到空表、所有分母变 0。
+        """
+        df = _fetch(bs.query_daily_history_k_AStock(date=str(day)))
+        if df.empty:
+            return pd.DataFrame(columns=SNAPSHOT_COLUMNS)
+        if (df["date"] != str(day)).any():
+            raise SnapshotInvalid(f"{day} 的快照里混有别的日期：{sorted(set(df['date']) - {str(day)})}")
+        if len(df) < SNAPSHOT_MIN_ROWS:
+            raise SnapshotInvalid(f"{day} 的快照只有 {len(df)} 行，少于 {SNAPSHOT_MIN_ROWS}（可能入库中途）")
+        if df["code"].duplicated().any():
+            raise SnapshotInvalid(f"{day} 的快照代码重复")
+        if not df["code"].str.match(r"^(sh|sz)\.").all():
+            raise SnapshotInvalid(f"{day} 的快照有非 sh./sz. 前缀的代码")
+        out = pd.DataFrame({
+            "code": df["code"].astype(str),
+            "close": pd.to_numeric(df["close"], errors="coerce"),
+            "preclose": pd.to_numeric(df["preclose"], errors="coerce"),
+            "tradestatus": pd.to_numeric(df["tradestatus"], errors="coerce").fillna(0).astype(int),
+            "isST": pd.to_numeric(df["isST"], errors="coerce").fillna(0).astype(int),
+        })
+        trading = out["tradestatus"] == 1
+        if (out.loc[trading, "preclose"] <= 0).any() or out.loc[trading, "close"].isna().any():
+            raise SnapshotInvalid(f"{day} 的快照里交易中的行有无效价格")
+        pct = pd.to_numeric(df["pctChg"], errors="coerce")
+        calc = (out["close"] / out["preclose"] - 1) * 100
+        bad = trading & pct.notna() & ((pct - calc).abs() > 1e-3)
+        if bad.any():
+            raise SnapshotInvalid(f"{day} 的快照 pctChg 与 close/preclose 对不上：{out.loc[bad, 'code'].head(3).tolist()}")
+        return out
