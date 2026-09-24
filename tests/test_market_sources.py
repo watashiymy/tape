@@ -245,3 +245,21 @@ def test_empty_pool_parses_but_max_lbc_is_none():
     p = sources.parse_em_pool(b'{"rc":0,"data":{"tc":0,"pool":[],"qdate":"20260924"}}',
                               "zt", _date(2026, 9, 24))
     assert p.tc == 0 and p.max_lbc is None
+
+
+def test_fetch_returns_ok_result():
+    def fake(url, headers=None):
+        assert "qt.gtimg.cn" in url
+        return _fix("tencent_quotes.bin")
+    r = sources.fetch(fake, sources.tencent_quote_url(CODES),
+                      lambda raw: sources.parse_tencent_quotes(raw, CODES))
+    assert r.ok and r.value["sh000001"].price > 0 and r.error is None
+
+
+def test_fetch_turns_fetch_and_parse_errors_into_failed_results():
+    def dead(url, headers=None):
+        raise FetchError("timeout")
+    r = sources.fetch(dead, "x", lambda raw: raw)
+    assert not r.ok and "timeout" in r.error
+    r2 = sources.fetch(lambda u, h=None: b"garbage", sources.em_fenbu_url(), sources.parse_em_fenbu)
+    assert not r2.ok and r2.value is None

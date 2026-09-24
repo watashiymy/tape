@@ -11,8 +11,10 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, time
+from typing import Any, Generic, TypeVar
 
 HttpGet = Callable[[str, dict[str, str] | None], bytes]
+T = TypeVar("T")
 
 CONNECT_TIMEOUT_S = 2
 READ_TIMEOUT_S = 3
@@ -350,3 +352,24 @@ def parse_em_pool(raw: bytes, kind: str, requested: date) -> Pool:
         raise ParseError("涨停池 lbc 不是正整数")
     return Pool(kind=kind, trade_date=requested, tc=tc, rows=len(pool),
                 max_lbc=(max(lbcs) if lbcs else None))
+
+
+@dataclass(frozen=True)
+class Result(Generic[T]):
+    value: T | None
+    error: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.error is None and self.value is not None
+
+
+def fetch(http_get: HttpGet, url: str, parse: Callable[[bytes], T],
+          headers: dict[str, str] | None = None) -> Result[T]:
+    """取 + 解析，永不抛：网络与校验失败都折成 Result.error，由 live.py 决定兜底。"""
+    try:
+        return Result(value=parse(http_get(url, headers)))
+    except (FetchError, ParseError) as e:
+        return Result(value=None, error=str(e))
+    except Exception as e:                       # 解析器里没预料到的形态也不许把页面打没
+        return Result(value=None, error=f"{type(e).__name__}: {e}")
