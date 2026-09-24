@@ -157,7 +157,8 @@ def fetch_round(http_get: HttpGet, now: datetime, calendar_hint: date | None,
         tencent_breadth = None
         if res["sina_raw"].ok:
             try:
-                quotes = sources.parse_sina_quotes(res["sina_raw"].value, codes, snap.trade_date)
+                quotes = sources.parse_sina_quotes(res["sina_raw"].value, codes, snap.trade_date,
+                                                   names=dict(market.INDEXES))   # spec §3「名称对上」
                 quotes_block = Block(quotes, "sina", "", quotes["sh000001"].ts, snap.trade_date)
             except sources.ParseError as e:
                 snap.errors.append(f"新浪行情: {e}")

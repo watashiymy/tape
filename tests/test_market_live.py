@@ -55,6 +55,19 @@ def test_tencent_down_falls_back_to_sina_for_quotes_only():
     assert snap.breadth.source == "eastmoney"          # 分布不受影响
 
 
+def test_sina_fallback_is_refused_when_a_name_does_not_match():
+    """spec §3 新浪校验里的「名称对上」要真的传进去：把新浪返回里上证指数的名字换掉，兜底必须失败。"""
+    def get(url, headers=None):
+        if "qt.gtimg.cn/q=" in url:
+            raise FetchError("down")
+        raw = fixture_http()(url, headers)
+        if "hq.sinajs.cn" in url:
+            raw = raw.decode("gb18030").replace("上证指数", "深证成指", 1).encode("gb18030")
+        return raw
+    snap = live.fetch_round(get, NOW, None, live.LiveStore(), True)
+    assert snap.quotes is None and any("名称" in e for e in snap.errors)
+
+
 def test_eastmoney_fenbu_down_falls_back_to_tencent_breadth_and_kills_thermo():
     store = live.LiveStore()
     snap = live.fetch_round(fixture_http({"getTopicZDFenBu"}), NOW, None, store, True)
