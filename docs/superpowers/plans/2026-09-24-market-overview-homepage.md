@@ -1576,15 +1576,19 @@ STORE = LiveStore()
 
 
 def _run_all(jobs: dict[str, Any]) -> dict[str, Result]:
-    """并发跑一组无参 callable，整体最迟 ROUND_DEADLINE_S 收口；超时的当失败。"""
+    """并发跑一组无参 callable，整体最迟 ROUND_DEADLINE_S 收口；超时的当失败。
+    不用 `with`：那会在退出时 shutdown(wait=True) 等完超时的任务，deadline 就成了摆设。"""
     out: dict[str, Result] = {}
-    with ThreadPoolExecutor(max_workers=max(1, len(jobs))) as pool:
+    pool = ThreadPoolExecutor(max_workers=max(1, len(jobs)))
+    try:
         futs = {pool.submit(fn): key for key, fn in jobs.items()}
         done, not_done = wait(futs, timeout=ROUND_DEADLINE_S)
         for f in done:
             out[futs[f]] = f.result()
         for f in not_done:
             out[futs[f]] = Result(value=None, error="超过整轮时限")
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
     return out
 
 
@@ -1762,7 +1766,7 @@ def test_intraday_wording_has_no_percentage():
     text = turnover.line(now=datetime(2026, 9, 24, 12, 0), today=D24, trade_date=D24,
                          current_wan=1.47e8, current_ts=time(11, 30),
                          prev=DailyBar(D23, 2.14e8), pct_ok=None)
-    assert text == "两市成交额 1.47 万亿（截至 11:30）· 9 月 23 日全天 2.14 万亿"
+    assert text == "两市成交额 1.47 万亿（截至 11:30） · 9 月 23 日全天 2.14 万亿"   # 「 · 」两侧都有空格
     assert "%" not in text
 
 
@@ -1920,6 +1924,16 @@ def test_snapshot_roundtrip_is_atomic_and_lists_by_date(tmp_path):
     assert list(ms.load_snapshot(D("2026-09-22")).columns) == list(_snap().columns)
 
 
+def test_snapshot_rows_and_neighbours(tmp_path):
+    ms = store.MarketStore(tmp_path)
+    ms.save_snapshot(D("2026-09-22"), _snap(5))
+    ms.save_snapshot(D("2026-09-24"), _snap(3))
+    assert ms.snapshot_rows(D("2026-09-22")) == 5
+    assert ms.neighbour_rows(D("2026-09-23")) == 3          # 前 5、后 3 → 取小
+    assert ms.neighbour_rows(D("2026-09-25")) == 3          # 只有前一份
+    assert store.MarketStore(tmp_path / "nope").neighbour_rows(D("2026-09-23")) is None
+
+
 def test_clean_tmp_covers_both_directories(tmp_path):
     ms = store.MarketStore(tmp_path)
     ms.daily_dir.mkdir(parents=True)
@@ -2055,6 +2069,19 @@ class MarketStore:
     def load_snapshot(self, day: date) -> pd.DataFrame:
         return pd.read_parquet(self.snapshot_path(day))
 
+    def snapshot_rows(self, day: date) -> int:
+        """只读 parquet 元数据拿行数（98% 规则要比相邻快照，不必把整份读进来）。"""
+        import pyarrow.parquet as pq
+        return pq.ParquetFile(self.snapshot_path(day)).metadata.num_rows
+
+    def neighbour_rows(self, day: date) -> int | None:
+        """相邻两份已存快照（前一份、后一份）里行数较小的那个；一份都没有 → None。"""
+        dates = self.snapshot_dates()
+        before = [d for d in dates if d < day]
+        after = [d for d in dates if d > day]
+        rows = [self.snapshot_rows(d) for d in ([before[-1]] if before else []) + ([after[0]] if after else [])]
+        return min(rows) if rows else None
+
     def clean_tmp(self) -> int:
         n = 0
         for d in (self.root, self.daily_dir):
@@ -2138,7 +2165,7 @@ def calendar_complete(days: list[date], trading: frozenset[date], today: date,
             return f"日历缺日：{a} 与 {b} 之间"
     if days[-1] < today:
         return f"日历末日 {days[-1]} 早于今天 {today}"
-    n = sum(1 for d in trading if d <= last_done)
+    n = sum(1 for d in trading if days[0] <= d <= last_done)    # 只数落在日历覆盖范围内的
     if n < need:
         return f"截至 {last_done} 只有 {n} 个交易日，不足 {need}"
     return None
@@ -2368,6 +2395,24 @@ def compute(snaps: dict[date, pd.DataFrame], days: list[date],
     rows["new_low"] = (ok & (adj <= lo * (1 + REL_TOL))).sum(axis=1).astype(int).tolist()
     rows["n_hl"] = ok.sum(axis=1).astype(int).tolist()
     return pd.DataFrame(rows)
+
+
+def suspicious_suspended(snaps: dict[date, pd.DataFrame]) -> list[str]:
+    """spec §5.3：停牌行本该 close == preclose；不等的列出来给任务日志报警（不改数）。"""
+    out = []
+    for d, df in sorted(snaps.items()):
+        odd = df[(df["tradestatus"] == 0) & (df["preclose"] > 0) & (df["close"] != df["preclose"])]
+        for code in odd["code"].head(5):
+            out.append(f"{d} {code} 停牌但 close ≠ preclose")
+    return out
+```
+
+测试补一条：
+```python
+def test_suspicious_suspended_lists_only_odd_rows():
+    snaps = {DAYS[0]: snap([("a", 1.0, 1.0, 0, 0), ("b", 1.1, 1.0, 0, 0), ("c", 2.0, 1.0, 1, 0)])}
+    out = breadth.suspicious_suspended(snaps)
+    assert len(out) == 1 and "b" in out[0]
 ```
 
 - [ ] **Step 4: 跑测试**
@@ -2973,10 +3018,13 @@ def _snap(n=5):
 
 class FakeProvider:
     """按日期返回快照；missing 里的日期返回空表；invalid 里的抛 SnapshotInvalid；
-    fail_login_after 次调用后抛一次会话错误。"""
-    def __init__(self, days, trading, missing=(), invalid=(), session_fail_on=None):
+    partial 里的日期只返回 3 行（模拟入库中途）；session_fail_on 那天第一次抛会话错误
+    （always_session_fail=True 时每次都抛，模拟重登也救不回来）。"""
+    def __init__(self, days, trading, missing=(), invalid=(), partial=(), session_fail_on=None,
+                 always_session_fail=False):
         self.days, self.trading = days, trading
-        self.missing, self.invalid, self.session_fail_on = set(missing), set(invalid), session_fail_on
+        self.missing, self.invalid, self.partial = set(missing), set(invalid), set(partial)
+        self.session_fail_on, self.always_session_fail = session_fail_on, always_session_fail
         self.calls, self.logins = [], 0
 
     def __enter__(self):
@@ -2989,17 +3037,16 @@ class FakeProvider:
     def get_trade_calendar(self, start, end):
         return [d for d in self.trading if start <= d <= end]
 
-    def calendar_days(self, start, end):
-        return [d for d in self.days if start <= d <= end]
-
     def get_market_snapshot(self, day):
         self.calls.append(day)
-        if day == self.session_fail_on and self.calls.count(day) == 1:
+        if day == self.session_fail_on and (self.always_session_fail or self.calls.count(day) == 1):
             raise BaostockError("10001001", "用户未登录")
         if day in self.invalid:
             raise SnapshotInvalid(f"{day} bad")
         if day in self.missing:
             return pd.DataFrame(columns=mstore.SNAPSHOT_COLUMNS)
+        if day in self.partial:
+            return _snap(3)
         return _snap()
 
 
@@ -3072,6 +3119,28 @@ def test_session_error_relogs_in_and_retries(tmp_path):
     prov = FakeProvider(days, trading, session_fail_on=date(2026, 9, 22))
     code, log, ms = _run(tmp_path, prov)
     assert code == 0 and prov.logins >= 2 and date(2026, 9, 22) in ms.snapshot_dates()
+
+
+def test_session_error_exhausted_stops_without_recording_a_gap(tmp_path):
+    """会话失效是本机会话的问题，不是数据源缺数：重登 2 次仍失败 → 停止补数、重算、以失败结束，
+    **不进 gaps.json**（否则两个自然日各失败一次就会把一个有数据的日子标成永久缺口）。"""
+    days, trading = _cal(TODAY)
+    bad = date(2026, 9, 22)
+    prov = FakeProvider(days, trading, session_fail_on=bad, always_session_fail=True)
+    code, log, ms = _run(tmp_path, prov)
+    assert code != 0 and "会话" in log and "全部完成" not in log
+    assert not ms.gaps_path.exists() or "2026-09-22" not in ms.gaps_path.read_text()
+    assert min(prov.calls) == bad, "停止补数：没有再往旧请求"
+    assert ms.load_breadth() is not None, "已存的日子照样重算"
+
+
+def test_partial_snapshot_is_rejected_by_the_98_percent_rule(tmp_path):
+    """当天入库中途只拿到一部分（相邻快照 5 行、这份 3 行）→ 当「当天未发布」处理，不存。"""
+    days, trading = _cal(TODAY)
+    prov = FakeProvider(days, trading, partial={TODAY})
+    code, log, ms = _run(tmp_path, prov)
+    assert code == 0 and TODAY not in ms.snapshot_dates()
+    assert re.search(r"2026-09-24 跳过：.*98%", log)
 
 
 def test_incremental_run_only_fetches_the_gap(tmp_path):
@@ -3157,14 +3226,25 @@ WINDOW_TRADING_DAYS = 310           # MA200 + 52 周 250 + 小图 60（spec §5.
 CALENDAR_BACK_DAYS, CALENDAR_AHEAD_DAYS = 500, 60
 RECOMPUTE_EVERY = 5
 SESSION_RETRIES = 2
+ROWS_FLOOR_RATIO = 0.98             # 行数不少于相邻快照较小那份的 98%，挡住入库中途的半截快照
 MARKET_DIR = Path("data/market")
 
 
-def _recompute(ms: MarketStore, window: list[date], log: Callable[[str], None]) -> None:
-    have = set(ms.snapshot_dates())
-    snaps = {d: ms.load_snapshot(d) for d in window if d in have}
+class SessionLost(RuntimeError):
+    """会话类错误重登 SESSION_RETRIES 次仍失败。没有会话无法继续，且**不算数据源缺数**。"""
+
+
+def _recompute(ms: MarketStore, window: list[date], cache: dict[date, pd.DataFrame],
+               log: Callable[[str], None]) -> None:
+    """全量重算指标表。`cache` 是本次运行里已读/已存的快照，免得每 5 天把 310 份 parquet 重读一遍。"""
+    for d in ms.snapshot_dates():
+        if d in window and d not in cache:
+            cache[d] = ms.load_snapshot(d)
+    snaps = {d: df for d, df in cache.items() if d in window}
     if snaps:
         ms.save_breadth(breadth.compute(snaps, window))
+        for line in breadth.suspicious_suspended(snaps):
+            log(f"注意：{line}")
     log(f"指标表已重算：{len(snaps)} 天")
 
 
@@ -3174,10 +3254,14 @@ def run(provider_factory: Callable[[], BaostockProvider], ms: MarketStore, *, to
     ms.clean_tmp()
     provider = provider_factory()
     provider.__enter__()
+    cache: dict[date, pd.DataFrame] = {}
     try:
         start = today - timedelta(days=CALENDAR_BACK_DAYS)
         end = today + timedelta(days=CALENDAR_AHEAD_DAYS)
         trading = frozenset(provider.get_trade_calendar(start, end))
+        # 日历日按本地 range 生成：baostock 的 query_trade_dates 返回的就是**每个自然日一行**
+        # （is_trading_day 标 1/0），provider.get_trade_calendar 只留了交易日。所以「逐日连续」
+        # 那条完整性检查在这里恒过，真正起作用的是「末日 ≥ 今天」与「≥ 310 个交易日」。
         days = [start + timedelta(days=i) for i in range((end - start).days + 1)]
         last_done = _last_finished_trading_day(trading, today, now_t)
         why = calendar_complete(days, trading, today, last_done, WINDOW_TRADING_DAYS)
@@ -3190,10 +3274,15 @@ def run(provider_factory: Callable[[], BaostockProvider], ms: MarketStore, *, to
         have = set(ms.snapshot_dates())
         todo = [d for d in reversed(window) if d not in have and d not in permanent]
         log(f"待补 {len(todo)} 天")
-        n, saved_since, failed_past, today_missing = len(todo), 0, [], None
+        n, saved_since, failed_past, today_missing, session_lost = len(todo), 0, [], None, False
         for i, day in enumerate(todo, 1):
             t0 = _time.monotonic()
-            outcome = _fetch_one(provider_factory, provider, day)
+            try:
+                outcome = _fetch_one(provider_factory, provider, day, today)
+            except SessionLost as e:
+                log(f"[{i}/{n}] {day} 跳过：{e}")
+                session_lost = True
+                break                             # 没有会话无法继续；不记 gaps
             if isinstance(outcome, str):
                 log(f"[{i}/{n}] {day} 跳过：{outcome}")
                 if day == today:
@@ -3203,13 +3292,27 @@ def run(provider_factory: Callable[[], BaostockProvider], ms: MarketStore, *, to
                     failed_past.append(day)
                 continue
             df, provider = outcome
+            floor = ms.neighbour_rows(day)
+            if floor is not None and len(df) < ROWS_FLOOR_RATIO * floor:
+                reason = f"只有 {len(df)} 行，少于相邻快照的 98%（{floor} 行），可能入库中途"
+                log(f"[{i}/{n}] {day} 跳过：{reason}")
+                if day == today:
+                    today_missing = day
+                else:
+                    ms.record_failure(day, failed_on=today)
+                    failed_past.append(day)
+                continue
             ms.save_snapshot(day, df)
+            cache[day] = df
             log(f"[{i}/{n}] {day} {len(df)} 行 用时 {_time.monotonic() - t0:.1f}s")
             saved_since += 1
             if saved_since % RECOMPUTE_EVERY == 0:
-                _recompute(ms, window, log)
-        _recompute(ms, window, log)
+                _recompute(ms, window, cache, log)
+        _recompute(ms, window, cache, log)
         ms.apply_retention(window_first=window[0])
+        if session_lost:
+            log("补数失败：数据源会话失效，重新登录后仍然失败；已存的日子保留，稍后再试")
+            return 3
         if failed_past:
             dates = "、".join(d.isoformat() for d in failed_past)
             log(f"补数失败：{dates} 拿不到数据（已记录，再失败一次将不再重试）")
@@ -3228,21 +3331,24 @@ def _last_finished_trading_day(trading: frozenset[date], today: date, now_t: tim
     return max(candidates)
 
 
-def _fetch_one(factory, provider, day: date):
+def _fetch_one(factory, provider, day: date, today: date):
     """取一天。返回 (df, provider)（provider 可能已换成重新登录的新会话），或失败原因字符串。
-    0 行 = 真空结果；SnapshotInvalid 与非会话错误各重试 1 次；会话错误重新登录最多 2 次。"""
+    0 行 = 真空结果；SnapshotInvalid 与非会话错误各重试 1 次；会话错误重新登录最多 2 次，
+    仍失败抛 SessionLost（调用方停止补数、不记 gaps）。"""
     attempts, relogins = 0, 0
     while True:
         try:
             df = provider.get_market_snapshot(day)
         except BaostockError as e:
-            if e.is_session_error and relogins < SESSION_RETRIES:
+            if e.is_session_error:
+                if relogins >= SESSION_RETRIES:
+                    raise SessionLost(f"会话失效，重新登录 {SESSION_RETRIES} 次仍失败（{e}）") from e
                 relogins += 1
                 provider.__exit__(None, None, None)
                 provider = factory()
                 provider.__enter__()
                 continue
-            if attempts < 1 and not e.is_session_error:
+            if attempts < 1:
                 attempts += 1
                 continue
             return f"{e}"
@@ -3255,7 +3361,7 @@ def _fetch_one(factory, provider, day: date):
             if attempts < 1:
                 attempts += 1
                 continue
-            return "重试后仍为 0 行" if day != date.today() else "当天的收盘数据还没发布"
+            return "当天的收盘数据还没发布" if day == today else "重试后仍为 0 行"
         return df, provider
 
 
@@ -3269,7 +3375,7 @@ if __name__ == "__main__":
     sys.exit(main())
 ```
 
-`_fetch_one` 里判「当天」用了 `date.today()`——改成把 `today` 传进去（测试用 2026-09-24 而机器时钟不是那天）。`run()` 调用处改为 `_fetch_one(provider_factory, provider, day, today)`。
+脚本顶部补 `import pandas as pd`（`cache` 的类型注解要用）。
 
 - [ ] **Step 4: 跑测试**
 
@@ -3449,7 +3555,7 @@ import re as _re
 
 def test_home_state_text_covers_every_state_enum():
     from quant.market.session import State
-    assert set(guide.HOME_STATE_TEXT) == set(State)
+    assert set(guide.HOME_STATE_TEXT) == {s.value for s in State}     # 键是枚举的 .value（字符串）
 
 
 def test_home_help_covers_the_terms_on_the_page():
@@ -3529,7 +3635,7 @@ HOME_TURNOVER_HELP = "上证 + 深证成指的成交额，即沪深两市全部�
 HOME_FOOTER = "盘中数据来自门户网站公开行情，可能有几秒延迟。"
 HOME_TREND_TITLE = "趋势宽度"
 HOME_TREND_ASOF = "收盘数据截至 {day} · " + HOME_SCOPE_TREND
-HOME_TREND_NEVER = _f("趋势宽度需要约一年的收盘数据。第一次准备大约 {breadth_first_run}，可随时停止、下次接着补。")
+HOME_TREND_NEVER = _f("趋势宽度需要约一年的收盘数据。第一次准备需要 {breadth_first_run}，可随时停止、下次接着补。")   # FACTS 值自带「约」
 HOME_TREND_NOT_READY = _f("{{day}} 的收盘数据约 {breadth_ready} 后可更新")   # {{day}} 留给页面 .format(day=…)
 HOME_TREND_BUSY = "有任务在运行，稍后再更新"
 HOME_TREND_SHORT = "还差约 {n} 天的收盘数据，点「更新收盘数据」继续"
@@ -3541,7 +3647,7 @@ HOME_BTN_START, HOME_BTN_UPDATE, HOME_BTN_STOP = "开始准备", "更新收盘�
     "market_breadth": _f("""**更新收盘数据**——首页「趋势宽度」的数据来源。
 
 - **做什么**：向数据源要全沪深每只股票的当日收盘数据，逐日存下，算出站上均线的占比与 52 周新高/新低。
-- **多久**：每个交易日一次约 20 秒；第一次要补约一年，{breadth_first_run}，可随时停止、下次接着补。
+- **多久**：每个交易日一次约 20 秒；第一次要补一年左右的历史，需要 {breadth_first_run}，可随时停止、下次接着补。
 - **什么时候跑**：交易日 {breadth_ready} 之后才有当天的数据；早点了也不会失败，只是补不到当天。
 - **结果在哪**：首页「趋势宽度」那四张卡片。
 """),
@@ -3869,6 +3975,21 @@ def _snapshot(decision: Decision, hint: date | None) -> live.LiveSnapshot:
     return fn(allow, hint, "v1")
 
 
+DECISION_KEY = "home_decision"     # session_state：上一轮用真实快照判出的 (state, interval, ttl)
+
+
+def _remembered_decision() -> Decision:
+    """选缓存入口与 allow_cross_day 时优先用上一轮的真实判定：没有日历时 _decide(None) 是
+    「未知」，会让交易时段也允许跨日旧值、休市日却走 25 秒缓存。"""
+    raw = st.session_state.get(DECISION_KEY)
+    if raw:
+        try:
+            return Decision(State(raw[0]), int(raw[1]), int(raw[2]))
+        except (ValueError, TypeError, IndexError):
+            pass
+    return _decide(None)[0]
+
+
 # ---------------------------------------------------------------- 判定
 def _calendar():
     return _store().load_calendar()
@@ -3896,7 +4017,8 @@ def _hint() -> date | None:
 def _status(decision: Decision, snap: live.LiveSnapshot) -> None:
     text = guide.HOME_STATE_TEXT[decision.state.value]
     q = snap.quotes
-    if decision.state in (State.CLOSED, State.CLOSED_DAY) and snap.trade_date:
+    # 收盘后与盘前都写**日期**：实测收盘后腾讯/新浪的时间戳会跟着请求时刻往前走，盘前显示它是误导
+    if decision.state in (State.CLOSED, State.CLOSED_DAY, State.PRE_OPEN) and snap.trade_date:
         text += f" · {snap.trade_date.isoformat()}"
     elif q is not None and q.ts is not None:
         text += f" · {q.ts:%H:%M:%S}"
@@ -3943,7 +4065,8 @@ def _turnover(snap: live.LiveSnapshot, decision: Decision) -> None:
     current = quotes["sh000001"].amount_wan + quotes["sz399001"].amount_wan
     ts = q.ts.time() if q.ts else now.time()
     prev, pct_ok = _prev_day(trade_date, quotes, q.source, now, today)
-    st.caption(turnover.line(now, today, trade_date, current, ts, prev, pct_ok))
+    st.caption(turnover.line(now, today, trade_date, current, ts, prev, pct_ok),
+               help=guide.HOME_TURNOVER_HELP)
 
 
 @st.cache_data(ttl=24 * 3600, show_spinner=False)
@@ -3976,9 +4099,9 @@ INTERVAL_KEY = "home_interval"      # session_state：fragment 用真实快照�
 
 def _render_live(expected_interval: int, expected_key: str) -> None:
     hint = _hint()
-    decision0, _ = _decide(None)                 # 只用来选缓存入口（25/600 秒）
-    snap = _snapshot(decision0, hint)
-    decision, _ = _decide(snap)                  # 用真实源日期重判
+    snap = _snapshot(_remembered_decision(), hint)   # 缓存入口与 allow_cross_day 用上一轮的真实判定
+    decision, _ = _decide(snap)                      # 用真实源日期重判
+    st.session_state[DECISION_KEY] = (decision.state.value, decision.interval_s, decision.cache_ttl)
     if decision.interval_s != expected_interval or _job_key() != expected_key:
         # 状态/间隔变了，或跨过了收盘数据就绪时刻 → 记下想要的间隔再整页重跑。
         # 页面按 session_state 选 fragment，所以下一轮两边一致、不会来回 rerun：
@@ -4356,7 +4479,7 @@ def _keys(at) -> set[str]:
 def test_never_prepared_shows_the_explanation_and_a_start_button(tmp_path):
     at = _home(tmp_path)
     assert "home_breadth_start" in _keys(at), "从没准备过 → 「开始准备」"
-    assert any("大约" in c.value for c in at.caption)
+    assert any("第一次准备需要" in c.value for c in at.caption)
 
 
 def test_running_shows_progress_and_stop(tmp_path):
@@ -4390,7 +4513,8 @@ def test_up_to_date_shows_only_the_date_in_the_title(tmp_path):
     at = _home(tmp_path)
     assert not ({"home_breadth_start", "home_breadth_update"} & _keys(at))
     body = " ".join(_htmls(at)) + " ".join(c.value for c in at.caption)
-    assert body.count(day.isoformat()) == 1, "日期只在宽度标题旁出现一次，按钮区不重复"
+    # 状态条「已收盘 · 日期」一次 + 宽度标题旁一次；按钮区在「已是最新」时什么都不显示
+    assert body.count(day.isoformat()) == 2, body
     assert "还差约" in body, "60/200 日线历史不足要说清缺多少天"
 ```
 
@@ -4413,13 +4537,12 @@ def _trend_cards(ms: MarketStore) -> None:
     if table is None or not len(table):
         return
     tail = table.tail(TREND_DAYS_SHOWN)
+    gaps = ms.permanent_gaps()
     cols = st.columns(4)
     for col, (n, above, denom) in zip(cols, TREND_WINDOWS):
         last = tail.iloc[-1]
         if last[denom] == 0:
-            missing = _need_days(table, denom, n)
-            col.html(theme.stat_card(f"站上 {n} 日线", fmt.MISSING,
-                                     note=guide.HOME_TREND_SHORT.format(n=missing)))
+            col.html(theme.stat_card(f"站上 {n} 日线", fmt.MISSING, note=_short_note(table, denom, n, gaps)))
             continue
         pct = 100 * last[above] / last[denom]
         series = [(r[above] / r[denom]) if r[denom] else None for _, r in tail.iterrows()]
@@ -4428,7 +4551,7 @@ def _trend_cards(ms: MarketStore) -> None:
     last = tail.iloc[-1]
     if last["n_hl"] == 0:
         cols[3].html(theme.stat_card("52 周新高 / 新低", fmt.MISSING,
-                                     note=guide.HOME_TREND_SHORT.format(n=_need_days(table, "n_hl", 250))))
+                                     note=_short_note(table, "n_hl", 250, gaps)))
     else:
         cols[3].html(theme.stat_card("52 周新高 / 新低", f"{int(last['new_high'])} / {int(last['new_low'])}",
                                      img=minicharts.highs_lows(tail["new_high"].tolist(), tail["new_low"].tolist()),
@@ -4438,9 +4561,13 @@ def _trend_cards(ms: MarketStore) -> None:
         st.markdown(guide.HOME_HELP["high_low"])
 
 
-def _need_days(table, denom: str, n: int) -> int:
-    """历史不足时还差几天：窗口 N 减去表里已有的天数（下限 1）。"""
-    return max(1, n - int(len(table)))
+def _short_note(table, denom: str, n: int, gaps: set) -> str:
+    """分母为 0 的卡片写什么：补得上就说还差几天、去点按钮；表里天数其实够而分母仍为 0，
+    说明回看期跨过了永久缺口，那就说清要等窗口滚过它（spec §5.4）。"""
+    if len(table) >= n and gaps:
+        days = "、".join(d.isoformat() for d in sorted(gaps)[:3])
+        return guide.HOME_TREND_GAP.format(days=days)
+    return guide.HOME_TREND_SHORT.format(n=max(1, n - int(len(table))))
 
 
 def _job_area(ms: MarketStore) -> None:
