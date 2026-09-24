@@ -180,7 +180,7 @@ if __name__ == "__main__":
 - [ ] **Step 2: 现在录一份收盘后的夹具**
 
 Run: `.venv/bin/python scripts/probe_market_sources.py tests/fixtures/market --date 20260924`
-Expected: 13 个 `.bin` 文件，每个 HTTP 200，`RECORDED.md` 多 13 行。**看一眼**：`tencent_quotes.bin` 用 GBK 解码含 `v_sh000001=`；`em_fenbu.bin` 含 `"fenbu"`；`em_ztpool.bin` 含 `"tc"`。
+Expected: 13 个 `.bin` 文件，每个 HTTP 200，`RECORDED.md` 多 13 行。**看一眼**：`tencent_quotes.bin` 用 GBK 解码含 `v_sh000001=`；`em_fenbu.bin` 含 `"fenbu"`；`em_ztpool.bin` 含 `"tc"`；**`em_ztpool.bin` 的 `tc` 与 `em_fenbu.bin` 的 `"11"` 档相差 ≤ 5**——Task 10 的日期对账靠这个容差，差得多就先把 `RECONCILE_TOLERANCE` 定大一点并记进 spec §10。
 
 - [ ] **Step 3: 在 RECORDED.md 顶部补说明**
 
@@ -3135,12 +3135,24 @@ def test_session_error_exhausted_stops_without_recording_a_gap(tmp_path):
 
 
 def test_partial_snapshot_is_rejected_by_the_98_percent_rule(tmp_path):
-    """当天入库中途只拿到一部分（相邻快照 5 行、这份 3 行）→ 当「当天未发布」处理，不存。"""
+    """当天入库中途只拿到一部分（相邻快照 5 行、这份 3 行）→ 当「当天未发布」处理，不存。
+    规则比的是**相邻已存快照**，所以先放一份 9-23 进去；全新目录的第一份没有相邻件，规则天然不生效。"""
     days, trading = _cal(TODAY)
+    mstore.MarketStore(tmp_path / "data" / "market").save_snapshot(date(2026, 9, 23), _snap())
     prov = FakeProvider(days, trading, partial={TODAY})
     code, log, ms = _run(tmp_path, prov)
     assert code == 0 and TODAY not in ms.snapshot_dates()
     assert re.search(r"2026-09-24 跳过：.*98%", log)
+
+
+def test_window_can_be_shrunk_for_fast_tests(tmp_path, monkeypatch):
+    """其余用例不需要 310 天语义时可把窗口缩到 30，省掉几十次全量重算（每次 run 约 63 次）。"""
+    mod = _load()
+    monkeypatch.setattr(mod, "WINDOW_TRADING_DAYS", 30)
+    days, trading = _cal(TODAY)
+    ms = mstore.MarketStore(tmp_path / "data" / "market")
+    code = mod.run(lambda: FakeProvider(days, trading), ms, today=TODAY, now_t=time(19, 0), log=lambda s: None)
+    assert code == 0 and len(ms.snapshot_dates()) == 30
 
 
 def test_incremental_run_only_fetches_the_gap(tmp_path):
@@ -3292,6 +3304,7 @@ def run(provider_factory: Callable[[], BaostockProvider], ms: MarketStore, *, to
                     failed_past.append(day)
                 continue
             df, provider = outcome
+            # 98% 规则比的是相邻**已存**快照；全新目录的第一份没有相邻件，规则天然不生效（spec §5.2 原意）
             floor = ms.neighbour_rows(day)
             if floor is not None and len(df) < ROWS_FLOOR_RATIO * floor:
                 reason = f"只有 {len(df)} 行，少于相邻快照的 98%（{floor} 行），可能入库中途"
@@ -3380,7 +3393,7 @@ if __name__ == "__main__":
 - [ ] **Step 4: 跑测试**
 
 Run: `.venv/bin/python -m pytest tests/test_run_market_breadth.py tests/test_runner_jobs.py -q`
-Expected: PASS。`test_incremental_run_only_fetches_the_gap` 断言写得别扭——改成 `assert prov.calls == []` 一条即可。
+Expected: PASS。整文件若超过 30 秒，把不需要 310 天语义的用例按 `test_window_can_be_shrunk_for_fast_tests` 的写法把窗口缩到 30。
 
 - [ ] **Step 5: Commit**
 
@@ -3617,6 +3630,7 @@ HOME_STATE_TEXT = {           # session.State → 状态条文案；时刻/日�
 }
 HOME_STALE = "数据延迟"
 HOME_UNAVAILABLE = "暂不可用"
+HOME_COUNTS_ONLY = "分布图暂不可用，此刻只有涨跌家数"
 HOME_FALLBACK = "暂时取不到，以下是 {stamp} 的数据"
 HOME_SCOPE_TREND = "沪深 A 股，不含 ST 与当日停牌；每项只统计交易天数足够的股票"
 HOME_BUCKET_NOTE = ("区间按涨跌幅绝对值划分，如 0～1% 含 1%；9% 以上合为一档；"
@@ -3917,6 +3931,18 @@ def test_trading_hours_use_the_30s_fragment(tmp_path, monkeypatch):
     assert "数据延迟" not in status
 
 
+def test_cold_start_at_noon_shows_the_morning_close_not_unavailable(tmp_path, monkeypatch):
+    """spec §8：午休 12:00 冷启动（进程里没有最近成功值）必须显示 11:30 的数值。"""
+    frozen = datetime.combine(market.now().date(), time(12, 0))
+    monkeypatch.setattr(market, "now", lambda: frozen)
+    at = _home(tmp_path)
+    assert not at.exception
+    status = [h for h in _htmls(at) if 'class="qd-status"' in h][0]
+    assert "午间休市" in status
+    body = " ".join(_htmls(at))
+    assert "暂不可用" not in body and any('class="qd-card"' in h for h in _htmls(at))
+
+
 def test_cache_entries_have_no_spinner():
     from pathlib import Path
     src = (Path(__file__).resolve().parent.parent / "app" / "pages_home.py").read_text("utf-8")
@@ -4063,6 +4089,8 @@ def _turnover(snap: live.LiveSnapshot, decision: Decision) -> None:
     now, today = market.now(), market.now().date()
     trade_date = snap.trade_date or today
     current = quotes["sh000001"].amount_wan + quotes["sz399001"].amount_wan
+    if quotes["sh000001"].amount_wan <= 0 or quotes["sz399001"].amount_wan <= 0:
+        return                          # spec §3「两项都有值且 > 0」：盘前 [37] 为 0，不渲染「0.00 万亿」
     ts = q.ts.time() if q.ts else now.time()
     prev, pct_ok = _prev_day(trade_date, quotes, q.source, now, today)
     st.caption(turnover.line(now, today, trade_date, current, ts, prev, pct_ok),
@@ -4290,7 +4318,7 @@ def _distribution(snap: live.LiveSnapshot, decision: Decision) -> None:
                   else guide.HOME_SEALED_INTRADAY)
         st.caption(guide.HOME_BUCKET_NOTE.format(sealed=sealed), help=guide.HOME_HELP["buckets"])
     else:
-        st.caption(guide.HOME_UNAVAILABLE + "：分布图需要另一来源，此刻只有涨跌家数")
+        st.caption(guide.HOME_COUNTS_ONLY)        # 腾讯兜底：只有家数，画不了分布图
 
 
 def _thermometer(snap: live.LiveSnapshot) -> None:
@@ -4804,7 +4832,7 @@ git commit -m "chore(home): 按 9/25、9/28 实测定常数——判休市截止
   - 收盘后一次：状态条灰、「已收盘 · 日期」、成交额两个全天 + 百分比（口径检查通过时）、「更新收盘数据」按钮在就绪时刻后出现、点下去进度每 2 秒动、跑完卡片刷新。
   - 休市日一次（9 月 25 日）：「休市 · 最近交易日 2026-09-24」、一切数字是 9-24 的定格值、没有「交易中」。
   - 根地址落到首页；`/console` 直接打开不弹窗；`/home` 弹「Page not found」后落首页（记进 README，已写）。
-- [ ] **Step 2: spec 收尾**：§10 每条写上实测结论与日期；§1 的「待复核」项按结果改。
+- [ ] **Step 2: spec 收尾**：§10 每条写上实测结论与日期；§1 的「待复核」项按结果改；§5.1「控制台的忙碌提示也指向市场概览」改成「控制台的忙碌提示点名任务即可，各页控制条的链接指向市场概览」（Task 18 有意如此：notice 已点名是谁在跑）。
 - [ ] **Step 3: 全量测试 + 变异抽查**
 
 ```bash
