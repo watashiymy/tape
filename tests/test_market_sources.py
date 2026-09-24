@@ -145,3 +145,49 @@ def test_sina_bad_status_code_is_rejected():
     text = text.replace(",00,", ",01,")
     with pytest.raises(ParseError, match="状态"):
         sources.parse_sina_quotes(text.encode("gb18030"), CODES, None)
+
+
+from datetime import date as _date
+
+
+def test_parse_tencent_minute_from_recording():
+    m = sources.parse_tencent_minute(_fix("tencent_minute_sh000001.bin"), "sh000001")
+    assert m.code == "sh000001" and isinstance(m.trade_date, _date)
+    assert 2 <= len(m.points) <= 242
+    times = [t for t, _ in m.points]
+    assert times == sorted(times), "分时点时间必须单调"
+    assert all(p > 0 for _, p in m.points)
+    assert m.sh_status in {"open", "close", None}
+
+
+def test_minute_status_string_is_parsed_from_the_sh_segment():
+    raw = (b'{"code":0,"msg":"","data":{"sh000001":{"data":{"date":"20260923","data":'
+           b'["0930 1.0 1 1","0931 1.1 2 2"]},"qt":{"market":["2026-09-23 10:00:00|HK_open_x|SH_open_\xe4\xba\xa4\xe6\x98\x93\xe4\xb8\xad|SZ_open_y"]}}}}')
+    m = sources.parse_tencent_minute(raw, "sh000001")
+    assert m.sh_status == "open" and m.trade_date == _date(2026, 9, 23)
+    assert m.points[-1] == (time(9, 31), 1.1)
+
+
+def test_minute_unknown_status_falls_back_to_none():
+    raw = (b'{"code":0,"msg":"","data":{"sh000001":{"data":{"date":"20260923","data":'
+           b'["0930 1.0 1 1"]},"qt":{"market":["2026-09-23 10:00:00|SH_lunch_x"]}}}}')
+    assert sources.parse_tencent_minute(raw, "sh000001").sh_status is None
+
+
+def test_minute_non_monotonic_time_is_rejected():
+    raw = (b'{"code":0,"msg":"","data":{"sh000001":{"data":{"date":"20260923","data":'
+           b'["0931 1.0 1 1","0930 1.1 2 2"]},"qt":{"market":[]}}}}')
+    with pytest.raises(ParseError, match="单调"):
+        sources.parse_tencent_minute(raw, "sh000001")
+
+
+def test_parse_tencent_kline_from_recording():
+    bars = sources.parse_tencent_kline(_fix("tencent_kline_sh000001.bin"), "sh000001")
+    assert len(bars) >= 2 and bars[-1].day > bars[-2].day
+    assert all(b.amount_wan > 0 for b in bars)
+
+
+def test_kline_param_error_has_code_zero_but_is_an_error():
+    raw = b'{"code":0,"msg":"param error","data":[]}'
+    with pytest.raises(ParseError, match="param error"):
+        sources.parse_tencent_kline(raw, "sh000001")

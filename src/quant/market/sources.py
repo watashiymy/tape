@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -182,3 +183,92 @@ def parse_sina_quotes(raw: bytes, codes: list[str],
                                high=high, low=low, change=change, pct=100 * change / prev,
                                amount_wan=_num(f, 9, code) / 1e4, ts=ts, source="sina")
     return out
+
+
+# ---------------------------------------------------------------- 腾讯分时与日 K
+@dataclass(frozen=True)
+class Minute:
+    code: str
+    trade_date: date                       # 数据源给的交易日——判「今天是不是交易日」的唯一依据
+    points: tuple[tuple[time, float], ...] # (分钟结束时刻, 价格)
+    sh_status: str | None                  # "open" / "close" / None（未知取值 → 回落到时钟判断）
+
+
+@dataclass(frozen=True)
+class DailyBar:
+    day: date
+    amount_wan: float
+
+
+def tencent_minute_url(code: str) -> str:
+    return f"https://web.ifzq.gtimg.cn/appstock/app/minute/query?code={code}"
+
+
+def tencent_kline_url(code: str, count: int = 5) -> str:
+    return ("https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get"
+            f"?param={code},day,,,{count},qfq")
+
+
+def _json(raw: bytes, what: str) -> dict:
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as e:
+        raise ParseError(f"{what}：不是合法 JSON") from e
+
+
+def _tencent_data(raw: bytes, code: str, what: str) -> dict:
+    doc = _json(raw, what)
+    if doc.get("msg"):                      # 报错时 code 仍是 0，只能看 msg 与 data 的类型
+        raise ParseError(f"{what}：{doc['msg']}")
+    data = doc.get("data")
+    if not isinstance(data, dict) or code not in data:
+        raise ParseError(f"{what}：返回里没有 {code}")
+    return data[code]
+
+
+_STATUS_WORDS = {"open": "open", "close": "close"}
+
+
+def parse_tencent_minute(raw: bytes, code: str) -> Minute:
+    d = _tencent_data(raw, code, f"{code} 分时")
+    try:
+        day = datetime.strptime(d["data"]["date"], "%Y%m%d").date()
+        rows = d["data"]["data"]
+    except (KeyError, TypeError, ValueError) as e:
+        raise ParseError(f"{code} 分时缺少 date/data") from e
+    points = []
+    for row in rows:
+        parts = str(row).split()
+        if len(parts) < 2:
+            raise ParseError(f"{code} 分时行格式不对：{row!r}")
+        t = time(int(parts[0][:2]), int(parts[0][2:4]))
+        price = float(parts[1])
+        if price <= 0:
+            raise ParseError(f"{code} 分时价格非正：{row!r}")
+        points.append((t, price))
+    if any(b <= a for (a, _), (b, _) in zip(points, points[1:])):
+        raise ParseError(f"{code} 分时时间不单调")
+    status = None
+    market = (d.get("qt") or {}).get("market") or []
+    if market and isinstance(market[0], str):
+        for seg in market[0].split("|"):
+            if seg.startswith("SH_"):
+                status = _STATUS_WORDS.get(seg.split("_")[1])   # 未知词 → None
+    return Minute(code=code, trade_date=day, points=tuple(points), sh_status=status)
+
+
+def parse_tencent_kline(raw: bytes, code: str) -> list[DailyBar]:
+    d = _tencent_data(raw, code, f"{code} 日K")
+    rows = d.get("day")
+    if not isinstance(rows, list) or not rows:
+        raise ParseError(f"{code} 日K 为空")
+    bars = []
+    for row in rows:
+        try:
+            bars.append(DailyBar(day=datetime.strptime(row[0], "%Y-%m-%d").date(),
+                                 amount_wan=float(row[8])))
+        except (IndexError, TypeError, ValueError) as e:
+            raise ParseError(f"{code} 日K 行格式不对：{row!r}") from e
+    if any(b.day <= a.day for a, b in zip(bars, bars[1:])):
+        raise ParseError(f"{code} 日K 日期不单调")
+    return bars
