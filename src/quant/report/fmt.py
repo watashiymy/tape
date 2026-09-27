@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 import re
+from datetime import date
 
 import pandas as pd
 import streamlit.column_config as column_config
@@ -46,6 +47,11 @@ PERCENT_METRICS = ("total_return", "cagr", "max_drawdown", "win_rate")
 # **只有这三项**有涨跌方向，才配得上红绿（§2.3 第 4 条"色只用在有意义处"）。
 # 夏普为负不是"跌"，胜率 42% 更不是——给它们上色等于同屏多造几个假信号。
 DIRECTIONAL_METRICS = ("total_return", "cagr", "max_drawdown")
+
+
+def cn_month_day(d: date) -> str:
+    """「9 月 24 日」：首页写日期的唯一写法（月日不补零）。收 datetime 也行（它是 date 的子类）。"""
+    return f"{d.month} 月 {d.day} 日"
 
 
 def _finite(x) -> float | None:

@@ -18,6 +18,15 @@ HIGH_LOW_WINDOW = 250
 REL_TOL = 1e-9
 
 
+def _columns(windows: tuple[int, ...]) -> list[str]:
+    return ["date"] + [c for n in windows for c in (f"above{n}", f"n{n}")] + ["new_high", "new_low", "n_hl"]
+
+
+#: 指标表（breadth.parquet）的列。store.load_breadth 按它校验：缺哪一列都当「读不出来」，
+#: 首页那一块逐块降级（spec §5.5），不许拿半张表去索引。
+COLUMNS = _columns(WINDOWS)
+
+
 def _wide(snaps: dict[date, pd.DataFrame], days: list[date], col: str) -> pd.DataFrame:
     return _wide_frames(snaps, days, (col,))[col]
 
@@ -129,6 +138,16 @@ def _rolling_on_bars(adj: pd.DataFrame, trading: pd.DataFrame, n: int, fn: str) 
 
 def compute(snaps: dict[date, pd.DataFrame], days: list[date],
             windows: tuple[int, ...] = WINDOWS, high_low_window: int = HIGH_LOW_WINDOW) -> pd.DataFrame:
+    """快照 → 指标表，按日期升序。
+
+    一天一行，只有有快照的日子才有行；缺口不占行，但仍作为毒 bar 参与 rolling。
+    `days` 是完整的交易日窗口：缺快照的日子先按 NaN 摊进宽表，让回看期跨过它的窗口失效，
+    算完再把这些行丢掉。不丢的话它们是一行全 0——窗口末日的快照还没发布时，末行就是
+    那一行，首页会把没有数据的那天写成「收盘数据截至」、四张卡片全变成「—」。"""
+    days = sorted(days)
+    present = [d in snaps for d in days]
+    if not any(present):
+        return pd.DataFrame(columns=_columns(windows))
     frames = _wide_frames(snaps, days, ("close", "preclose", "tradestatus", "isST"))
     adj = _adjusted_close_from_frames(frames["close"], frames["preclose"], frames["tradestatus"])
     trading = (frames["tradestatus"].fillna(0).astype(int) == 1)
@@ -147,7 +166,7 @@ def compute(snaps: dict[date, pd.DataFrame], days: list[date],
     rows["new_high"] = (ok & (adj >= hi * (1 - REL_TOL))).sum(axis=1).astype(int).tolist()
     rows["new_low"] = (ok & (adj <= lo * (1 + REL_TOL))).sum(axis=1).astype(int).tolist()
     rows["n_hl"] = ok.sum(axis=1).astype(int).tolist()
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows).loc[present].reset_index(drop=True)
 
 
 def suspicious_suspended(snaps: dict[date, pd.DataFrame]) -> list[str]:

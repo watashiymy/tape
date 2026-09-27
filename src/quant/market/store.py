@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from quant.market.breadth import COLUMNS as BREADTH_COLUMNS
 from quant.market.session import Calendar
 
 _DATED = re.compile(r"^(\d{4}-\d{2}-\d{2})\.parquet$")
@@ -153,12 +154,16 @@ class MarketStore:
         _atomic_write(self.breadth_path, lambda tmp: df.to_parquet(tmp, index=False))
 
     def load_breadth(self) -> pd.DataFrame | None:
+        """读不出来、或缺 breadth.COLUMNS 里任何一列 → None（首页那一块逐块降级，§5.5）。"""
         if not self.breadth_path.is_file():
             return None
         try:
-            return pd.read_parquet(self.breadth_path)
+            df = pd.read_parquet(self.breadth_path)
         except (OSError, ValueError):
             return None
+        if not set(BREADTH_COLUMNS) <= set(df.columns):
+            return None
+        return df
 
     # —— 保留规则
     def apply_retention(self, window_first: date) -> list[date]:

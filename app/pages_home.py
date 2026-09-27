@@ -15,7 +15,7 @@ import guide
 import theme
 import ui
 from quant import market
-from quant.market import live, session, sources, trend, turnover
+from quant.market import breadth, live, session, sources, trend, turnover
 from quant.market.session import Calendar, Decision, State, TradeDay
 from quant.market.store import MarketStore
 from quant.market.trend import ButtonState as B
@@ -138,7 +138,7 @@ def _fallback_note(block: live.Block) -> str:
     if block.trade_date == market.now().date():
         stamp = f"{ts:%H:%M}"
     else:
-        stamp = f"{ts.month} 月 {ts.day} 日 {ts:%H:%M}"     # 与 turnover 的日期写法一致，月日不补零
+        stamp = f"{fmt.cn_month_day(ts)} {ts:%H:%M}"      # 与 turnover 同一种日期写法
     return guide.HOME_FALLBACK.format(stamp=stamp)
 
 
@@ -283,8 +283,9 @@ def _distribution(snap: live.LiveSnapshot, decision: Decision) -> None:
     st.html(theme.stat_card("", "", img=minicharts.ratio_bar(up, flat, down)))
     if isinstance(v, sources.Distribution):
         st.html(theme.stat_card("", "", img=minicharts.histogram(v.buckets)))
-        sealed = (guide.HOME_SEALED_CLOSE if decision.state in (State.CLOSED, State.CLOSED_DAY)
-                  else guide.HOME_SEALED_INTRADAY)
+        # 按数据自己的日期判：盘前/状态未知时显示的是上一交易日的块，那天早已收盘封住
+        closed = session.sealed_at_close(decision.state, b.trade_date, market.now().date())
+        sealed = guide.HOME_SEALED_CLOSE if closed else guide.HOME_SEALED_INTRADAY
         st.caption(guide.HOME_BUCKET_NOTE.format(sealed=sealed), help=guide.HOME_HELP["buckets"])
     else:
         st.caption(guide.HOME_COUNTS_ONLY)        # 腾讯兜底：只有家数，画不了分布图
@@ -326,30 +327,30 @@ TREND_DAYS_SHOWN = 60
 
 
 def _trend_cards(ms: MarketStore) -> None:
-    table = ms.load_breadth()
-    asof = table["date"].iloc[-1] if table is not None and len(table) else None
-    pill = theme.pill(guide.HOME_TREND_ASOF.format(day=pd.Timestamp(asof).date()), "idle") if asof is not None else ""
-    st.html(theme.section(guide.HOME_TREND_TITLE, pill))
-    if table is None or not len(table):
+    table = ms.load_breadth()           # 读不出来、列不全 → None：只这一块降级（§5.5）
+    if table is None or table.empty:
+        st.html(theme.section(guide.HOME_TREND_TITLE))
         return
+    asof = pd.Timestamp(table["date"].iloc[-1]).date()      # 表里只有有快照的日子，末行就是真实的最后一天
+    pill = theme.pill(guide.HOME_TREND_ASOF.format(day=asof), "idle")
+    st.html(theme.section(guide.HOME_TREND_TITLE, pill))
     tail = table.tail(TREND_DAYS_SHOWN)
-    gaps = ms.permanent_gaps()
+    last = tail.iloc[-1]
+    have, cal, gaps = set(ms.snapshot_dates()), ms.load_calendar(), ms.permanent_gaps()
     cols = st.columns(4)
     for col, (n, above, denom) in zip(cols, TREND_WINDOWS):
-        last = tail.iloc[-1]
         label = guide.HOME_ABOVE_MA.format(n=n)
         if last[denom] == 0:
-            col.html(theme.stat_card(label, fmt.MISSING, note=_short_note(table, denom, n, gaps)))
+            col.html(theme.stat_card(label, fmt.MISSING, note=_shortfall_note(n, asof, cal, have, gaps)))
             continue
         pct = 100 * last[above] / last[denom]
         series = [(r[above] / r[denom]) if r[denom] else None for _, r in tail.iterrows()]
         col.html(theme.stat_card(label, f"{pct:.1f}%", sub=f"{int(last[above])}/{int(last[denom])}",
                                  img=minicharts.trend_line(series),
                                  note=guide.HOME_RECENT_DAYS.format(n=len(tail))))
-    last = tail.iloc[-1]
     if last["n_hl"] == 0:
-        cols[3].html(theme.stat_card(guide.HOME_HIGH_LOW, fmt.MISSING,
-                                     note=_short_note(table, "n_hl", 250, gaps)))
+        note = _shortfall_note(breadth.HIGH_LOW_WINDOW, asof, cal, have, gaps)
+        cols[3].html(theme.stat_card(guide.HOME_HIGH_LOW, fmt.MISSING, note=note))
     else:
         cols[3].html(theme.stat_card(guide.HOME_HIGH_LOW, f"{int(last['new_high'])} / {int(last['new_low'])}",
                                      img=minicharts.highs_lows(tail["new_high"].tolist(), tail["new_low"].tolist()),
@@ -359,23 +360,21 @@ def _trend_cards(ms: MarketStore) -> None:
         st.markdown(guide.HOME_HELP["high_low"])
 
 
-def _short_note(table, denom: str, n: int, gaps: set) -> str:
-    """分母为 0 的卡片写什么：补得上就说还差几天、去点按钮；表里天数其实够而分母仍为 0，
-    说明回看期跨过了永久缺口，那就说清要等窗口滚过它（spec §5.4）。"""
-    if len(table) >= n and gaps:
-        days = "、".join(d.isoformat() for d in sorted(gaps)[:3])
-        return guide.HOME_TREND_GAP.format(days=days)
-    return guide.HOME_TREND_SHORT.format(n=max(1, n - int(len(table))))
+def _shortfall_note(n: int, asof: date, cal: Calendar | None, have: set[date], gaps: set[date]) -> str:
+    """分母为 0 的卡片写什么：判断在 trend.shortfall（按这张卡自己的回看期），这里只选文案。"""
+    s = trend.shortfall(n, asof, cal, have, gaps)
+    if s.kind == "gap":
+        return guide.HOME_TREND_GAP.format(days="、".join(d.isoformat() for d in s.gap_days), n=s.count)
+    return guide.HOME_TREND_SHORT.format(n=s.count)
 
 
 def _job_area(ms: MarketStore) -> None:
+    state, busy, broken, message = None, None, False, ""
     try:
         state = process.read_state("market_breadth", ui.RUNS_DIR)
         busy = process.any_running(ui.RUNS_DIR)
-        broken = False
-    except RuntimeError as e:
-        st.error(str(e))
-        return
+    except RuntimeError as e:          # 状态文件损坏：由 button_state 判成 BROKEN，报错、不给按钮
+        broken, message = True, str(e)
     running = state is not None and state.status == process.RUNNING
     now = market.now()
     bstate = trend.button_state(
@@ -384,6 +383,9 @@ def _job_area(ms: MarketStore) -> None:
         last_failed=state is not None and state.status == process.FAILED,
         snapshot_dates=ms.snapshot_dates(), calendar=ms.load_calendar(),
         permanent=ms.permanent_gaps(), now=now, ready=market.BREADTH_READY)
+    if bstate is B.BROKEN:
+        st.error(message)
+        return
     if bstate is B.RUNNING:
         log = process.read_log(state)
         prog = progress.parse_market_breadth(log)
@@ -413,7 +415,7 @@ def _job_area(ms: MarketStore) -> None:
     elif bstate in (B.UPDATE, B.FAILED_UPDATE):
         label, key = guide.HOME_BTN_UPDATE, "home_breadth_update"
     elif bstate is B.NOT_READY:
-        st.caption(guide.HOME_TREND_NOT_READY.format(day=f"{now.month} 月 {now.day} 日"))
+        st.caption(guide.HOME_TREND_NOT_READY.format(day=fmt.cn_month_day(now)))
         return
     else:
         return                                   # UP_TO_DATE：什么都不显示
@@ -452,5 +454,5 @@ def page_home() -> None:
         busy = process.any_running(ui.RUNS_DIR) or ""
     except RuntimeError:
         busy = ""
-    (_job_live if busy == "market_breadth" else _job_idle)(busy)
+    (_job_live if busy else _job_idle)(busy)      # 任一任务在跑都 2 秒一跳（§4.4），跑完才能自己发现
     st.caption(guide.HOME_FOOTER)

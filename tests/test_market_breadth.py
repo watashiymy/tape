@@ -65,8 +65,25 @@ def test_gap_day_poisons_the_lookback_window():
              for i, d in enumerate(DAYS) if d != DAYS[2]}          # 9-03 整天缺
     table = breadth.compute(snaps, DAYS, windows=(3,), high_low_window=3)
     by = table.set_index("date")
+    assert DAYS[2] not in by.index, "缺口不占行：整天缺快照的日子不能冒出一行全 0"
     assert by.loc[DAYS[3], "n3"] == 0 and by.loc[DAYS[4], "n3"] == 0   # 回看跨过缺口 → 不进分母
     assert by.loc[DAYS[5], "n3"] == 1                                   # 3 根都在缺口之后了
+
+
+def test_rows_exist_only_for_days_with_a_snapshot_in_ascending_order():
+    """一天一行，只有有快照的日子才有行（任务每次传整个 310 天窗口，而窗口末日的快照
+    可能还没发布）：末行必须是**有数据的最后一天**，不能是一行全 0 的窗口末日。"""
+    snaps = {d: snap([("a", 1.0 + i * 0.1, 1.0 + (i - 1) * 0.1 if i else 1.0, 1, 0)])
+             for i, d in enumerate(DAYS[:-1])}                      # 窗口末日 9-08 还没有快照
+    table = breadth.compute(snaps, list(reversed(DAYS)), windows=(3,), high_low_window=3)
+    assert list(table["date"]) == DAYS[:-1]
+    last = table.iloc[-1]
+    assert last["date"] == DAYS[-2] and (last["above3"], last["n3"]) == (1, 1)
+
+
+def test_no_snapshot_at_all_gives_an_empty_table_with_the_columns():
+    table = breadth.compute({}, DAYS)
+    assert table.empty and list(table.columns) == breadth.COLUMNS
 
 
 def test_single_stock_missing_row_is_a_gap_for_that_stock_only():
@@ -99,6 +116,7 @@ def test_output_columns():
     cols = list(breadth.compute(snaps, DAYS).columns)
     assert cols == ["date", "above20", "n20", "above60", "n60", "above200", "n200",
                     "new_high", "new_low", "n_hl"]
+    assert cols == breadth.COLUMNS, "首页与 store 按 COLUMNS 校验指标表，两边必须一致"
 
 
 def test_suspicious_suspended_lists_only_odd_rows():

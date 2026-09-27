@@ -109,6 +109,11 @@ def test_today_not_published_is_skipped_and_still_a_success(tmp_path):
     assert re.search(r"^\[1/\d+\] 2026-09-24 跳过：", log, re.M)
     assert "2026-09-24 的收盘数据还没发布" in log and "全部完成: " in log
     assert len(ms.snapshot_dates()) == 29 and TODAY not in ms.snapshot_dates()
+    # 指标表一天一行、只含有快照的日子：窗口末日（今天）没发布就不能冒出一行全 0 当末行，
+    # 否则首页写「收盘数据截至 9-24」、四张卡片全是「—」
+    table = ms.load_breadth()
+    assert len(table) == 29
+    assert pd.Timestamp(table["date"].iloc[-1]).date() == date(2026, 9, 23)
 
 
 def test_past_day_zero_rows_is_recorded_and_run_fails_but_continues(tmp_path):

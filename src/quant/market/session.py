@@ -174,6 +174,15 @@ def stamp_kind(state: State) -> str:
     return "date"
 
 
+def sealed_at_close(state: State, block_day: date | None, today: date) -> bool:
+    """涨跌分布 ±11 档的说法（§2 第 4 项）：「收盘封住」还是「封住涨停/跌停」（盘中）。
+    已收盘、休市 → 收盘封住；此外块属于更早的交易日（盘前/状态未知时显示的上一交易日的块）
+    也是收盘封住——按**数据自己的日期**判，不只看时钟。`today` 由调用方传（本模块不看时钟）。"""
+    if state in (State.CLOSED, State.CLOSED_DAY):
+        return True
+    return block_day is not None and block_day != today
+
+
 def expected_trade_day(source_date: date | None, calendar: Calendar | None, now_t: time,
                        last_known: date | None, *, today: date) -> date | None:
     """§3「预期交易日」：本轮源日期 → 日历推算 → 上一轮成功的源日期 → None。

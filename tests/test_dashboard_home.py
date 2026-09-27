@@ -411,12 +411,24 @@ def test_cache_entries_have_no_spinner():
 def test_distribution_block_counts_add_up_to_the_histogram(tmp_path):
     at = _home(tmp_path)
     htmls = _htmls(at)
-    dist = next(h for h in htmls if "涨跌分布" in h)
     body = " ".join(htmls) + " ".join(_captions(at))
+    assert any("涨跌分布" in h for h in htmls)
     assert "上涨" in body and "下跌" in body and "平盘" in body
     assert body.count('qd-card-img') >= 7, "6 张指数小图 + 1 幅分布柱状图（+ 比例条）"
     assert "沪深京 A 股，不含 ST 与停牌股" in body
-    assert dist
+
+
+def _card(at, label: str) -> str:
+    """label 那张首页卡片的 html（每张卡片是一个 st.html 元素）。"""
+    cards = [h for h in _htmls(at) if f'<div class="qd-card-label">{label}</div>' in h]
+    assert len(cards) == 1, (label, cards)
+    return cards[0]
+
+
+def _card_value(card: str) -> str:
+    m = re.search(r'<div class="qd-card-value"[^>]*>([^<]*)</div>', card)
+    assert m, card
+    return m.group(1)
 
 
 def test_thermometer_shows_four_readings_and_a_dash_for_zero_division(tmp_path, monkeypatch):
@@ -424,6 +436,12 @@ def test_thermometer_shows_four_readings_and_a_dash_for_zero_division(tmp_path, 
     body = " ".join(_htmls(at))
     for label in ("涨停", "跌停", "炸板率", "最高连板"):
         assert label in body
+    # 涨停/跌停取分布的 ±11 档（与左图同源同轮）：数从录制文件里现读，不在这里抄死
+    fenbu = {k: v for item in json.loads((FIXTURES_MARKET / "em_fenbu.bin").read_bytes())["data"]["fenbu"]
+             for k, v in item.items()}
+    assert fenbu["11"] != fenbu["-11"], "两档相等的话，涨停/跌停对调也看不出来"
+    assert _card_value(_card(at, "涨停")) == str(fenbu["11"])
+    assert _card_value(_card(at, "跌停")) == str(fenbu["-11"])
 
     def empty_pools(url, headers=None):
         if "Pool" in url:
@@ -493,15 +511,27 @@ def test_bucket_note_says_sealed_at_close_after_close_and_now_intraday(tmp_path,
     assert "封住涨停/跌停" in " ".join(_captions(at2))
 
 
+def test_bucket_note_follows_the_datas_day_before_the_open(tmp_path, monkeypatch):
+    """次个工作日 9:00、没有日历：状态是盘前/未知（不是「已收盘」），但分布块是上一交易日
+    收盘后的数——那一天早就收盘封住了，不能写成盘中的「封住涨停/跌停」。"""
+    day = _fixture_day()
+    _freeze(monkeypatch, datetime.combine(_next_weekday(day), time(9, 0)))
+    at = _home(tmp_path)
+    assert not at.exception, at.exception
+    assert "已收盘" not in _status(at)
+    notes = [c for c in _captions(at) if c.startswith("区间按涨跌幅绝对值划分")]
+    assert notes and "收盘封住" in notes[0], _captions(at)
+
+
 # ---------------------------------------------------------------- 趋势宽度四卡 + 按钮区
-def _fake_run(root, status, log="", exit_code=None):
+def _fake_run(root, status, log="", exit_code=None, job="market_breadth"):
     runs = root / "output" / "runs"
     (runs / "logs").mkdir(parents=True, exist_ok=True)
-    lp = runs / "logs" / "market_breadth_x.log"
+    lp = runs / "logs" / f"{job}_x.log"
     lp.write_text(log, encoding="utf-8")
-    (runs / "market_breadth.json").write_text(json.dumps({
-        "script": "market_breadth", "run_id": "x", "pid": os.getpid(),
-        "argv": [sys.executable, "-u", jobs.JOBS["market_breadth"].script], "log_path": str(lp),
+    (runs / f"{job}.json").write_text(json.dumps({
+        "script": job, "run_id": "x", "pid": os.getpid(),
+        "argv": [sys.executable, "-u", jobs.JOBS[job].script], "log_path": str(lp),
         "started_at": "2026-09-24T19:00:00", "status": status, "exit_code": exit_code,
         "finished_at": None if status == "running" else "2026-09-24T19:05:00"}), encoding="utf-8")
 
@@ -553,22 +583,159 @@ def test_up_to_date_shows_only_the_date_in_the_title(tmp_path):
     assert "还差约" in body, "60/200 日线历史不足要说清缺多少天"
 
 
-def test_trend_card_explains_a_permanent_gap_when_history_is_otherwise_enough(tmp_path):
-    """分母为 0，但表里天数其实已经够了（≥ n）——那是永久缺口把窗口卡住了，不是「还差几天」。"""
+def _market_store(tmp_path):
     from quant.market.store import MarketStore
+    return MarketStore(tmp_path / "data" / "market")
+
+
+def _weekdays_until(last, k):
+    """截至 last（含）的最近 k 个工作日，升序。"""
+    out, d = [], last
+    while len(out) < k:
+        if d.weekday() < 5:
+            out.append(d)
+        d -= timedelta(days=1)
+    return out[::-1]
+
+
+#: 小快照里的几只票：(代码, 每天的涨跌幅)。两只天天涨、一只天天跌 → 站上均线 2/3。
+TREND_CODES = (("sh.600000", 0.01), ("sh.600001", -0.01), ("sz.000001", 0.02))
+
+
+def _breadth_fixture(tmp_path, k, *, skip=(), permanent=()):
+    """k 个连续交易日（工作日）的小快照，末日 = 夹具日的前一个交易日——夹具日自己的快照
+    「还没发布」。日历从首日覆盖到夹具日之后一个月、工作日都是交易日（夹具日也是）。
+    skip 里的日子整天缺快照；permanent 里的日子登记成永久缺口（两个不同自然日各失败一次）。
+    指标表按任务的做法用 breadth.compute 对整个窗口真算——19:30 已过就绪时刻，任务的窗口
+    末日就是夹具日，而它没有快照。返回 (store, 有快照的日子)。"""
     import pandas as pd
-    ms = MarketStore(tmp_path / "data" / "market")
-    day = market.now().date()
-    days = list(pd.date_range(day - pd.Timedelta(days=30), day).date)   # 31 天 ≥ above20 需要的 20 天
-    gap_day = days[0]
-    ms.record_failure(gap_day, day - pd.Timedelta(days=100))
-    ms.record_failure(gap_day, day - pd.Timedelta(days=99))             # 两次失败 → 永久缺口
-    rows = len(days)
-    ms.save_breadth(pd.DataFrame({
-        "date": days, "above20": [0] * rows, "n20": [0] * rows,
-        "above60": [0] * rows, "n60": [0] * rows, "above200": [0] * rows, "n200": [0] * rows,
-        "new_high": [0] * rows, "new_low": [0] * rows, "n_hl": [0] * rows}))
+    from quant.market import breadth
+    from quant.market.store import SNAPSHOT_COLUMNS
+    ms = _market_store(tmp_path)
+    day = _fixture_day()
+    days = _weekdays_until(day - timedelta(days=1), k)
+    cal_days = list(pd.date_range(days[0], day + timedelta(days=30)).date)
+    ms.save_calendar(cal_days, [d for d in cal_days if d.weekday() < 5])
+    snaps = {}
+    for i, d in enumerate(days):
+        if d in skip:
+            continue
+        rows = [(code, 10 * (1 + step) ** i, 10 * (1 + step) ** max(i - 1, 0), 1, 0)
+                for code, step in TREND_CODES]
+        snaps[d] = pd.DataFrame(rows, columns=SNAPSHOT_COLUMNS)
+        ms.save_snapshot(d, snaps[d])
+    for d in permanent:
+        ms.record_failure(d, day - timedelta(days=100))
+        ms.record_failure(d, day - timedelta(days=99))
+    ms.save_breadth(breadth.compute(snaps, days + [day]))
+    return ms, [d for d in days if d not in skip]
+
+
+def test_trend_cards_date_and_shortfall_come_from_days_with_data(tmp_path):
+    """夹具日 19:30、夹具日的快照还没存（任务在发布前跑过，只补到前一天）：标题旁写**有数据的
+    最后一天**；20 日卡有数；60 日卡「—」并写还差 60 − k 天；按钮区给「更新收盘数据」。"""
+    k = 22
+    _, days = _breadth_fixture(tmp_path, k)
     at = _home(tmp_path)
     assert not at.exception, at.exception
-    body = " ".join(_htmls(at)) + " ".join(c.value for c in at.caption)
-    assert "数据源缺" in body and gap_day.isoformat() in body, body
+    body = " ".join(_htmls(at))
+    assert f"收盘数据截至 {days[-1].isoformat()}" in body
+    assert f"收盘数据截至 {_fixture_day().isoformat()}" not in body
+    card20 = _card(at, "站上 20 日线")
+    assert re.fullmatch(r"\d+\.\d%", _card_value(card20)), card20
+    assert "2/3" in card20
+    card60 = _card(at, "站上 60 日线")
+    assert _card_value(card60) == "—"
+    assert f"还差约 {60 - k} 天的收盘数据" in card60, card60
+    assert f"还差约 {250 - k} 天的收盘数据" in _card(at, "52 周新高 / 新低")
+    assert "home_breadth_update" in _keys(at)
+
+
+def test_trend_card_names_the_permanent_gap_inside_its_lookback(tmp_path):
+    """20 日卡的回看期里有永久缺口：写缺的是哪天、还要等几个交易日窗口才滚过它（spec §5.4）。"""
+    k = 22
+    gap = _weekdays_until(_fixture_day() - timedelta(days=1), k)[-6]   # 之后还有 5 个交易日有数
+    _breadth_fixture(tmp_path, k, skip={gap}, permanent={gap})
+    at = _home(tmp_path)
+    assert not at.exception, at.exception
+    card20 = _card(at, "站上 20 日线")
+    assert _card_value(card20) == "—"
+    assert f"数据源缺 {gap.isoformat()} 的数据，还需约 15 个交易日" in card20, card20
+
+
+def test_enough_history_shows_sixty_day_trend_lines_and_the_help(tmp_path):
+    _breadth_fixture(tmp_path, 70)
+    at = _home(tmp_path)
+    assert not at.exception, at.exception
+    for label in ("站上 20 日线", "站上 60 日线"):
+        card = _card(at, label)
+        assert "近 60 个交易日" in card and "qd-card-img" in card, card
+    guide = app_module("guide")
+    assert guide.HOME_HELP["above_ma"] in [m.value for m in at.markdown]
+
+
+def test_a_breadth_table_with_wrong_columns_degrades_only_that_block(tmp_path):
+    """spec §5.5 逐块降级：列不对的指标表当读不出来——标题照画、不画卡片、页面不炸。"""
+    import pandas as pd
+    ms = _market_store(tmp_path)
+    ms.save_breadth(pd.DataFrame({"date": [_fixture_day()], "whatever": [1]}))
+    at = _home(tmp_path)
+    assert not at.exception, at.exception
+    assert any('class="qd-section">趋势宽度' in h for h in _htmls(at))
+    assert not [h for h in _htmls(at) if "站上 20 日线" in h]
+    assert any(h.startswith('<div class="qd-card">') for h in _htmls(at)), "其余板块照常"
+
+
+def test_another_job_running_polls_the_button_area_every_two_seconds(tmp_path, monkeypatch):
+    """spec §4.4：有任务在跑时按钮区 2 秒一跳——不只是收盘数据任务自己；别的任务跑完时
+    按钮区要自己发现并整页重跑，不能一直挂着「有任务在运行」。"""
+    intervals = _auto_rerun_spy(monkeypatch)
+    _fake_run(tmp_path, "running", log="开始扫描\n", job="market_scan")
+    at = _home(tmp_path)
+    assert not at.exception, at.exception
+    assert app_module("guide").HOME_TREND_BUSY in _captions(at)
+    assert not ({"home_breadth_start", "home_breadth_update", "home_breadth_stop"} & _keys(at))
+    assert 2 in intervals, intervals
+
+
+def test_before_ready_time_on_a_trading_day_says_when_to_update(tmp_path, monkeypatch):
+    """交易日、就绪时刻前、已补到上一交易日 → 一行小字（带具体日期），不给按钮。"""
+    _breadth_fixture(tmp_path, 3)
+    day = _fixture_day()
+    _freeze(monkeypatch, datetime.combine(day, time(16, 0)))
+    at = _home(tmp_path)
+    assert not at.exception, at.exception
+    want = app_module("guide").HOME_TREND_NOT_READY.format(day=f"{day.month} 月 {day.day} 日")
+    assert want in _captions(at), _captions(at)
+    assert not ({"home_breadth_start", "home_breadth_update"} & _keys(at))
+
+
+def test_a_missing_trading_day_offers_update(tmp_path):
+    _breadth_fixture(tmp_path, 3)          # 19:30，夹具日的快照还没有
+    at = _home(tmp_path)
+    assert not at.exception, at.exception
+    assert "home_breadth_update" in _keys(at) and "home_breadth_start" not in _keys(at)
+
+
+def test_failed_update_shows_the_error_and_offers_update(tmp_path):
+    import pandas as pd
+    _market_store(tmp_path).save_snapshot(
+        _fixture_day() - timedelta(days=1),
+        pd.DataFrame({"code": ["sh.600000"], "close": [1.0], "preclose": [1.0], "tradestatus": [1], "isST": [0]}))
+    _fake_run(tmp_path, "failed", exit_code=1,
+              log="待补 1 天\n[1/1] 2026-09-03 跳过：重试后仍为 0 行\n"
+                  "补数失败：2026-09-03 拿不到数据（已记录，再失败一次将不再重试）\n")
+    at = _home(tmp_path)
+    assert not at.exception, at.exception
+    assert "home_breadth_update" in _keys(at) and "home_breadth_start" not in _keys(at)
+    assert any("2026-09-03 拿不到数据" in c for c in _captions(at)), _captions(at)
+
+
+def test_a_broken_state_file_shows_an_error_and_no_buttons(tmp_path):
+    runs = tmp_path / "output" / "runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    (runs / "market_breadth.json").write_text("{", encoding="utf-8")
+    at = _home(tmp_path)
+    assert not at.exception, at.exception
+    assert [e.value for e in at.error], "状态文件损坏要报错"
+    assert not ({"home_breadth_start", "home_breadth_update", "home_breadth_stop"} & _keys(at))

@@ -125,9 +125,27 @@ def test_retention_deletes_only_dated_parquets_before_the_window(tmp_path):
     assert (ms.daily_dir / "readme.parquet").exists() and (ms.daily_dir / "2026-01-02.parquet.bak").exists()
 
 
+def _breadth_row(**over):
+    from quant.market import breadth
+    row = {c: [0] for c in breadth.COLUMNS}
+    row["date"] = [D("2026-09-23")]
+    row.update(over)
+    return pd.DataFrame(row)
+
+
 def test_breadth_table_roundtrip(tmp_path):
     ms = store.MarketStore(tmp_path)
-    df = pd.DataFrame({"date": [D("2026-09-23")], "above20": [1], "n20": [2]})
+    df = _breadth_row(above20=[1], n20=[2])
     ms.save_breadth(df)
     assert ms.load_breadth().equals(df)
     assert store.MarketStore(tmp_path / "nope").load_breadth() is None
+
+
+def test_breadth_table_missing_a_column_reads_as_none(tmp_path):
+    """spec §5.5「任何一样读失败就逐块降级」：列不全的表（旧版本写的、手工改坏的）当读不出来，
+    不抛异常——页面拿它去 `last["n20"]` 会直接 KeyError 崩页。"""
+    ms = store.MarketStore(tmp_path)
+    ms.save_breadth(pd.DataFrame({"date": [D("2026-09-23")], "above20": [1], "n20": [2]}))
+    assert ms.load_breadth() is None
+    ms.save_breadth(_breadth_row().drop(columns=["n_hl"]))
+    assert ms.load_breadth() is None

@@ -617,3 +617,11 @@ def test_sharpe_label_and_action_help_speak_chinese():
     assert "买入" in help_text and "卖出" in help_text
     assert "buy" not in help_text and "sell" not in help_text
 
+
+
+def test_cn_month_day_has_no_zero_padding_and_accepts_datetimes():
+    """首页各处写日期的唯一写法（成交额、兜底时刻、按钮区小字）：月日不补零、中间留空格。"""
+    from datetime import date, datetime
+    assert fmt.cn_month_day(date(2026, 9, 24)) == "9 月 24 日"
+    assert fmt.cn_month_day(date(2026, 10, 1)) == "10 月 1 日"
+    assert fmt.cn_month_day(datetime(2026, 1, 5, 16, 14)) == "1 月 5 日"

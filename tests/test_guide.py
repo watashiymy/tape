@@ -653,11 +653,29 @@ def _user_copy() -> dict[str, str]:
     out |= {f"param_help:{k}": v for k, v in guide.PARAM_HELP.items()}
     out |= {f"table_hint:{k}": v for k, v in guide.TABLE_HINTS.items()}
     out |= {f"empty:{k}": v for k, v in guide.EMPTY_STATES.items()}
-    out |= {name: getattr(guide, name) for name in dir(guide)
-            if name.startswith(("JOURNAL_", "POOL_", "CONSOLE_", "PIPELINE_", "HOME_"))
-            and isinstance(getattr(guide, name), str)}
+    # 常量不只是 str：HOME_HELP / HOME_THERMO_LABELS / HOME_STATE_TEXT 是字典，HOME_COUNT_LABELS
+    # 是元组——只收 str 的话它们整个漏过实现细节扫描。字典按值、元组按项摊平。
+    for name in dir(guide):
+        if not name.startswith(("JOURNAL_", "POOL_", "CONSOLE_", "PIPELINE_", "HOME_")):
+            continue
+        value = getattr(guide, name)
+        if isinstance(value, str):
+            out[name] = value
+        elif isinstance(value, dict):
+            out |= {f"{name}[{k}]": v for k, v in value.items() if isinstance(v, str)}
+        elif isinstance(value, (tuple, list)):
+            out |= {f"{name}[{i}]": v for i, v in enumerate(value) if isinstance(v, str)}
     out["pool_source_note:default"] = guide.pool_source_note(None)
     return out
+
+
+def test_user_copy_scan_includes_dict_and_tuple_constants():
+    """上面那条扫描的覆盖面本身要钉住：字典值、元组项都得在里面。"""
+    copy = _user_copy()
+    assert copy["HOME_HELP[above_ma]"] == guide.HOME_HELP["above_ma"]
+    assert copy["HOME_THERMO_LABELS[limit_up]"] == guide.HOME_THERMO_LABELS["limit_up"]
+    assert copy["HOME_STATE_TEXT[closed]"] == guide.HOME_STATE_TEXT["closed"]
+    assert copy["HOME_COUNT_LABELS[0]"] == guide.HOME_COUNT_LABELS[0]
 
 
 @pytest.mark.parametrize("token", IMPLEMENTATION_TOKENS)

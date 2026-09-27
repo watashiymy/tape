@@ -9,6 +9,7 @@ from datetime import date, datetime, time
 
 from quant.market.session import CLOSE, CLOSE_CUTOFF
 from quant.market.sources import DailyBar
+from quant.report.fmt import cn_month_day
 
 CONSISTENCY_TOLERANCE_WAN = 1.0     # [37] 是截断后的整数，走完的 bar 带两位小数，不能比相等
 
@@ -45,10 +46,6 @@ def _wan_yi(amount_wan: float) -> str:
     return f"{amount_wan / 1e8:.2f} 万亿"
 
 
-def _day(d: date) -> str:
-    return f"{d.month} 月 {d.day} 日"
-
-
 def line(now: datetime, today: date, trade_date: date, current_wan: float, current_ts: time | None,
          prev: DailyBar | None, pct_ok: bool | None) -> str:
     """`current_ts` 是行情自带的时刻；没有就不写「（截至 …）」——不拿渲染时刻顶替。"""
@@ -58,10 +55,10 @@ def line(now: datetime, today: date, trade_date: date, current_wan: float, curre
         if current_ts is not None:
             head += f"（截至 {current_ts:%H:%M}）"
     else:
-        head = f"两市成交额 {_day(trade_date)}全天 {_wan_yi(current_wan)}"
+        head = f"两市成交额 {cn_month_day(trade_date)}全天 {_wan_yi(current_wan)}"
     if prev is None:
         return head
-    text = f"{head} · {_day(prev.day)}全天 {_wan_yi(prev.amount_wan)}"
+    text = f"{head} · {cn_month_day(prev.day)}全天 {_wan_yi(prev.amount_wan)}"
     if not intraday and pct_ok is True and prev.amount_wan > 0:
         pct = (current_wan / prev.amount_wan - 1) * 100
         text += f" · {pct:+.1f}%"

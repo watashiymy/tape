@@ -187,3 +187,24 @@ def test_breadth_ready_flips_exactly_at_the_constant():
     ready = datetime.combine(WED, market.BREADTH_READY)
     assert market.breadth_ready(ready) is True
     assert market.breadth_ready(ready - timedelta(seconds=1)) is False
+
+
+# ---------------------------------------------------------------- ±11 档的说法（§2 第 4 项）
+# (状态, 数据属于当前日期时是否「收盘封住」)。数据属于更早的交易日时一律「收盘封住」。
+SEALED_SAME_DAY = {
+    State.CLOSED_DAY: True, State.PRE_OPEN: False, State.AUCTION: False, State.WAIT_OPEN: False,
+    State.TRADING: False, State.LUNCH: False, State.CLOSED: True, State.UNKNOWN: False,
+}
+
+
+def test_sealed_table_covers_every_state():
+    assert set(SEALED_SAME_DAY) == set(State)
+
+
+@pytest.mark.parametrize("state", list(State))
+def test_sealed_at_close_by_state_and_by_the_datas_own_day(state):
+    prev = date(2026, 9, 24)
+    assert session.sealed_at_close(state, WED, WED) is SEALED_SAME_DAY[state]
+    assert session.sealed_at_close(state, None, WED) is SEALED_SAME_DAY[state]   # 块没有日期 → 只看状态
+    # 盘前/状态未知时显示的是上一交易日收盘后的块：那一天早就收盘封住了
+    assert session.sealed_at_close(state, prev, date(2026, 9, 25)) is True
