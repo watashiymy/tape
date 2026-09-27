@@ -87,7 +87,7 @@ FACTS: dict[str, str] = {
     "slippage": "0.1%", "rf_real": "1.5–2%", "csi300_drag": "2–3%",
     # —— 首页「趋势宽度」的收盘数据（另一个接口，就绪时刻单独定；Task 26 按实测改）
     "breadth_ready": _BREADTH_READY,      # 引用 quant.market.BREADTH_READY，见文件顶部
-    "breadth_first_run": "约 100 分钟",   # 首次准备 310 天 × 约 20 秒（实测后改）
+    "breadth_first_run": "约 110 分钟",   # 2026-09-27 实测：310 天用时 1 小时 47 分（每天 17–25 秒）
 }
 
 
