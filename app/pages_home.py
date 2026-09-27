@@ -2,6 +2,7 @@
 
 两个 fragment：行情区按 session 的决定用 30 秒或 60 秒；按钮区有任务在跑时 2 秒。
 两个缓存入口（25 秒 / 600 秒）都 show_spinner=False——它默认会把函数名显示出来。
+失败的一轮（与失败的日 K）不进缓存，见 _Uncached；每一跳至多整页重跑一次，见 RERUN_GUARD。
 """
 from __future__ import annotations
 
@@ -14,7 +15,7 @@ import theme
 import ui
 from quant import market
 from quant.market import live, session, sources, turnover
-from quant.market.session import Decision, State, TradeDay
+from quant.market.session import Calendar, Decision, State, TradeDay
 from quant.market.store import MarketStore
 from quant.report import fmt, minicharts
 from quant.runner import process
@@ -25,30 +26,49 @@ def _store() -> MarketStore:
 
 
 # ---------------------------------------------------------------- 取数（两个缓存入口）
+class _Uncached(Exception):
+    """缓存函数里抛它 = 这次的结果**不进** st.cache_data（函数抛异常时它什么都不存），
+    调用方接住后照常用 `.snap`（日 K 失败时为 None）。
+
+    失败的一轮（分时全挂 / 没有行情 / 行情是兜底的旧值）必须下一跳就重试，不能被钉 25/600 秒；
+    也免得 `_decide(snap)` 随「这一跳碰巧命中哪个缓存入口」来回翻——一个入口存着成功轮、另一个
+    存着失败轮时，两边判出的间隔不同，整页会无限重跑。"""
+
+    def __init__(self, snap: live.LiveSnapshot | None) -> None:
+        super().__init__()
+        self.snap = snap
+
+
 def _round(allow_cross_day: bool, hint: date | None) -> live.LiveSnapshot:
-    return live.fetch_round(live.HTTP_GET, market.now(), hint, live.STORE, allow_cross_day)
+    """两个缓存入口共用的函数体：取一轮，失败就抛 _Uncached（在缓存函数里抛，才不会被存下）。"""
+    snap = live.fetch_round(live.HTTP_GET, market.now(), hint, live.STORE, allow_cross_day)
+    if not snap.source_ok or snap.quotes is None or snap.quotes.fallback:
+        raise _Uncached(snap)
+    return snap
 
 
 @st.cache_data(ttl=session.SHORT_TTL_S, show_spinner=False)
-def _round_short(allow_cross_day: bool, hint: date | None, _key: str) -> live.LiveSnapshot:
+def _round_short(allow_cross_day: bool, hint: date | None) -> live.LiveSnapshot:
     return _round(allow_cross_day, hint)
 
 
 @st.cache_data(ttl=session.LONG_TTL_S, show_spinner=False)
-def _round_long(allow_cross_day: bool, hint: date | None, _key: str) -> live.LiveSnapshot:
+def _round_long(allow_cross_day: bool, hint: date | None) -> live.LiveSnapshot:
     return _round(allow_cross_day, hint)
 
 
 def _snapshot(decision: Decision, hint: date | None) -> live.LiveSnapshot:
-    allow = decision.state not in (State.AUCTION, State.WAIT_OPEN, State.TRADING)
     fn = _round_short if decision.cache_ttl == session.SHORT_TTL_S else _round_long
-    return fn(allow, hint, "v1")
+    try:
+        return fn(session.allow_cross_day(decision.state), hint)
+    except _Uncached as e:
+        return e.snap
 
 
 DECISION_KEY = "home_decision"     # session_state：上一轮用真实快照判出的 (state, interval, ttl)
 
 
-def _remembered_decision() -> Decision:
+def _remembered_decision(cal: Calendar | None) -> Decision:
     """选缓存入口与 allow_cross_day 时优先用上一轮的真实判定：没有日历时 _decide(None) 是
     「未知」，会让交易时段也允许跨日旧值、休市日却走 25 秒缓存。"""
     raw = st.session_state.get(DECISION_KEY)
@@ -57,63 +77,75 @@ def _remembered_decision() -> Decision:
             return Decision(State(raw[0]), int(raw[1]), int(raw[2]))
         except (ValueError, TypeError, IndexError):
             pass
-    return _decide(None)[0]
+    return _decide(None, cal)[0]
 
 
 # ---------------------------------------------------------------- 判定
-def _calendar():
+def _calendar() -> Calendar | None:
     return _store().load_calendar()
 
 
-def _decide(snap: live.LiveSnapshot | None) -> tuple[Decision, TradeDay]:
+def _decide(snap: live.LiveSnapshot | None, cal: Calendar | None) -> tuple[Decision, TradeDay]:
     now = market.now()
-    cal = _calendar()
     ok = bool(snap and snap.source_ok)
-    src = snap.trade_date if (snap and snap.source_ok) else None
+    src = snap.trade_date if ok else None
     td = session.trade_day(now.date(), cal, ok, src, now.time())
     return session.decide(now, td), td
 
 
-def _hint() -> date | None:
+def _hint(cal: Calendar | None) -> date | None:
     """池子与新浪校验用的「预期交易日」（spec §3）：本轮源日期由 live 自己拿，这里只给
     日历推算 → 上一轮成功的日期 这两级兜底。**不能**把上一轮的日期当 source_date 传，
     否则第一行就 return，日历永远不被咨询。"""
     now = market.now()
-    return session.expected_trade_day(None, _calendar(), now.time(),
+    return session.expected_trade_day(None, cal, now.time(),
                                       live.STORE.last_trade_date, today=now.date())
 
 
 # ---------------------------------------------------------------- 渲染块
 def _status(decision: Decision, snap: live.LiveSnapshot) -> None:
+    """戳的种类由 session.stamp_kind 定（日期 / 分时最后一点 / 行情时间戳），页面只拼。"""
     text = guide.HOME_STATE_TEXT[decision.state.value]
     q = snap.quotes
-    # 收盘后与盘前都写**日期**：实测收盘后腾讯/新浪的时间戳会跟着请求时刻往前走，盘前显示它是误导
-    if decision.state in (State.CLOSED, State.CLOSED_DAY, State.PRE_OPEN) and snap.trade_date:
-        text += f" · {snap.trade_date.isoformat()}"
+    m = snap.minutes.get("sh000001")
+    has_points = bool(m and m.points)
+    kind = session.stamp_kind(decision.state)
+    if kind == "date":
+        if snap.trade_date:
+            text += f" · {snap.trade_date.isoformat()}"
+    elif kind == "minute":
+        if has_points:
+            text += f" · {m.points[-1][0]:%H:%M}"
+        elif q is not None and q.ts is not None:
+            text += f" · {q.ts:%H:%M}"
     elif q is not None and q.ts is not None:
         text += f" · {q.ts:%H:%M:%S}"
-    last_point = None
-    if (m := snap.minutes.get("sh000001")) and m.points:
-        # 评审收口后 is_stale 收的是**完整的日期时间**：昨天 15:00 的点在今早必须判成延迟
-        last_point = datetime.combine(m.trade_date, m.points[-1][0])
-    stale = session.is_stale(market.now(), last_point, q.ts if q else None)
-    running = decision.state in (State.AUCTION, State.WAIT_OPEN, State.TRADING)
-    st.html(theme.status_line(text, running=running, extra=guide.HOME_STALE if stale else ""))
+    # is_stale 收的是**完整的日期时间**：昨天 15:00 的点在今早必须判成延迟
+    last_point = datetime.combine(m.trade_date, m.points[-1][0]) if has_points else None
+    stale = session.is_stale(market.now(), decision.state, last_point, q.ts if q else None)
+    st.html(theme.status_line(text, running=session.is_live(decision.state),
+                              extra=guide.HOME_STALE if stale else ""))
 
 
-def _fallback_note(block: live.Block, current_day: date | None) -> str:
+def _fallback_note(block: live.Block) -> str:
+    """最近成功值的交易日 ≠ 当前日期（market.now().date()）→ 时刻带日期（§3）。不拿
+    snap.trade_date 比：失败那轮它是从 store 抄来的，永远等于块自己的日期。"""
     if not block.fallback or block.ts is None:
         return ""
-    stamp = block.ts.strftime("%m 月 %d 日 %H:%M") if block.trade_date != current_day else f"{block.ts:%H:%M}"
+    ts = block.ts
+    if block.trade_date == market.now().date():
+        stamp = f"{ts:%H:%M}"
+    else:
+        stamp = f"{ts.month} 月 {ts.day} 日 {ts:%H:%M}"     # 与 turnover 的日期写法一致，月日不补零
     return guide.HOME_FALLBACK.format(stamp=stamp)
 
 
 def _index_cards(snap: live.LiveSnapshot) -> None:
-    st.html(theme.section("指数行情"))
+    st.html(theme.section(guide.HOME_INDEX_TITLE))
     if snap.quotes is None:
         st.caption(guide.HOME_UNAVAILABLE)
         return
-    if note := _fallback_note(snap.quotes, snap.trade_date):
+    if note := _fallback_note(snap.quotes):
         st.caption(note)
     quotes = snap.quotes.value
     for col, (code, name) in zip(st.columns(len(market.INDEXES)), market.INDEXES):
@@ -126,38 +158,42 @@ def _index_cards(snap: live.LiveSnapshot) -> None:
                                  img=img))
 
 
-def _turnover(snap: live.LiveSnapshot, decision: Decision) -> None:
+def _turnover(snap: live.LiveSnapshot) -> None:
     q = snap.quotes
     if q is None:
         return
     quotes = q.value
-    now, today = market.now(), market.now().date()
-    trade_date = snap.trade_date or today
-    current = quotes["sh000001"].amount_wan + quotes["sz399001"].amount_wan
-    if quotes["sh000001"].amount_wan <= 0 or quotes["sz399001"].amount_wan <= 0:
+    sh_wan, sz_wan = quotes["sh000001"].amount_wan, quotes["sz399001"].amount_wan
+    if sh_wan <= 0 or sz_wan <= 0:
         return                          # spec §3「两项都有值且 > 0」：盘前 [37] 为 0，不渲染「0.00 万亿」
-    ts = q.ts.time() if q.ts else now.time()
+    now = market.now()
+    today = now.date()
+    trade_date = snap.trade_date or today
+    ts = q.ts.time() if q.ts else None  # 没有行情时刻就不写「截至」，不拿渲染时刻顶替
     prev, pct_ok = _prev_day(trade_date, quotes, q.source, now, today)
-    st.caption(turnover.line(now, today, trade_date, current, ts, prev, pct_ok),
+    st.caption(turnover.line(now, today, trade_date, sh_wan + sz_wan, ts, prev, pct_ok),
                help=guide.HOME_TURNOVER_HELP)
 
 
 @st.cache_data(ttl=24 * 3600, show_spinner=False)
-def _klines(trade_date: date, settled: bool, _key: str):
-    """缓存键 = (交易日, 是否已定格)：交易日一变就重取，定格后再重取一次做口径检查。"""
+def _klines(trade_date: date, settled: bool):
+    """缓存键 = (交易日, 是否已定格)：交易日一变就重取，定格后再重取一次做口径检查。
+    任一只失败就抛 _Uncached（不进缓存）：否则一次抖动就把「没有上一交易日」钉 24 小时。"""
     sh = sources.fetch(live.HTTP_GET, sources.tencent_kline_url("sh000001"),
                        lambda raw: sources.parse_tencent_kline(raw, "sh000001"))
     sz = sources.fetch(live.HTTP_GET, sources.tencent_kline_url("sz399001"),
                        lambda raw: sources.parse_tencent_kline(raw, "sz399001"))
-    return (sh.value, sz.value) if sh.ok and sz.ok else None
+    if not (sh.ok and sz.ok):
+        raise _Uncached(None)
+    return sh.value, sz.value
 
 
 def _prev_day(trade_date: date, quotes, source: str, now: datetime, today: date):
     settled = turnover.settled(now, trade_date, today)
-    bars = _klines(trade_date, settled, "v1")
-    if bars is None:
+    try:
+        sh, sz = _klines(trade_date, settled)
+    except _Uncached:
         return None, None
-    sh, sz = bars
     prev = turnover.previous_day(sh, sz, trade_date)
     pct_ok = None
     if settled and source == "tencent":
@@ -168,23 +204,28 @@ def _prev_day(trade_date: date, quotes, source: str, now: datetime, today: date)
 
 # ---------------------------------------------------------------- 行情区（两个 fragment）
 INTERVAL_KEY = "home_interval"      # session_state：fragment 用真实快照判出的间隔，页面据此选 fragment
+RERUN_GUARD = "home_rerun_guard"    # session_state：这一跳已经整页重跑过一次
 
 
 def _render_live(expected_interval: int, expected_key: str) -> None:
-    hint = _hint()
-    snap = _snapshot(_remembered_decision(), hint)   # 缓存入口与 allow_cross_day 用上一轮的真实判定
-    decision, _ = _decide(snap)                      # 用真实源日期重判
+    cal = _calendar()
+    hint = _hint(cal)
+    snap = _snapshot(_remembered_decision(cal), hint)   # 缓存入口与 allow_cross_day 用上一轮的真实判定
+    decision, _ = _decide(snap, cal)                    # 用真实源日期重判
     st.session_state[DECISION_KEY] = (decision.state.value, decision.interval_s, decision.cache_ttl)
+    # 每轮都记下想要的间隔：页面按它选 fragment。没有日历的休市日，_decide(None) 是「未知」
+    # （30 秒行）而 _decide(snap) 是「休市」（60 秒行），不记下来的话整页重跑后又选回 30 秒。
+    st.session_state[INTERVAL_KEY] = decision.interval_s
     if decision.interval_s != expected_interval or _job_key() != expected_key:
-        # 状态/间隔变了，或跨过了收盘数据就绪时刻 → 记下想要的间隔再整页重跑。
-        # 页面按 session_state 选 fragment，所以下一轮两边一致、不会来回 rerun：
-        # 没有日历的休市日，_decide(None) 是「未知」（30 秒行）而 _decide(snap) 是「休市」
-        # （60 秒行），不记下来的话就会无限重跑。
-        st.session_state[INTERVAL_KEY] = decision.interval_s
-        st.rerun()
+        # 间隔变了，或跨过了收盘数据就绪时刻 → 整页重跑换 fragment。**每一跳至多一次**：
+        # 重跑后那一轮碰巧失败时判定会翻回去，再重跑就是死循环；这一跳先照常画完，下一跳自愈。
+        if not st.session_state.get(RERUN_GUARD):
+            st.session_state[RERUN_GUARD] = True
+            st.rerun()
+    st.session_state.pop(RERUN_GUARD, None)
     _status(decision, snap)
     _index_cards(snap)
-    _turnover(snap, decision)
+    _turnover(snap)
     _breadth_and_thermo(snap, decision)          # Task 22
 
 
@@ -203,12 +244,12 @@ def _page_interval() -> int:
     remembered = st.session_state.get(INTERVAL_KEY)
     if remembered in (session.LIVE_INTERVAL_S, session.TICK_INTERVAL_S):
         return remembered
-    return _decide(None)[0].interval_s
+    return _decide(None, _calendar())[0].interval_s
 
 
 def _job_key() -> str:
     """按钮区状态的粗粒度键：跨过 BREADTH_READY 时它会变，行情 fragment 据此整页重跑。"""
-    return "ready" if market.now().time() >= market.BREADTH_READY else "early"
+    return "ready" if market.breadth_ready(market.now()) else "early"
 
 
 def _breadth_and_thermo(snap, decision) -> None:     # Task 22 填

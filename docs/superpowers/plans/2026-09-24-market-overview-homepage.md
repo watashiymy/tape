@@ -4222,6 +4222,17 @@ git add app/pages_home.py tests/test_dashboard_home.py
 git commit -m "feat(home): 行情区——状态条、六张指数卡片（分时小图）、两市成交额；30/60 秒 fragment 与两个缓存入口"
 ```
 
+**评审后修订（已实现，以代码为准）**
+
+- **失败轮不进缓存**：两个缓存入口共用的 `_round` 在 `fetch_round` 之后判 `not source_ok or quotes is None or quotes.fallback`，命中就抛模块私有的 `_Uncached(snap)`（`st.cache_data` 在函数抛异常时什么都不存），`_snapshot` 接住返回 `e.snap`。`_klines` 任一只失败同样抛 `_Uncached`，`_prev_day` 接住返回 `(None, None)`——不再把失败钉 25/600 秒或 24 小时。
+- **每一跳至多一次整页重跑**：`RERUN_GUARD = "home_rerun_guard"`，重跑前置位、正常画完时清掉；`INTERVAL_KEY` 每轮都写（不只在重跑前写）。重跑后那一轮碰巧失败时这一跳照常画完，下一跳自愈，不再无限重跑。
+- **`session.is_stale(now, state, last_point, quote_ts)`**：只在 `State.TRADING` 判（§4.2：「数据延迟」只叠加在交易中上；§4.3：收盘后不判），连续竞价时钟段是第二道闸。
+- **判断移出页面（§7）**：`session.stamp_kind(state)`（`"date"` / `"minute"` / `"quote"`，状态条拼哪种戳）、`session.allow_cross_day(state)`、`session.is_live(state)`（琥珀 pill）、`market.breadth_ready(now)`（`_job_key` 用），表格测试在 `tests/test_market_session.py`。状态未知也显示数据自己的日期。
+- **`_fallback_note(block)`**：比较 `block.trade_date` 与 `market.now().date()`（不是 `snap.trade_date`——失败那轮它是从 store 抄来的），跨日戳写 `9 月 24 日 HH:MM`（月日不补零，同 `turnover._day`）。Task 22 的两处调用已同步成单参数。
+- **去掉无效的 `_key="v1"` 参数**：下划线开头的参数本来就不进缓存键，`st.cache_data` 也已经哈希函数源码。
+- **`turnover.line(..., current_ts=None, ...)`**：盘中没有行情时刻就不写「（截至 …）」，页面不再拿渲染时刻顶替；`_turnover(snap)` 去掉没用的 `decision` 参数，先判 `amount_wan <= 0` 再求和。
+- 文案：指数区标题改用 `guide.HOME_INDEX_TITLE = "指数行情"`。
+
 ### Task 22: pages_home.py — 涨跌分布 + 涨停温度计 [D]
 
 **Files:**
@@ -4305,7 +4316,7 @@ def _distribution(snap: live.LiveSnapshot, decision: Decision) -> None:
     if b is None:
         st.caption(guide.HOME_UNAVAILABLE)
         return
-    if note := _fallback_note(b, snap.trade_date):
+    if note := _fallback_note(b):
         st.caption(note)
     v = b.value
     up, flat, down = v.up, v.flat, v.down
@@ -4328,7 +4339,7 @@ def _thermometer(snap: live.LiveSnapshot) -> None:
     if t is None:
         st.caption(guide.HOME_UNAVAILABLE)
         return
-    if note := _fallback_note(t, snap.trade_date):
+    if note := _fallback_note(t):
         st.caption(note)
     v: live.Thermo = t.value
     denom = v.zt_tc + v.zb_tc

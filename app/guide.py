@@ -475,6 +475,7 @@ HOME_HELP = {
 }
 HOME_TURNOVER_HELP = "上证 + 深证成指的成交额，即沪深两市全部。盘中不给「较上一交易日」的百分比：半天比全天没有意义。"
 HOME_FOOTER = "盘中数据来自门户网站公开行情，可能有几秒延迟。"
+HOME_INDEX_TITLE = "指数行情"
 HOME_TREND_TITLE = "趋势宽度"
 HOME_TREND_ASOF = "收盘数据截至 {day} · " + HOME_SCOPE_TREND
 HOME_TREND_NEVER = _f("趋势宽度需要约一年的收盘数据。第一次准备需要 {breadth_first_run}，可随时停止、下次接着补。")   # FACTS 值自带「约」

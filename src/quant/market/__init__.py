@@ -24,3 +24,8 @@ def now() -> datetime:
     """页面与任务取当前时刻的唯一入口。全项目假定本机时钟即北京时间。
     测试 monkeypatch 这一个函数就能冻结整页的时钟（spec §8「全局隔离」）。"""
     return datetime.now()
+
+
+def breadth_ready(now: datetime) -> bool:
+    """收盘数据（baostock 快照）此刻是否已到就绪时刻 BREADTH_READY。"""
+    return now.time() >= BREADTH_READY

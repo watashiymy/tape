@@ -1,7 +1,8 @@
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 
 import pytest
 
+from quant import market
 from quant.market import session
 from quant.market.session import Calendar, State, TradeDay
 
@@ -80,18 +81,18 @@ def test_transitions_change_the_decision(a, b, changes):
 def test_stale_by_last_minute_point():
     # 最后一点标 10:00（表示 09:59-10:00 那分钟，数据新到 09:59）：
     # 10:02:00 → 落后 180 秒，不算；10:02:01 → 181 秒 → 延迟
-    assert session.is_stale(at(10, 2, 1), at(10, 0), None) is True
-    assert session.is_stale(at(10, 2, 0), at(10, 0), None) is False
+    assert session.is_stale(at(10, 2, 1), State.TRADING, at(10, 0), None) is True
+    assert session.is_stale(at(10, 2, 0), State.TRADING, at(10, 0), None) is False
 
 
 def test_stale_falls_back_to_quote_timestamp_when_no_minute():
-    assert session.is_stale(at(10, 3, 0), None, at(10, 0, 59)) is True
-    assert session.is_stale(at(10, 1, 0), None, at(10, 0, 0)) is False
+    assert session.is_stale(at(10, 3, 0), State.TRADING, None, at(10, 0, 59)) is True
+    assert session.is_stale(at(10, 1, 0), State.TRADING, None, at(10, 0, 0)) is False
 
 
 def test_stale_direction_is_not_reversed():
     """数据时刻晚于现在（时钟不同步）绝不能判成延迟。"""
-    assert session.is_stale(at(10, 0), at(10, 5), None) is False
+    assert session.is_stale(at(10, 0), State.TRADING, at(10, 5), None) is False
 
 
 def test_stale_last_point_from_a_previous_day_is_always_stale():
@@ -99,17 +100,31 @@ def test_stale_last_point_from_a_previous_day_is_always_stale():
     永远判不出过期。现在 last_point 是完整日期时刻，昨天收盘的点摆到今天早盘必须判延迟。"""
     yesterday_close = datetime.combine(WED, time(15, 0))
     next_day_935 = datetime.combine(date(2026, 9, 24), time(9, 35))
-    assert session.is_stale(next_day_935, yesterday_close, None) is True
+    assert session.is_stale(next_day_935, State.TRADING, yesterday_close, None) is True
 
 
 @pytest.mark.parametrize("now", [at(9, 20), at(9, 30, 30), at(12, 0), at(14, 58), at(15, 10)])
 def test_stale_is_only_judged_in_continuous_auction(now):
-    assert session.is_stale(now, at(9, 0), at(9, 0)) is False
+    """第二道闸：状态说「交易中」，时钟不在连续竞价段里也不判（9:30 开盘第一分钟、14:57 以后的收盘竞价）。"""
+    assert session.is_stale(now, State.TRADING, at(9, 0), at(9, 0)) is False
+
+
+@pytest.mark.parametrize("state", [s for s in State if s is not State.TRADING])
+def test_stale_is_only_judged_while_trading(state):
+    """§4.2：「数据延迟」只叠加在「交易中」上。休市日 10:15 的分时停在最近交易日 15:00，
+    只看时钟的话会一直挂着「数据延迟」；未知/盘前/午休……同理都不判。"""
+    hour_old = at(10, 15) - timedelta(hours=1)
+    assert session.is_stale(at(10, 15), state, hour_old, hour_old) is False
+
+
+def test_stale_while_trading_is_the_positive_control():
+    hour_old = at(10, 15) - timedelta(hours=1)
+    assert session.is_stale(at(10, 15), State.TRADING, hour_old, hour_old) is True
 
 
 def test_stale_quote_ts_boundary_at_exactly_120s():
-    assert session.is_stale(at(10, 2, 0), None, at(10, 0, 0)) is False    # 恰好 120 秒：不算
-    assert session.is_stale(at(10, 2, 1), None, at(10, 0, 0)) is True     # 121 秒：延迟
+    assert session.is_stale(at(10, 2, 0), State.TRADING, None, at(10, 0, 0)) is False    # 恰好 120 秒：不算
+    assert session.is_stale(at(10, 2, 1), State.TRADING, None, at(10, 0, 0)) is True     # 121 秒：延迟
 
 
 def test_in_continuous_auction_boundary_at_lunch_end():
@@ -141,3 +156,34 @@ def test_expected_trade_day_falls_back_to_last_known_when_calendar_has_no_earlie
     cal = Calendar(first=WED, last=date(2026, 10, 31), trading=frozenset())
     last_known = date(2026, 9, 20)
     assert session.expected_trade_day(None, cal, time(10, 0), last_known, today=WED) == last_known
+
+
+# ---------------------------------------------------------------- 按状态的页面规则（§3、§4.2、§4.3）
+# (状态, 允许跨交易日旧值, 状态条琥珀 running, 状态条戳的种类)
+PAGE_RULES = [
+    (State.CLOSED_DAY, True, False, "date"),
+    (State.PRE_OPEN, True, False, "date"),
+    (State.AUCTION, False, True, "quote"),
+    (State.WAIT_OPEN, False, True, "quote"),
+    (State.TRADING, False, True, "quote"),
+    (State.LUNCH, True, False, "minute"),
+    (State.CLOSED, True, False, "date"),
+    (State.UNKNOWN, True, False, "date"),
+]
+
+
+def test_page_rules_table_covers_every_state():
+    assert {row[0] for row in PAGE_RULES} == set(State)
+
+
+@pytest.mark.parametrize("state,cross_day,live,stamp", PAGE_RULES)
+def test_page_rules_per_state(state, cross_day, live, stamp):
+    assert session.allow_cross_day(state) is cross_day
+    assert session.is_live(state) is live
+    assert session.stamp_kind(state) == stamp
+
+
+def test_breadth_ready_flips_exactly_at_the_constant():
+    ready = datetime.combine(WED, market.BREADTH_READY)
+    assert market.breadth_ready(ready) is True
+    assert market.breadth_ready(ready - timedelta(seconds=1)) is False

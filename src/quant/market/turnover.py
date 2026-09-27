@@ -49,11 +49,14 @@ def _day(d: date) -> str:
     return f"{d.month} 月 {d.day} 日"
 
 
-def line(now: datetime, today: date, trade_date: date, current_wan: float, current_ts: time,
+def line(now: datetime, today: date, trade_date: date, current_wan: float, current_ts: time | None,
          prev: DailyBar | None, pct_ok: bool | None) -> str:
+    """`current_ts` 是行情自带的时刻；没有就不写「（截至 …）」——不拿渲染时刻顶替。"""
     intraday = trade_date == today and now.time() < CLOSE
     if intraday:
-        head = f"两市成交额 {_wan_yi(current_wan)}（截至 {current_ts:%H:%M}）"
+        head = f"两市成交额 {_wan_yi(current_wan)}"
+        if current_ts is not None:
+            head += f"（截至 {current_ts:%H:%M}）"
     else:
         head = f"两市成交额 {_day(trade_date)}全天 {_wan_yi(current_wan)}"
     if prev is None:

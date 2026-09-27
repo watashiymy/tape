@@ -68,3 +68,10 @@ def test_holiday_shows_two_full_days_from_the_data_date():
 def test_missing_previous_day_shows_only_the_current_value():
     assert turnover.line(datetime(2026, 9, 24, 12, 0), D24, D24, 1.47e8, time(11, 30), None, None) \
         == "两市成交额 1.47 万亿（截至 11:30）"
+
+
+def test_intraday_without_a_quote_timestamp_omits_the_as_of_part():
+    """行情没带时间戳时不编一个出来（不拿渲染时刻顶替，§4.3「时刻一律用数据源自带的」）。"""
+    text = turnover.line(datetime(2026, 9, 24, 10, 0), D24, D24, 1.47e8, None,
+                         DailyBar(D23, 2.14e8), None)
+    assert text == "两市成交额 1.47 万亿 · 9 月 23 日全天 2.14 万亿"

@@ -125,11 +125,17 @@ def in_continuous_auction(now_t: time) -> bool:
     return any(a <= now_t < b for a, b in CONTINUOUS)
 
 
-def is_stale(now: datetime, last_point: datetime | None, quote_ts: datetime | None) -> bool:
-    """§4.3：只在连续竞价时段判；分时最后一点优先，拿不到才看行情时间戳。方向：数据落后于现在。
+def is_stale(now: datetime, state: State, last_point: datetime | None,
+             quote_ts: datetime | None) -> bool:
+    """§4.3 的过期判据。「数据延迟」是**只叠加在「交易中」上**的标记（§4.2）：
+    其余状态一律不判——休市日/盘前的分时停在最近交易日 15:00，只看时钟会一直挂着「延迟」；
+    收盘后不判（§4.3：收盘后腾讯、新浪的时间戳跟着请求时刻走，已说明不了新旧）。
+    第二道闸是时钟：只在连续竞价段（9:31–11:30、13:01–14:57）里判。
+
+    分时最后一点优先，拿不到才看行情时间戳。方向：数据落后于现在。
     `last_point` 是分时最后一点的**完整日期时刻**（调用方用 `datetime.combine(minute.trade_date,
     points[-1][0])` 拼出来）——只传 `time` 会在跨交易日时把昨天的点当成今天的，永远判不出过期。"""
-    if not in_continuous_auction(now.time()):
+    if state is not State.TRADING or not in_continuous_auction(now.time()):
         return False
     if last_point is not None:
         # 分时点按分钟**结束**时刻标注，所以那一分钟的数据其实新到 (last_point − 1 分钟)
@@ -138,6 +144,34 @@ def is_stale(now: datetime, last_point: datetime | None, quote_ts: datetime | No
     if quote_ts is not None:
         return (now - quote_ts).total_seconds() > STALE_QUOTE_S
     return False
+
+
+# ---------------------------------------------------------------- 按状态的页面规则
+# 页面只排版（§7）：「交易时段」这组状态各处都要用，判断留在这里，页面不自己列枚举。
+_LIVE_STATES = frozenset({State.AUCTION, State.WAIT_OPEN, State.TRADING})
+
+
+def is_live(state: State) -> bool:
+    """集合竞价、待开盘、交易中：行情在动。状态条的 pill 用琥珀（running）。"""
+    return state in _LIVE_STATES
+
+
+def allow_cross_day(state: State) -> bool:
+    """§3：交易时段里不显示跨交易日的最近成功值（直接「暂不可用」）；其余状态允许。"""
+    return state not in _LIVE_STATES
+
+
+def stamp_kind(state: State) -> str:
+    """状态条上状态文字后面拼哪种戳（§4.2 表格的「状态」列）：
+    - ``"date"``：已收盘、休市、盘前、状态未知——显示数据自己的日期（腾讯与新浪的时间戳在
+      收盘后会跟着请求时刻走，拿它当时刻是误导）；
+    - ``"minute"``：午间休市——显示分时最后一点（11:30）；
+    - ``"quote"``：集合竞价、待开盘、交易中——显示行情时间戳（时:分:秒）。"""
+    if state is State.LUNCH:
+        return "minute"
+    if state in _LIVE_STATES:
+        return "quote"
+    return "date"
 
 
 def expected_trade_day(source_date: date | None, calendar: Calendar | None, now_t: time,
