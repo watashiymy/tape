@@ -96,9 +96,8 @@ NAME_LOOKBACK_FILES = 30
 # 按 AST 读这个字典的键（`k.value`），推导式里的键在 AST 里是 None，那条测试会
 # 以 AttributeError 炸掉——而它守的正是"每页都有页头文案"这件事。
 PAGE_INTRO = {
-    # 字面量：guide.HOME_LEAD 要到 Task 19 才定义（届时这里换成引用它）。
     # 硬约束：不能含「今天」/「今日」（test_home_copy_never_says_today）。
-    "市场概览": "指数行情、涨跌分布、涨停温度计与趋势宽度：一眼看懂市场。",
+    "市场概览": guide.HOME_LEAD,
     "使用说明": guide.guide_page("guide").lead,
     "读懂回测": guide.guide_page("guide_metrics").lead,
     "边界与安全": guide.guide_page("guide_limits").lead,

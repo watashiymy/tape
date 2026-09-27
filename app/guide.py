@@ -22,8 +22,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from quant import market as _market
+
 # README 里对应这份说明的一节；tests 按它定位那一节做数字对账。
 README_SECTION = "面板使用说明页"
+
+#: 「趋势宽度」收盘数据就绪时刻的显示形式。**唯一出处**：quant.market.BREADTH_READY
+#: （任务脚本也引用它，改一处两边同步）。quant 是已装的 editable install，
+#: quant.market.__init__ 不带重依赖，guide.py 本身仍不依赖 streamlit。
+_BREADTH_READY = _market.BREADTH_READY.strftime("%H:%M")
 
 # ---------------------------------------------------------------- 实测事实
 # 回测那一组来自 README「① 回测」的实测表格（区间 2016-01-04 ~ 2026-08-24，
@@ -78,6 +85,9 @@ FACTS: dict[str, str] = {
     # —— 时间与门槛
     "data_ready": "17:30", "safe_time": "18:30", "limit_max": "10000",
     "slippage": "0.1%", "rf_real": "1.5–2%", "csi300_drag": "2–3%",
+    # —— 首页「趋势宽度」的收盘数据（另一个接口，就绪时刻单独定；Task 26 按实测改）
+    "breadth_ready": _BREADTH_READY,      # 引用 quant.market.BREADTH_READY，见文件顶部
+    "breadth_first_run": "约 100 分钟",   # 首次准备 310 天 × 约 20 秒（实测后改）
 }
 
 
@@ -440,6 +450,41 @@ PIPELINE_MANUAL_HELP = (
 PIPELINE_MANUAL_NOTE = "扫描只报「技术条件满足」，值不值得跟踪要你自己判断。"
 
 
+# ---------------------------------------------------------------- 市场概览（首页）
+HOME_LEAD = "指数行情、涨跌分布、涨停温度计与趋势宽度：一眼看懂市场。"
+HOME_STATE_TEXT = {           # session.State → 状态条文案；时刻/日期由页面拼在后面
+    "closed_day": "休市", "pre_open": "盘前", "auction": "集合竞价", "wait_open": "待开盘",
+    "trading": "交易中", "lunch": "午间休市", "closed": "已收盘", "unknown": "状态未知",
+}
+HOME_STALE = "数据延迟"
+HOME_UNAVAILABLE = "暂不可用"
+HOME_COUNTS_ONLY = "分布图暂不可用，此刻只有涨跌家数"
+HOME_FALLBACK = "暂时取不到，以下是 {stamp} 的数据"
+HOME_SCOPE_TREND = "沪深 A 股，不含 ST 与当日停牌；每项只统计交易天数足够的股票"
+HOME_BUCKET_NOTE = ("区间按涨跌幅绝对值划分，如 0～1% 含 1%；9% 以上合为一档；"
+                    "涨停/跌停单列，只计{sealed}的；平盘指涨跌幅恰为 0。")
+HOME_SEALED_INTRADAY, HOME_SEALED_CLOSE = "封住涨停/跌停", "收盘封住"
+HOME_HELP = {
+    "limit_up": "收盘（或此刻）封在涨停价上的股票只数。越多说明追涨的资金越活跃。",
+    "limit_down": "封在跌停价上的只数。突然增多往往意味着恐慌在扩散。",
+    "zb_rate": "炸板 = 盘中碰到过涨停、收盘没封住。炸板率 = 炸板 ÷（涨停 + 炸板），越高说明追高的人越容易被套。",
+    "max_lbc": "连板 = 连续几个交易日涨停。最高连板越高，短线情绪越热。",
+    "above_ma": "收盘价高于自己近 N 日均价的股票占比。过半说明多数股票处在上升段，反之则是普跌。",
+    "high_low": "收盘价创近 52 周新高 / 新低的只数。新高多、新低少是强势市场的特征。",
+    "buckets": "把全部股票按涨跌幅分成 23 档，一眼看出是普涨、普跌还是分化。",
+}
+HOME_TURNOVER_HELP = "上证 + 深证成指的成交额，即沪深两市全部。盘中不给「较上一交易日」的百分比：半天比全天没有意义。"
+HOME_FOOTER = "盘中数据来自门户网站公开行情，可能有几秒延迟。"
+HOME_TREND_TITLE = "趋势宽度"
+HOME_TREND_ASOF = "收盘数据截至 {day} · " + HOME_SCOPE_TREND
+HOME_TREND_NEVER = _f("趋势宽度需要约一年的收盘数据。第一次准备需要 {breadth_first_run}，可随时停止、下次接着补。")   # FACTS 值自带「约」
+HOME_TREND_NOT_READY = _f("{{day}} 的收盘数据约 {breadth_ready} 后可更新")   # {{day}} 留给页面 .format(day=…)
+HOME_TREND_BUSY = "有任务在运行，稍后再更新"
+HOME_TREND_SHORT = "还差约 {n} 天的收盘数据，点「更新收盘数据」继续"
+HOME_TREND_GAP = "数据源缺 {days} 的数据，这几项要等窗口滚过它才有"
+HOME_BTN_START, HOME_BTN_UPDATE, HOME_BTN_STOP = "开始准备", "更新收盘数据", "停止"
+
+
 # ---------------------------------------------------------------- 就地帮助（§3.2）
 
 # 任务卡片右上角 st.popover("?") 的内容：这个任务做什么、大概多久、结果在哪看。
@@ -475,10 +520,15 @@ JOB_HELP: dict[str, str] = {
 - **什么时候跑**：改了策略参数之后。不依赖当日数据，随时能跑。
 - **结果在哪**：每个策略一组指标卡在这张卡片里；完整报告在「回测报告」与「个股K线」两页。
 """),
-    # 占位——Task 19 换成正式文案。控件不在控制台（app/pages_console.py 的
-    # _ELSEWHERE），在「市场概览」页；这条键仍须在，测试按 JOBS 的键全覆盖钉住。
-    "market_breadth": "**更新收盘数据**——首页「趋势宽度」的数据来源。\n\n"
-                      "- **做什么**：占位\n- **多久**：占位\n- **结果在哪**：首页。\n",
+    # 控件不在控制台（app/pages_console.py 的 _ELSEWHERE），在「市场概览」页；
+    # 这条键仍须在 JOB_HELP 里，测试按 JOBS 的键全覆盖钉住。
+    "market_breadth": _f("""**更新收盘数据**——首页「趋势宽度」的数据来源。
+
+- **做什么**：向数据源要全沪深每只股票的当日收盘数据，逐日存下，算出站上均线的占比与 52 周新高/新低。
+- **多久**：每个交易日一次约 20 秒；第一次要补一年左右的历史，需要 {breadth_first_run}，可随时停止、下次接着补。
+- **什么时候跑**：交易日 {breadth_ready} 之后才有当天的数据；早点了也不会失败，只是补不到当天。
+- **结果在哪**：首页「趋势宽度」那四张卡片。
+"""),
 }
 
 # 参数控件的 help= tooltip。键是 (任务名, 参数名)，必须覆盖 JOBS 里每个 Param

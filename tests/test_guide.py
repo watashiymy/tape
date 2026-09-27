@@ -63,6 +63,9 @@ def _all_text() -> str:
     # 信号池页那两段（v0.2.2 M3 §3.4）：底部"改动写到哪里"的说明与候选清单的代价。
     parts += [guide.POOL_NOTE, guide.POOL_LOAD_HINT]
     parts += [p.lead for p in guide.GUIDE_PAGES]
+    parts += [v for name in dir(guide) if name.startswith("HOME_")
+              for v in ([getattr(guide, name)] if isinstance(getattr(guide, name), str)
+                        else list(getattr(guide, name).values()) if isinstance(getattr(guide, name), dict) else [])]
     return "\n".join(parts)
 
 
@@ -651,7 +654,7 @@ def _user_copy() -> dict[str, str]:
     out |= {f"table_hint:{k}": v for k, v in guide.TABLE_HINTS.items()}
     out |= {f"empty:{k}": v for k, v in guide.EMPTY_STATES.items()}
     out |= {name: getattr(guide, name) for name in dir(guide)
-            if name.startswith(("JOURNAL_", "POOL_", "CONSOLE_", "PIPELINE_"))
+            if name.startswith(("JOURNAL_", "POOL_", "CONSOLE_", "PIPELINE_", "HOME_"))
             and isinstance(getattr(guide, name), str)}
     out["pool_source_note:default"] = guide.pool_source_note(None)
     return out
@@ -729,3 +732,43 @@ def test_flow_of_nothing_renders_nothing():
 def test_flow_classes_have_css_rules(cls):
     """构造出来的类名在 CSS 里必须真有规则，否则闭环图就是一行裸文字。"""
     assert f".{cls} {{" in theme.CSS
+
+
+# ================================================================ 首页文案（HOME_，Task 19）
+
+import re as _re
+
+
+def test_home_state_text_covers_every_state_enum():
+    from quant.market.session import State
+    assert set(guide.HOME_STATE_TEXT) == {s.value for s in State}     # 键是枚举的 .value（字符串）
+
+
+def test_home_help_covers_the_terms_on_the_page():
+    for key in ("limit_up", "limit_down", "zb_rate", "max_lbc", "above_ma", "high_low", "buckets"):
+        assert 10 < len(guide.HOME_HELP[key]) < 200, key
+
+
+HOME_FORBIDDEN = ("今天", "今日")
+
+
+def test_home_copy_never_says_today():
+    """首页文案一律写具体日期或时刻（spec §4.4）。只扫 HOME_ 与 market_breadth 的帮助，
+    **不改 IMPLEMENTATION_TOKENS**：其他页的文案里「今天」本来就合理。"""
+    texts = {name: getattr(guide, name) for name in dir(guide) if name.startswith("HOME_")}
+    texts["job_help:market_breadth"] = guide.JOB_HELP["market_breadth"]
+    flat = {}
+    for name, v in texts.items():
+        if isinstance(v, str):
+            flat[name] = v
+        elif isinstance(v, dict):
+            flat |= {f"{name}[{k}]": s for k, s in v.items() if isinstance(s, str)}
+    for name, text in flat.items():
+        for w in HOME_FORBIDDEN:
+            assert w not in text, f"{name} 里出现了「{w}」：{text!r}"
+
+
+def test_breadth_facts_reference_the_single_source():
+    from quant import market
+    assert guide.FACTS["breadth_ready"] == market.BREADTH_READY.strftime("%H:%M")
+    assert "分钟" in guide.FACTS["breadth_first_run"]
