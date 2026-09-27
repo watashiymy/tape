@@ -255,8 +255,61 @@ def _job_key() -> str:
     return "ready" if market.breadth_ready(market.now()) else "early"
 
 
-def _breadth_and_thermo(snap, decision) -> None:     # Task 22 填
-    pass
+def _breadth_and_thermo(snap: live.LiveSnapshot, decision: Decision) -> None:
+    left, right = st.columns([1.4, 1])
+    with left:
+        _distribution(snap, decision)
+    with right:
+        _thermometer(snap)
+
+
+def _distribution(snap: live.LiveSnapshot, decision: Decision) -> None:
+    b = snap.breadth
+    scope = b.scope if b is not None else ""
+    st.html(theme.section(guide.HOME_DIST_TITLE, theme.pill(scope, "idle") if scope else ""))
+    if b is None:
+        st.caption(guide.HOME_UNAVAILABLE)
+        return
+    if note := _fallback_note(b):
+        st.caption(note)
+    v = b.value
+    up_label, flat_label, down_label = guide.HOME_COUNT_LABELS
+    up, flat, down = v.up, v.flat, v.down
+    st.html(f'<div class="qd-card-sub">'
+            f'<span class="qd-up">{up_label} {up}</span> · {flat_label} {flat} · '
+            f'<span class="qd-down">{down_label} {down}</span></div>')
+    st.html(theme.stat_card("", "", img=minicharts.ratio_bar(up, flat, down)))
+    if isinstance(v, sources.Distribution):
+        st.html(theme.stat_card("", "", img=minicharts.histogram(v.buckets)))
+        sealed = (guide.HOME_SEALED_CLOSE if decision.state in (State.CLOSED, State.CLOSED_DAY)
+                  else guide.HOME_SEALED_INTRADAY)
+        st.caption(guide.HOME_BUCKET_NOTE.format(sealed=sealed), help=guide.HOME_HELP["buckets"])
+    else:
+        st.caption(guide.HOME_COUNTS_ONLY)        # 腾讯兜底：只有家数，画不了分布图
+
+
+def _thermometer(snap: live.LiveSnapshot) -> None:
+    st.html(theme.section(guide.HOME_THERMO_TITLE, theme.pill(guide.HOME_THERMO_PILL, "idle")))
+    t = snap.thermo
+    if t is None:
+        st.caption(guide.HOME_UNAVAILABLE)
+        return
+    if note := _fallback_note(t):
+        st.caption(note)
+    v: live.Thermo = t.value
+    denom = v.zt_tc + v.zb_tc
+    rate = fmt.MISSING if denom == 0 else f"{100 * v.zb_tc / denom:.1f}%"
+    lbc = fmt.MISSING if v.max_lbc is None else guide.HOME_LBC.format(n=v.max_lbc)
+    labels = guide.HOME_THERMO_LABELS
+    c1, c2 = st.columns(2)
+    c1.html(theme.stat_card(labels["limit_up"], str(v.limit_up), color=fmt.UP))    # 没有副文 → 颜色上数值（Task 20）
+    c2.html(theme.stat_card(labels["limit_down"], str(v.limit_down), color=fmt.DOWN))
+    c3, c4 = st.columns(2)
+    c3.html(theme.stat_card(labels["zb_rate"], rate, note=guide.HOME_ZB_COUNT.format(n=v.zb_tc)))
+    c4.html(theme.stat_card(labels["max_lbc"], lbc))
+    with st.popover("?"):
+        for key in ("limit_up", "limit_down", "zb_rate", "max_lbc"):
+            st.markdown(guide.HOME_HELP[key])
 
 
 def _first_run_hint() -> None:

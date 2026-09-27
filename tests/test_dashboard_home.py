@@ -23,7 +23,7 @@ from quant import market
 from quant.market import live, session, sources
 from quant.market.sources import FetchError
 from quant.runner import process
-from tests.conftest import app_module, copy_app, fixture_http_get
+from tests.conftest import FIXTURES_MARKET, app_module, copy_app, fixture_http_get
 
 HOME = "市场概览"
 TENCENT_QUOTES, SINA_QUOTES = "qt.gtimg.cn/q=", "hq.sinajs.cn"   # 离线替身按这两个片段认 URL
@@ -216,7 +216,11 @@ def test_unknown_to_trading_on_the_same_interval_drops_the_previous_days_fallbac
     assert "交易中" in _status(at)
     head, _ = _fallback_parts()
     assert not [c for c in _captions(at) if c.startswith(head)], _captions(at)
-    assert not [h for h in _htmls(at) if 'class="qd-card"' in h]
+    # 只有指数卡片是「跨日丢块」看的对象；涨跌分布/涨停温度计走独立数据源，qd-card 类名
+    # 是共用的样式，不能拿来当「指数区没画」的证据（Task 22 起温度计也用同一个类）。
+    cards = [h for h in _htmls(at) if 'class="qd-card"' in h]
+    names = [n for _, n in market.INDEXES]
+    assert not any(n in c for c in cards for n in names), cards
     assert app_module("guide").HOME_UNAVAILABLE in _captions(at)
 
 
@@ -398,3 +402,89 @@ def test_cache_entries_have_no_spinner():
     decorators = [ln for ln in src.splitlines() if "@st.cache_data(" in ln]
     assert len(decorators) >= 3, decorators        # 25 秒 / 600 秒 / 日 K
     assert all("show_spinner=False" in ln for ln in decorators), decorators
+
+
+# ---------------------------------------------------------------- 涨跌分布 + 涨停温度计
+def test_distribution_block_counts_add_up_to_the_histogram(tmp_path):
+    at = _home(tmp_path)
+    htmls = _htmls(at)
+    dist = next(h for h in htmls if "涨跌分布" in h)
+    body = " ".join(htmls) + " ".join(_captions(at))
+    assert "上涨" in body and "下跌" in body and "平盘" in body
+    assert body.count('qd-card-img') >= 7, "6 张指数小图 + 1 幅分布柱状图（+ 比例条）"
+    assert "沪深京 A 股，不含 ST 与停牌股" in body
+    assert dist
+
+
+def test_thermometer_shows_four_readings_and_a_dash_for_zero_division(tmp_path, monkeypatch):
+    at = _home(tmp_path)
+    body = " ".join(_htmls(at))
+    for label in ("涨停", "跌停", "炸板率", "最高连板"):
+        assert label in body
+
+    def empty_pools(url, headers=None):
+        if "Pool" in url:
+            return b'{"rc":0,"data":{"tc":0,"pool":[],"qdate":"20260924"}}'
+        return fixture_http_get(url, headers)
+    monkeypatch.setattr(live, "HTTP_GET", empty_pools)
+    st.cache_data.clear()
+    live.STORE.reset()
+    at2 = _home(tmp_path)
+    body2 = " ".join(_htmls(at2)) + " ".join(_captions(at2))
+    # 池子空、分布 +11 档 > 0 → 日期对不上 → 分布与温度计整块「暂不可用」，不显示 0%
+    assert "暂不可用" in body2 and "0.0%" not in body2
+
+
+def test_thermometer_zb_rate_is_a_dash_when_pools_are_legitimately_empty(tmp_path, monkeypatch):
+    """涨停池、炸板池都真的是空的（zt_tc = zb_tc = 0），且分布 +11 档同样是 0——跟池子对得上，
+    整块正常取到（不是「暂不可用」）。炸板率此时是 0÷0，必须显示 —，不能显示 0.0%，
+    也不能让页面直接炸掉（ZeroDivisionError）。"""
+    import json
+    fixtures = FIXTURES_MARKET
+    fenbu = json.loads((fixtures / "em_fenbu.bin").read_bytes())
+    for item in fenbu["data"]["fenbu"]:
+        if "11" in item:
+            item["11"] = 0
+        if "0" in item:
+            item["0"] += 52         # 挪给平盘档，合计不变，仍在 [4000, 7000] 校验范围内
+    zero_fenbu = json.dumps(fenbu).encode()
+    empty_pool = b'{"rc":0,"data":{"tc":0,"pool":[]}}'
+
+    def http_get(url, headers=None):
+        if "getTopicZDFenBu" in url:
+            return zero_fenbu
+        if "Pool" in url:
+            return empty_pool
+        return fixture_http_get(url, headers)
+    monkeypatch.setattr(live, "HTTP_GET", http_get)
+    st.cache_data.clear()
+    live.STORE.reset()
+    at = _home(tmp_path)
+    assert not at.exception, at.exception
+    body = " ".join(_htmls(at)) + " ".join(_captions(at))
+    assert "暂不可用" not in body
+    assert "0.0%" not in body
+    assert "—" in body
+
+
+def test_fenbu_down_falls_back_to_tencent_counts_with_its_own_scope(tmp_path, monkeypatch):
+    def no_fenbu(url, headers=None):
+        if "getTopicZDFenBu" in url:
+            raise FetchError("down")
+        return fixture_http_get(url, headers)
+    monkeypatch.setattr(live, "HTTP_GET", no_fenbu)
+    at = _home(tmp_path)
+    body = " ".join(_htmls(at)) + " ".join(_captions(at))
+    assert "沪深 A 股，含 ST，停牌计入平盘" in body
+    assert "上涨" in body and "暂不可用" in body        # 家数有、分布图与温度计没有
+
+
+def test_bucket_note_says_sealed_at_close_after_close_and_now_intraday(tmp_path, monkeypatch):
+    at = _home(tmp_path)
+    assert "收盘封住" in " ".join(_captions(at))
+    frozen = datetime.combine(_fixture_day(), time(10, 15))
+    _freeze(monkeypatch, frozen)
+    st.cache_data.clear()
+    live.STORE.reset()
+    at2 = _home(tmp_path)
+    assert "封住涨停/跌停" in " ".join(_captions(at2))
