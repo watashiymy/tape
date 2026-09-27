@@ -485,8 +485,8 @@ HOME_ZB_COUNT = "炸板 {n} 只"
 HOME_LBC = "{n} 板"
 HOME_TREND_TITLE = "趋势宽度"
 HOME_TREND_ASOF = "收盘数据截至 {day} · " + HOME_SCOPE_TREND
-HOME_TREND_NEVER = _f("趋势宽度需要约一年的收盘数据。第一次准备需要 {breadth_first_run}，可随时停止、下次接着补。")   # FACTS 值自带「约」
-HOME_TREND_NOT_READY = _f("{{day}} 的收盘数据约 {breadth_ready} 后可更新")   # {{day}} 留给页面 .format(day=…)
+HOME_TREND_NEVER = _f("趋势宽度需要约一年的收盘数据。第一次准备需要{breadth_first_run}，可随时停止、下次接着补。")   # FACTS 值自带「约」
+HOME_TREND_NOT_READY = _f("{{day}}的收盘数据约 {breadth_ready} 后可更新")   # {{day}} 留给页面 .format(day=…)
 HOME_TREND_BUSY = "有任务在运行，稍后再更新"
 HOME_TREND_SHORT = "还差约 {n} 天的收盘数据，点「更新收盘数据」继续"
 HOME_TREND_GAP = "数据源缺 {days} 的数据，还需约 {n} 个交易日"
