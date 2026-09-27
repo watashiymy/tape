@@ -105,3 +105,31 @@ def test_suspicious_suspended_lists_only_odd_rows():
     snaps = {DAYS[0]: snap([("a", 1.0, 1.0, 0, 0), ("b", 1.1, 1.0, 0, 0), ("c", 2.0, 1.0, 1, 0)])}
     out = breadth.suspicious_suspended(snaps)
     assert len(out) == 1 and "b" in out[0]
+
+
+def test_vectorized_rolling_matches_reference_on_random_gappy_data():
+    """向量化 `_rolling_on_bars` 必须和逐列参考实现在随机停牌/缺口/ST 数据上逐格相等。"""
+    rng = np.random.default_rng(20260927)
+    n_codes, n_days = 40, 60
+    days = [D("2026-01-01") + (date(2026, 1, 2) - date(2026, 1, 1)) * i for i in range(n_days)]
+    codes = [f"c{k:02d}" for k in range(n_codes)]
+    rows_per_day = []
+    for i in range(n_days):
+        rows = []
+        for code in codes:
+            if rng.random() < 0.03:                        # 随机整天缺一只票（毒 bar）
+                continue
+            tradestatus = 0 if rng.random() < 0.1 else 1    # 随机停牌
+            isst = 1 if rng.random() < 0.1 else 0
+            prev_close = float(rng.uniform(5, 15))
+            close = prev_close if tradestatus == 0 else float(rng.uniform(5, 15))
+            rows.append((code, close, prev_close, tradestatus, isst))
+        rows_per_day.append(rows)
+    snaps = {d: snap(rows) for d, rows in zip(days, rows_per_day)}
+
+    adj = breadth.adjusted_close(snaps, days)
+    trading = (breadth._wide(snaps, days, "tradestatus").fillna(0).astype(int) == 1)
+    for n, fn in ((3, "mean"), (5, "mean"), (7, "max"), (7, "min")):
+        got = breadth._rolling_on_bars(adj, trading, n, fn)
+        want = breadth._rolling_on_bars_reference(adj, trading, n, fn)
+        pd.testing.assert_frame_equal(got, want, check_exact=False, rtol=1e-9, atol=1e-12)

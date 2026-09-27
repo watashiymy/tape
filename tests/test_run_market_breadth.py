@@ -68,10 +68,14 @@ class FakeProvider:
 
 
 TODAY = date(2026, 9, 24)      # 周四
+BAD_DAY = date(2026, 9, 3)     # 相对 TODAY 稳稳落在 30 个交易日窗口以内（离两头都留足余量）
 
 
-def _run(tmp_path, provider, now_t=time(19, 0), today=TODAY):
+def _run(tmp_path, provider, now_t=time(19, 0), today=TODAY, window=30):
+    """其余用例不需要 310 天语义时，默认把窗口缩到 30，省掉几十次全量重算
+    （每次全量 run 约 63 次）；需要真 310 语义的用例显式传 window=310。"""
     mod = _load()
+    mod.WINDOW_TRADING_DAYS = window
     ms = mstore.MarketStore(tmp_path / "data" / "market")
     lines = []
     code = mod.run(lambda: provider, ms, today=today, now_t=now_t, log=lines.append)
@@ -81,7 +85,7 @@ def _run(tmp_path, provider, now_t=time(19, 0), today=TODAY):
 def test_first_run_backfills_newest_first_and_recomputes_every_five_days(tmp_path):
     days, trading = _cal(TODAY)
     prov = FakeProvider(days, trading)
-    code, log, ms = _run(tmp_path, prov)
+    code, log, ms = _run(tmp_path, prov, window=310)
     assert code == 0 and "全部完成: " in log
     assert prov.calls[0] > prov.calls[-1], "从新往旧"
     assert prov.calls[0] == TODAY, "19:00 已过就绪时刻，窗口末端是今天"
@@ -104,24 +108,24 @@ def test_today_not_published_is_skipped_and_still_a_success(tmp_path):
     assert code == 0
     assert re.search(r"^\[1/\d+\] 2026-09-24 跳过：", log, re.M)
     assert "2026-09-24 的收盘数据还没发布" in log and "全部完成: " in log
-    assert len(ms.snapshot_dates()) == 309 and TODAY not in ms.snapshot_dates()
+    assert len(ms.snapshot_dates()) == 29 and TODAY not in ms.snapshot_dates()
 
 
 def test_past_day_zero_rows_is_recorded_and_run_fails_but_continues(tmp_path):
     days, trading = _cal(TODAY)
-    bad = date(2026, 8, 14)
+    bad = BAD_DAY
     prov = FakeProvider(days, trading, missing={bad})
     code, log, ms = _run(tmp_path, prov)
     assert code != 0 and "补数失败：" in log and "全部完成" not in log
     assert prov.calls.count(bad) == 2, "重试 1 次"
     assert min(prov.calls) < bad, "记下之后继续往旧补"
-    assert ms.permanent_gaps() == set() and "2026-08-14" in ms.gaps_path.read_text()
+    assert ms.permanent_gaps() == set() and bad.isoformat() in ms.gaps_path.read_text()
     assert ms.load_breadth() is not None, "失败也重算"
 
 
 def test_second_failure_on_another_day_makes_it_permanent_and_stops_retrying(tmp_path):
     days, trading = _cal(TODAY)
-    bad = date(2026, 8, 14)
+    bad = BAD_DAY
     _run(tmp_path, FakeProvider(days, trading, missing={bad}))
     prov2 = FakeProvider(days, trading, missing={bad})
     code, log, ms = _run(tmp_path, prov2, today=TODAY + timedelta(days=1))
@@ -162,13 +166,10 @@ def test_partial_snapshot_is_rejected_by_the_98_percent_rule(tmp_path):
     assert re.search(r"2026-09-24 跳过：.*98%", log)
 
 
-def test_window_can_be_shrunk_for_fast_tests(tmp_path, monkeypatch):
-    """其余用例不需要 310 天语义时可把窗口缩到 30，省掉几十次全量重算（每次 run 约 63 次）。"""
-    mod = _load()
-    monkeypatch.setattr(mod, "WINDOW_TRADING_DAYS", 30)
+def test_window_can_be_shrunk_for_fast_tests(tmp_path):
+    """其余用例不需要 310 天语义时可把窗口缩到 30（`_run` 默认就是 30），省掉几十次全量重算。"""
     days, trading = _cal(TODAY)
-    ms = mstore.MarketStore(tmp_path / "data" / "market")
-    code = mod.run(lambda: FakeProvider(days, trading), ms, today=TODAY, now_t=time(19, 0), log=lambda s: None)
+    code, _, ms = _run(tmp_path, FakeProvider(days, trading))
     assert code == 0 and len(ms.snapshot_dates()) == 30
 
 
@@ -185,14 +186,15 @@ def test_retention_runs_even_when_fetching_failed(tmp_path):
     days, trading = _cal(TODAY)
     ms = mstore.MarketStore(tmp_path / "data" / "market")
     ms.save_snapshot(date(2025, 1, 6), _snap())            # 窗口外的旧文件
-    prov = FakeProvider(days, trading, missing={date(2026, 8, 14)})
+    prov = FakeProvider(days, trading, missing={BAD_DAY})
     code, _, ms = _run(tmp_path, prov)
     assert code != 0 and date(2025, 1, 6) not in ms.snapshot_dates()
 
 
 def test_incomplete_calendar_aborts_without_deleting(tmp_path):
     days, trading = _cal(TODAY)
-    short = [d for d in days if d >= TODAY - timedelta(days=100)]
+    # 只留最近 20 个自然日（约 15 个交易日），比默认窗口 30 还短，才能测出「日历不完整」
+    short = [d for d in days if d >= TODAY - timedelta(days=20)]
     ms = mstore.MarketStore(tmp_path / "data" / "market")
     ms.save_snapshot(date(2025, 1, 6), _snap())
     prov = FakeProvider(short, frozenset(d for d in short if d.weekday() < 5))
