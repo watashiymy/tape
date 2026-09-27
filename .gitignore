@@ -14,3 +14,6 @@ config/universe.local.yaml
 .streamlit/secrets.toml
 journal/*.lock
 config/*.lock
+
+# Claude 桌面应用的本地启动配置（预览用），不进仓库
+.claude/

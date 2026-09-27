@@ -483,3 +483,41 @@ def test_result_ok_true_only_when_value_present_and_no_error():
     assert sources.Result(value=1).ok
     assert not sources.Result(value=None, error="x").ok
     assert not sources.Result(value=1, error="x").ok
+
+
+# ---------------------------------------------------------------- 非交易日整轮（2026-09-27 周日录，spec §10）
+SUN = "_sun1700"
+SUN_DAY = _date(2026, 9, 24)       # 上一交易日（9/25 中秋、26–27 周末）
+
+
+def test_non_trading_day_minute_keeps_last_trade_date_and_says_close():
+    m = sources.parse_tencent_minute(_fix(f"tencent_minute_sh000001{SUN}.bin"), "sh000001")
+    assert m.trade_date == SUN_DAY and m.sh_status == "close"
+    assert len(m.points) == 242 and m.points[-1][0] == time(15, 0)
+
+
+def test_non_trading_day_sina_date_is_the_last_trade_day():
+    """新浪 [30] 在非交易日停在上一交易日——可当第二个交易日来源；拿今天去校验必须被拒。"""
+    raw = _fix(f"sina_quotes{SUN}.bin")
+    quotes = sources.parse_sina_quotes(raw, CODES, SUN_DAY, names=dict(market.INDEXES))
+    assert set(quotes) == set(CODES)
+    with pytest.raises(ParseError):
+        sources.parse_sina_quotes(raw, CODES, _date(2026, 9, 27), names=dict(market.INDEXES))
+
+
+def test_non_trading_day_tencent_quote_timestamp_stays_on_the_trade_day():
+    q = sources.parse_tencent_quotes(_fix(f"tencent_quotes{SUN}.bin"), CODES)["sh000001"]
+    assert q.ts.date() == SUN_DAY
+
+
+def test_non_trading_day_limit_up_pool_matches_the_plus_eleven_bucket():
+    dist = sources.parse_em_fenbu(_fix(f"em_fenbu{SUN}.bin"))
+    zt = sources.parse_em_pool(_fix(f"em_ztpool{SUN}.bin"), "zt", SUN_DAY)
+    assert zt.tc == dist.buckets[11] == 52 and dist.buckets[-11] == 13
+
+
+def test_kline_shenzhen_turnover_equals_baostock_whole_market():
+    """深证成指的 [37] 成交额就是深市全部：与 baostock sz.399106 同日成交额只差万元取整。"""
+    bars = sources.parse_tencent_kline(_fix(f"tencent_kline_sz399001{SUN}.bin"), "sz399001")
+    amount = {b.day: b.amount_wan for b in bars}[_date(2026, 9, 22)] * 1e4
+    assert abs(amount - 1127554799048.82) < 1e4
