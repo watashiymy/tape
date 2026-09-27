@@ -233,15 +233,16 @@ def _card_for(busy: str | None):
 # 而没有任何测试会红——正是本项目最忌讳的静默不一致。顺序由箭头与位置表达就够了。
 _PIPELINE = ("market_scan", "daily_signal")     # 链上的两个**可运行**任务
 _TOOLS = ("backtest",)                          # 不在链上的研究工具
+_ELSEWHERE = ("market_breadth",)                # 控件在别的页——「市场概览」（app/pages_home.py）
 
 
 def _check_roster() -> None:
-    """每个任务都得在某个区里有位置。
+    """每个任务都得在某个区里有位置（控制台自己的两区，或者别的页）。
 
     响亮失败而不是静默漏渲染：将来加了第四个任务却忘了排版，那张卡片会从页面上
     **消失**而没有任何报错——用户只会以为这个功能没做。
     """
-    placed = set(_PIPELINE) | set(_TOOLS)
+    placed = set(_PIPELINE) | set(_TOOLS) | set(_ELSEWHERE)
     if placed != set(jobs.JOBS):
         raise RuntimeError(
             f"控制台排班与 jobs.JOBS 对不上：漏了 {sorted(set(jobs.JOBS) - placed)}，"
@@ -287,27 +288,14 @@ def _manual_step_strip() -> None:
                      icon=":material/list:", help=guide.PIPELINE_MANUAL_HELP)
 
 
-def _first_run_hint() -> None:
-    """从未在面板上跑过任何任务时，给一条去「使用说明」的链接（2026-09-05）。
-
-    落地页换成了控制台，第一次打开面板的人不再先撞上手册。这条链接补那一环，
-    但**只在适用时出现**：一个任务的状态文件都没有，才算"第一次"。跑过一次
-    之后它就消失——同侧栏安全警告一个道理，常驻的引导等于噪声。
-    状态文件坏了也算"跑过"：那一刻该显示的是卡片上的错误，不是新手引导。
-    只看文件在不在（process.has_ever_run），不走 read_state——那条路径会做僵尸清理。
-    """
-    if not process.has_ever_run(ui.RUNS_DIR):
-        st.page_link(ui.page_ref("guide"), label="第一次用？先看「使用说明」",
-                     icon=":material/menu_book:", help=guide.guide_page("guide").lead)
-
-
 def page_console() -> None:
     _check_roster()
     ui.page_head("任务控制台")
     # 互斥这件事不在这里常驻预告：页头已有一句，而按钮被禁用时 view.start_button_state
     # 的 notice 会当场点名是谁在跑——比预告有用。这里只留"独立进程"这条动作现场的信息。
     st.caption("任务在后台运行：关掉浏览器也不会中断它，回来还能看到进度。")
-    _first_run_hint()
+    # 首次引导（2026-09-05 加、2026-09-23 搬走）：落地页换成「市场概览」之后，
+    # 第一次打开面板的人先撞上的是那一页，引导链接跟着搬到 app/pages_home.py。
     try:
         busy = process.any_running(ui.RUNS_DIR)
     except RuntimeError as e:

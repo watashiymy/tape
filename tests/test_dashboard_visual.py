@@ -30,6 +30,9 @@ DASHBOARD = ROOT / "app" / "dashboard.py"
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 SCAN_LOG = (FIXTURES / "market_scan_sample.log").read_text(encoding="utf-8")
 PAGES = ["回测报告", "个股K线", "信号", "任务控制台"]
+#: 控制台上真的有卡片的任务名单——market_breadth 的控件搬到了「市场概览」页
+#: （app/pages_console.py 的 _ELSEWHERE），控制台的列结构断言不该数它。
+CONSOLE_JOBS = ("market_scan", "daily_signal", "backtest")
 
 SCAN_HEADER = "date,symbol,name,strategy,close,pct_chg,amount,amount_ratio_20d\n"
 TRADES_HEADER = ("symbol,action,date,price,shares,commission,stamp,pnl,holding_days\n")
@@ -500,7 +503,7 @@ def test_scan_block_title_is_a_serif_section_with_the_date(tmp_path):
 def _card_columns(at: AppTest) -> list:
     """卡片列 = 恰好含一个 start_* 键、且键不止一个的列。
     卡片内部那排按钮也是 st.columns(3)，但每列只含一个键，据此区分开。"""
-    starts = {f"start_{n}" for n in jobs.JOBS}
+    starts = {f"start_{n}" for n in CONSOLE_JOBS}
     return [c for c in at.get("column")
             if len(_keys_under(c) & starts) == 1 and len(_keys_under(c)) > 1]
 
@@ -520,7 +523,7 @@ def test_the_pipeline_puts_the_two_chained_jobs_in_equal_columns(tmp_path):
     card_cols = _card_columns(at)
     chained = {"market_scan", "daily_signal"}
     assert len(card_cols) == len(chained), f"流水线上应有两个任务列，实际 {len(card_cols)}"
-    assert {tuple(sorted(_keys_under(c) & {f"start_{n}" for n in jobs.JOBS}))
+    assert {tuple(sorted(_keys_under(c) & {f"start_{n}" for n in CONSOLE_JOBS}))
             for c in card_cols} == {(f"start_{n}",) for n in chained}, \
         "两列应分别是扫描与信号跟踪；回测不在链上"
     weights = sorted(c.proto.weight for c in at.get("column"))

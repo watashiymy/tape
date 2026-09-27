@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import pytest
 import streamlit as st
 from streamlit.proto.WidgetStates_pb2 import WidgetState
 from streamlit.testing.v1 import AppTest
@@ -45,6 +46,7 @@ def copy_app(tmp_path: Path) -> Path:
 # v0.3.1 M1：「交易日志」拆成「记账」与「持仓与盈亏」两个子页。
 # 「记账」沿用老的 journal 路径——一键记账跳的就是它，老书签也不断。
 PAGE_URL_PATHS = {
+    "市场概览": "home",
     "使用说明": "guide",
     # 说明手册拆出来的子页（v0.5.0 三个；2026-09-05「自定义策略」搬去 docs/）
     "读懂回测": "guide-metrics",
@@ -217,3 +219,61 @@ def make_bars(rows: list[dict]) -> pd.DataFrame:
     if missing:
         raise ValueError(f"make_bars: 必填列缺失或含 NaN: {missing}")
     return df
+
+
+# ---------------------------------------------------------------- 首页离线替身（Task 18）
+#
+# 落地页换成「市场概览」之后，**每一个** AppTest 都会先渲染这一页——所以离线替身、
+# 冻结时钟、联网守卫这三件事不能只是首页自己那几条测试的事，得是全部面板测试的
+# 前提，否则任何一条既有测试都可能在无意间打到真实网络或用当天真实时间。
+
+FIXTURES_MARKET = Path(__file__).resolve().parent / "fixtures" / "market"
+FROZEN_NOW = None    # 由夹具录制日决定，见 _frozen_now()
+
+
+def _frozen_now():
+    """冻结首页时钟：录制那天的 19:30（已收盘、过收盘截止时刻）。日期取自分时夹具的 data.date。"""
+    from datetime import datetime, time
+    from quant.market import sources
+    m = sources.parse_tencent_minute((FIXTURES_MARKET / "tencent_minute_sh000001.bin").read_bytes(),
+                                     "sh000001")
+    return datetime.combine(m.trade_date, time(19, 30))
+
+
+def fixture_http_get(url: str, headers=None) -> bytes:
+    """首页数据源的离线替身：按 URL 片段找 tests/fixtures/market/ 里的录制文件。"""
+    from quant.market.sources import FetchError
+    if "minute/query?code=" in url:
+        return (FIXTURES_MARKET / f"tencent_minute_{url.rsplit('=', 1)[1]}.bin").read_bytes()
+    if "newfqkline" in url:
+        return (FIXTURES_MARKET / f"tencent_kline_{url.split('param=')[1].split(',')[0]}.bin").read_bytes()
+    table = {"qt.gtimg.cn/q=": "tencent_quotes.bin", "hq.sinajs.cn": "sina_quotes.bin",
+             "getTopicZDFenBu": "em_fenbu.bin", "getTopicZTPool": "em_ztpool.bin",
+             "getTopicZBPool": "em_zbpool.bin"}
+    for frag, name in table.items():
+        if frag in url:
+            return (FIXTURES_MARKET / name).read_bytes()
+    raise FetchError(f"离线替身没有这个 URL: {url}")
+
+
+@pytest.fixture(autouse=True)
+def offline_market(request, monkeypatch):
+    """每个 AppTest 都会先渲染落地页「市场概览」，所以这四件事是全部面板测试的前提：
+    1) 取数走离线替身；2) 时钟冻结在录制日收盘后；3) 清 st.cache_data 与最近成功值；
+    4) 非 network 测试里任何真实联网直接失败。"""
+    from quant import market
+    from quant.market import live
+    import requests.adapters
+
+    monkeypatch.setattr(live, "HTTP_GET", fixture_http_get)
+    frozen = _frozen_now()
+    monkeypatch.setattr(market, "now", lambda: frozen)
+    if request.node.get_closest_marker("network") is None:
+        def _blocked(self, req, *a, **k):
+            raise AssertionError(f"测试里发生了真实联网: {req.url}")
+        monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", _blocked)
+    st.cache_data.clear()
+    live.STORE.reset()
+    yield
+    st.cache_data.clear()
+    live.STORE.reset()

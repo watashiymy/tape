@@ -33,7 +33,7 @@ GUIDE = "使用说明"
 # 由 tests/test_dashboard_nav.py 对账，这里只借它来遍历"每页都要成立"的断言。
 # v0.5.0：说明拆成四页，后三页单独成「手册」组，紧跟主组。
 # 2026-09-05：「自定义策略」搬去 docs/，手册组剩两页。
-PAGES = [GUIDE, "读懂回测", "边界与安全",
+PAGES = ["市场概览", GUIDE, "读懂回测", "边界与安全",
          "任务控制台", "信号", "记账", "持仓与盈亏",
          "信号池", "回测报告", "个股K线"]
 
@@ -309,7 +309,7 @@ def test_page_intro_covers_every_page(tmp_path):
 
 #: 控制台上带 `?` 的卡片数 = 三个任务。「加进信号池」那一步 2026-09-14 起只占一行
 #: （详细说明挂在「去信号池」链接的 tooltip 上），不再是带 ? 的卡片。
-CARDS_WITH_HELP = len(jobs.JOBS)
+CARDS_WITH_HELP = len(jobs.JOBS) - 1  # market_breadth 的控件在首页（pages_console._ELSEWHERE），控制台不出它的卡片
 
 
 def test_every_card_has_a_help_popover(tmp_path):
@@ -325,6 +325,8 @@ def test_the_popover_content_is_this_jobs_help(tmp_path):
     at = _page(tmp_path, "任务控制台")
     blob = _markdowns(at)
     for name, text in guide.JOB_HELP.items():
+        if name == "market_breadth":
+            continue    # 控件在市场概览页，控制台不渲染它的 popover（_ELSEWHERE）
         head = text.strip().splitlines()[0]
         assert head in blob, f"{name} 的帮助没渲染出来: {head!r}"
 

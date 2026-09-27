@@ -3,7 +3,9 @@
 侧栏页表见下方 PAGES —— 组名、页序、图标、url_path 只有那一份定义，
 这里不再抄一遍（抄了就会像 v0.5.0 之前那样停在「八页三组」上）。
 走 st.navigation + st.Page 的原生导航（每页一个 URL，侧栏按组分段）。
-使用说明是**默认落地页**，纯文档（文案全在 app/guide.py）；
+落地页是**市场概览**（2026-09-23 用户定：先看市场、再干活；09-05～09-23 落地页是
+任务控制台，09-05 之前是使用说明）——指数行情、涨跌分布、涨停温度计与趋势宽度，
+文案全在 app/guide.py；
 三张只读页展示 output/ 与 data/cache/ 里的产物，顶部各有一条精简控制条（§4.2）；
 控制台页可在**本机**起三个入口脚本并看进度、日志与结果；
 信号池页增删 universe（v0.2.2 §3；v0.3.2 起写本地 config/universe.local.yaml）；
@@ -40,6 +42,7 @@ import ui          # noqa: E402  共享件：页头 / 表格 / 控制条 / 路�
 import pages_guide  # noqa: E402  说明手册四页的渲染函数（RENDERERS 按页 key 取）
 from pages_backtest import page_backtest, page_kline        # noqa: E402
 from pages_console import page_console                      # noqa: E402
+from pages_home import page_home                            # noqa: E402
 from pages_journal_entry import page_journal_entry          # noqa: E402
 from pages_journal_report import page_journal_report        # noqa: E402
 from pages_signals import page_signals                      # noqa: E402
@@ -66,12 +69,16 @@ st.logo(theme.BRAND_LOGO, size=theme.BRAND_LOGO_SIZE)
 # （st.navigation 收到 list 时内部就折成 {"": pages}）。命名组「交易日志」「研究」
 # 各带组头。设计里"若 "" 渲染异常则三组都起名"的备选方案因此不必启用。
 #
-# 顺序（2026-09-05 用户定：落地页换成任务控制台）：
-#   -「任务控制台」第一位且 default=True → **默认落地页**：它是每天的操作入口，
-#     页上那条流水线带着就绪状态与 ? 帮助，本身就是引导；从未跑过任务时它还会
-#     给一条指向「使用说明」的链接（pages_console._first_run_hint）。
-#     v0.2.1～v0.5.0 的落地页是「使用说明」——一本手册当首页，天天用的人每次都要多点一下。
-#   -「信号」第二位：看信号是每天第二件事；
+# 顺序（2026-09-23 用户定：落地页换成「市场概览」——先看市场、再干活；
+# 09-05～09-23 落地页是任务控制台，09-05 之前是使用说明）：
+#   -「市场概览」第一位且 default=True → **默认落地页**：指数行情、涨跌分布、
+#     涨停温度计与趋势宽度，一眼看懂市场（app/pages_home.py，Task 21-23 填内容）；
+#     从未跑过任何任务时它还会给一条指向「使用说明」的链接（原在控制台，
+#     09-05 那次改动挂上去的，落地页换人后跟着搬过来：引导要出现在落地的那一页）。
+#   -「任务控制台」第二位：起任务、看进度是每天要做的事，但不再是第一眼看到的东西；
+#     它现在是一条**普通路由**——不认识的路径回落到默认页时那句「Page not found」
+#     只在真的走丢时出现，/console 本身不会再弹（它是已注册页面自己的 url_path）。
+#   -「信号」第三位：看信号紧跟着控制台；
 #   -「手册」组紧跟主组：使用说明 / 读懂回测 / 边界与安全，三页说明放一起才读得通；
 #   -「交易日志」组：组内「记账」在前、「持仓与盈亏」在后——先记后看，就是使用顺序。
 #     「记账」沿用老的 journal 路径（老书签不断），报表页用新的 positions；
@@ -79,8 +86,9 @@ st.logo(theme.BRAND_LOGO, size=theme.BRAND_LOGO_SIZE)
 # 注意 streamlit 的规则：default=True 那页挂在根路径 `/`，它自己的 url_path 不参与路由
 # （st.Page 文档原话："If you set default=True, url_path is ignored"）；不认识的路径一律
 # 回落到默认页，**但会先弹「Page not found」**（2026-09-14 截图确认；09-05 只读了页面文字，
-# 漏看了那个弹窗）。所以老的 /console 书签能落到控制台但不体面，请改用根地址；
-# /guide 现在能直接打开。页对象上的 url_path 仍写着，测试侧按它算哈希。
+# 漏看了那个弹窗）。这个弹窗现在挂在 /home（新默认页自己的 url_path）上，
+# /console 变成了普通已注册路由，不再触发它；/guide 也仍能直接打开。
+# 页对象上的 url_path 仍写着，测试侧按它算哈希。
 # url_path 显式给短英文：不给的话会取函数名，地址栏出现 /page_backtest 这种内部名。
 # 「记一笔」要跳到的那一页单独留个名字：st.switch_page 收的是 Page 对象
 # （函数页没有文件路径可给），而按下标从组里取第几个日后一定会错位。
@@ -96,14 +104,19 @@ GUIDE_PAGE_OBJS = {
 }
 # 控制台的流水线区要用 st.page_link 指向这两页，所以它们得有名字（同 ENTRY_PAGE
 # 的既有理由：按下标从组里取「第几个」，插一页就全体错位且不报错）。
+# HOME_PAGE 是新的默认落地页（2026-09-23 用户定）：default=True 从 CONSOLE_PAGE
+# 移到这里，CONSOLE_PAGE 的 url_path="console" 从此是一条普通已注册路由。
+HOME_PAGE = st.Page(page_home, title="市场概览",
+                    icon=":material/monitoring:", url_path="home", default=True)
 CONSOLE_PAGE = st.Page(page_console, title="任务控制台",
-                       icon=":material/play_circle:", url_path="console", default=True)
+                       icon=":material/play_circle:", url_path="console")
 SIGNALS_PAGE = st.Page(page_signals, title="信号",
                        icon=":material/notifications:", url_path="signals")
 UNIVERSE_PAGE = st.Page(page_universe, title="信号池", icon=":material/list:",
                         url_path="universe")
 PAGES = {
     "": [
+        HOME_PAGE,
         CONSOLE_PAGE,
         SIGNALS_PAGE,
     ],
@@ -145,7 +158,8 @@ nav = st.navigation(PAGES)
 # 只登记**显式命名**的那几页，不去遍历 PAGES 读 p.url_path：真 st.Page 在 bare
 # 模式（没有 ScriptRunContext）下 __init__ 提前 return，连 _url_path 都没设，
 # 读它会 AttributeError —— 而 bare 模式正是几条 exec 探针测试跑的模式。
-ui.bind_pages({**GUIDE_PAGE_OBJS, "journal": ENTRY_PAGE, "console": CONSOLE_PAGE,
-               "signals": SIGNALS_PAGE, "universe": UNIVERSE_PAGE})
+ui.bind_pages({"home": HOME_PAGE, **GUIDE_PAGE_OBJS, "journal": ENTRY_PAGE,
+               "console": CONSOLE_PAGE, "signals": SIGNALS_PAGE,
+               "universe": UNIVERSE_PAGE})
 journal_ui.jump_if_requested(ENTRY_PAGE)
 nav.run()

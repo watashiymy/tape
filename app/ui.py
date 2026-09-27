@@ -96,6 +96,9 @@ NAME_LOOKBACK_FILES = 30
 # 按 AST 读这个字典的键（`k.value`），推导式里的键在 AST 里是 None，那条测试会
 # 以 AttributeError 炸掉——而它守的正是"每页都有页头文案"这件事。
 PAGE_INTRO = {
+    # 字面量：guide.HOME_LEAD 要到 Task 19 才定义（届时这里换成引用它）。
+    # 硬约束：不能含「今天」/「今日」（test_home_copy_never_says_today）。
+    "市场概览": "指数行情、涨跌分布、涨停温度计与趋势宽度：一眼看懂市场。",
     "使用说明": guide.guide_page("guide").lead,
     "读懂回测": guide.guide_page("guide_metrics").lead,
     "边界与安全": guide.guide_page("guide_limits").lead,
@@ -393,8 +396,11 @@ def control_bar(*job_names: str) -> None:
     st.caption(CONSOLE_HINT)
     # 灰字换成真链接（v0.5.0）：点完 ▶ 之后这一页 15 分钟不会自己动一下，
     # 而"该去哪看进度"过去只是一句话。一步到位。
-    st.page_link(page_ref("console"), label="去「任务控制台」看进度与日志",
-                 icon=":material/play_circle:")
+    # market_breadth 的控件不在控制台（app/pages_console.py 的 _ELSEWHERE），
+    # 它在跑时指错地方等于把用户送到一个看不到这个任务的页面——改指市场概览。
+    target = "home" if busy == "market_breadth" else "console"
+    label = "去「市场概览」看进度" if busy == "market_breadth" else "去「任务控制台」看进度与日志"
+    st.page_link(page_ref(target), label=label, icon=":material/play_circle:")
     st.divider()
 
 

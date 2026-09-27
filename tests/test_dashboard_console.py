@@ -20,6 +20,11 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 SCAN_LOG = (FIXTURES / "market_scan_sample.log").read_text(encoding="utf-8")
 BACKTEST_LOG = (FIXTURES / "backtest_sample.log").read_text(encoding="utf-8")
 CONSOLE = "任务控制台"
+#: 控制台上真的有卡片/按钮的任务名单——不是 jobs.JOBS 的全集：market_breadth
+#: 的控件搬到了「市场概览」页（app/pages_console.py 的 _ELSEWHERE），控制台不出它。
+#: 硬编码而不是导入 pages_console._PIPELINE + _TOOLS：那两个是 AppTest exec 出来的
+#: 模块级元组，在 bare 模式之外不方便稳定取到；这里的三个名字与它们逐一对应。
+CONSOLE_JOBS = ("market_scan", "daily_signal", "backtest")
 
 
 def _htmls(at: AppTest) -> list[str]:
@@ -71,14 +76,15 @@ def _fake_run(root: Path, job: str, status: str, *, log: str = "", exit_code=Non
 
 
 # ---------------------------------------------------------------- 页面骨架
-def test_console_is_the_default_landing_page(tmp_path):
-    """控制台是默认落地页（2026-09-05 用户定；v0.2.1～v0.5.0 是「使用说明」）。
-    页表本身由 tests/test_dashboard_nav.py 逐项对账，这里守"不切页就是它、切过去也是它"。"""
+def test_home_is_the_default_landing_page(tmp_path):
+    """市场概览是默认落地页（2026-09-23 用户定；09-05～09-23 是「任务控制台」，
+    v0.2.1～v0.5.0 是「使用说明」）。页表本身由 tests/test_dashboard_nav.py
+    逐项对账，这里守"不切页时是它、切去控制台也还是控制台"。"""
     dashboard = copy_app(tmp_path)
     at = AppTest.from_file(str(dashboard), default_timeout=30).run()
     assert not at.exception
     heads = [e.proto.body for e in at.get("html") if 'class="qd-head"' in e.proto.body]
-    assert heads and 'class="qd-title">任务控制台<' in heads[0], heads
+    assert heads and 'class="qd-title">市场概览<' in heads[0], heads
     at = goto_page(at, CONSOLE)
     assert not at.exception
     heads = [e.proto.body for e in at.get("html") if 'class="qd-head"' in e.proto.body]
@@ -121,26 +127,33 @@ def test_three_cards_render(tmp_path):
     at = _console(tmp_path)
     assert not at.exception, at.exception
     text = " ".join(_sections(at))
-    for job in jobs.JOBS.values():
-        assert job.label in text, f"缺少「{job.label}」卡片，实际: {text}"
-    for name in jobs.JOBS:
+    for name in CONSOLE_JOBS:
+        assert jobs.JOBS[name].label in text, f"缺少「{jobs.JOBS[name].label}」卡片，实际: {text}"
+    for name in CONSOLE_JOBS:
         assert at.button(f"start_{name}"), name
+
+
+def test_exactly_one_job_lives_elsewhere(tmp_path):
+    """对账 tests/test_dashboard_guide.py::CARDS_WITH_HELP 里的那个「- 1」：
+    市场概览拿走了几个任务的卡片，这里数的是同一个数字（当前只有 market_breadth）。"""
+    _console(tmp_path)
+    assert len(app_module("pages_console")._ELSEWHERE) == 1
 
 
 def test_empty_state_when_nothing_ever_ran(tmp_path):
     """三张卡片都空闲：开始可用、停止与重跑禁用，且明说"尚未运行过"。"""
     at = _console(tmp_path)
     assert not at.exception
-    for name in jobs.JOBS:
+    for name in CONSOLE_JOBS:
         assert at.button(f"start_{name}").disabled is False, name
         assert at.button(f"stop_{name}").disabled is True, name
         assert at.button(f"rerun_{name}").disabled is True, name
-    assert sum("尚未运行过" in c.value for c in at.caption) == len(jobs.JOBS)
+    assert sum("尚未运行过" in c.value for c in at.caption) == len(CONSOLE_JOBS)
     # v0.5.0 两区版（设计 §6）：区标题「每日流水线」「研究工具」+ 人工步骤卡片
     # 「加进信号池」+ 三张任务卡片各一个。带状态 pill 的必须**恰好**是任务卡片：
     # 人工那一步没有进程，给它挂状态 pill 就是无中生有。
     with_pill = [h for h in _sections(at) if "qd-pill-" in h]
-    assert len(with_pill) == len(jobs.JOBS), with_pill
+    assert len(with_pill) == len(CONSOLE_JOBS), with_pill
     for head in with_pill:
         assert "空闲" in head and "qd-pill-idle" in head, head
     plain = [h for h in _sections(at) if "qd-pill-" not in h]
@@ -168,7 +181,7 @@ def test_start_buttons_all_disabled_while_a_job_runs(tmp_path):
     _fake_run(tmp_path, "market_scan", "running", log=SCAN_LOG.split("已保存")[0])
     at = _console(tmp_path)
     assert not at.exception, at.exception
-    for name in jobs.JOBS:
+    for name in CONSOLE_JOBS:
         assert at.button(f"start_{name}").disabled is True, f"{name} 的开始按钮没被互斥禁用"
     notices = [c.value for c in at.caption]
     assert any("全市场扫描" in n and "正在运行" in n for n in notices), notices
@@ -650,7 +663,7 @@ def test_a_corrupt_scan_meta_does_not_take_the_whole_page_down(tmp_path):
     at = _console(tmp_path)
 
     assert not at.exception, at.exception
-    for name in jobs.JOBS:                      # 三个任务的按钮一个都不能少
+    for name in CONSOLE_JOBS:                    # 三个任务的按钮一个都不能少
         assert at.button(f"start_{name}"), f"{name} 的开始按钮不见了"
         assert at.button(f"stop_{name}"), f"{name} 的停止按钮不见了"
     warnings = [w.value for w in at.main.warning]

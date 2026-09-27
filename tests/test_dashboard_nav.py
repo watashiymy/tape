@@ -32,21 +32,22 @@ _SPEC.loader.exec_module(theme)
 # v0.3.1 M1（设计 §1）的页表：三组八页。「交易日志」拆成「记账」与「持仓与盈亏」，
 # 侧栏改用 st.navigation 的 Mapping 分组形态。
 # - 主组用空字符串键 ""：**实测**（streamlit 1.61.1，真浏览器截图）它渲染为
-#   无标题组——使用说明/任务控制台/信号顶格显示、没有组头占位；
+#   无标题组——市场概览/任务控制台/信号顶格显示、没有组头占位；
 #   命名组「交易日志」「研究」各带组头。所以设计里"不行则三组都起名"的
 #   备选方案不必启用。
 # - 「记账」沿用老的 journal 路径（一键记账跳的就是它，老书签也不断）；
 #   「持仓与盈亏」用新的 positions。
-# - 「任务控制台」仍第二位；「使用说明」仍默认落地页。
 #
-# v0.5.0：说明页拆成四页。第一页留在主组、位置与默认落地页身份都不变
-# （侧栏第一项、任务控制台仍是扁平第 2 项）；另外三页单独成「手册」组，
+# v0.5.0：说明页拆成四页。第一页留在主组；另外三页单独成「手册」组，
 # 紧跟主组之后——它们是侧栏第一项的续页，挨着才读得通。
 # 组名刻意不叫「使用说明」：那样侧栏里会出现两处同名，读起来像两个不相干的东西。
 # 2026-09-05（用户定）：落地页换成「任务控制台」；主组只留每天用的两页，「使用说明」
 # 并进「手册」组（「自定义策略」同日搬去 docs/custom-strategy.md）。
+# 2026-09-23（用户定）：落地页再换成「市场概览」（先看市场、再干活）——它插进
+# 主组第一位、拿走 default=True；「任务控制台」退到第二位，「信号」第三位。
 EXPECTED_GROUPS = {
     "": [
+        ("市场概览", ":material/monitoring:", "home"),
         ("任务控制台", ":material/play_circle:", "console"),
         ("信号", ":material/notifications:", "signals"),
     ],
@@ -197,17 +198,18 @@ def test_the_record_jump_targets_the_entry_subpage(tmp_path, monkeypatch):
 
 
 def test_the_console_is_the_first_page(tmp_path, monkeypatch):
-    """2026-09-05：控制台排第一——它是每天的操作入口（v0.2.2 曾从末位提到第二位，
-    那时第一位留给手册）。"""
+    """2026-09-23：市场概览排第一——先看市场、再干活（2026-09-05～09-23 第一位是
+    任务控制台；v0.2.2 曾从末位提到第二位，那时第一位留给手册）。"""
     _, pages = _declared_pages(tmp_path, monkeypatch)
-    assert pages[0].title == "任务控制台"
+    assert pages[0].title == "市场概览"
 
 
 def test_the_console_is_the_only_default_page(tmp_path, monkeypatch):
-    """默认落地页是「任务控制台」（2026-09-05 用户定；v0.2.1～v0.5.0 是「使用说明」）。
-    显式 default=True 而不是靠"排第一"：st.navigation 的落地页由这个标志定。"""
+    """默认落地页是「市场概览」（2026-09-23 用户定；09-05～09-23 是「任务控制台」，
+    v0.2.1～v0.5.0 是「使用说明」）。显式 default=True 而不是靠"排第一"：
+    st.navigation 的落地页由这个标志定。"""
     _, pages = _declared_pages(tmp_path, monkeypatch)
-    assert [p.title for p in pages if p.default] == ["任务控制台"]
+    assert [p.title for p in pages if p.default] == ["市场概览"]
 
 
 def test_url_paths_are_unique_and_match_the_test_helper(tmp_path, monkeypatch):
@@ -245,12 +247,12 @@ def test_the_sidebar_has_no_radio_widget_left(tmp_path):
 
 
 def test_the_console_is_the_landing_page(tmp_path):
-    """不切页直接渲染：落地页必须是「任务控制台」。"""
+    """不切页直接渲染：落地页必须是「市场概览」（2026-09-23 用户定）。"""
     at = AppTest.from_file(str(copy_app(tmp_path)), default_timeout=30).run()
     assert not at.exception, at.exception
     heads = [e.proto.body for e in at.get("html") if 'class="qd-head"' in e.proto.body]
     assert len(heads) == 1, heads
-    assert 'class="qd-title">任务控制台<' in heads[0], heads[0]
+    assert 'class="qd-title">市场概览<' in heads[0], heads[0]
 
 
 @pytest.mark.parametrize("title", [p[0] for p in EXPECTED_PAGES])
