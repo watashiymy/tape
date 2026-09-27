@@ -286,3 +286,44 @@ def test_store_last_trade_date_written_only_after_a_successful_round():
     assert store.last_trade_date is None
     live.fetch_round(fixture_http(), NOW, None, store, True)
     assert store.last_trade_date == TRADE_DATE
+
+
+# ---------------------------------------------------------------- 改判后丢跨日兜底块（without_cross_day）
+def _block(trade_date: date, fallback: bool) -> live.Block:
+    return live.Block("v", "tencent", "", datetime.combine(trade_date, time(15, 0)), trade_date,
+                      fallback=fallback)
+
+
+def test_without_cross_day_drops_only_fallback_blocks_from_another_day():
+    """本轮是按「允许跨日」取的（上一轮判定是未知），重判成交易时段后：
+    跨日的兜底块丢掉；同日兜底块、本轮新取的块（哪怕日期不是今天）都留着。"""
+    today, yesterday = date(2026, 9, 25), TRADE_DATE
+    snap = live.LiveSnapshot(fetched_at=datetime.combine(today, time(10, 0)), trade_date=today,
+                             source_ok=True, sh_status=None,
+                             quotes=_block(yesterday, fallback=True),
+                             breadth=_block(today, fallback=True),
+                             thermo=_block(yesterday, fallback=False))
+    out = live.without_cross_day(snap, today)
+    assert out.quotes is None                    # 跨日兜底 → 丢
+    assert out.breadth == snap.breadth           # 同日兜底 → 留
+    assert out.thermo == snap.thermo             # 本轮新取的 → 留
+    assert (out.fetched_at, out.trade_date, out.source_ok) == (snap.fetched_at, today, True)
+
+
+def test_without_cross_day_does_not_mutate_the_original():
+    today = date(2026, 9, 25)
+    old = _block(TRADE_DATE, fallback=True)
+    snap = live.LiveSnapshot(fetched_at=datetime.combine(today, time(10, 0)), trade_date=today,
+                             source_ok=True, sh_status=None, quotes=old, breadth=old, thermo=old)
+    out = live.without_cross_day(snap, today)
+    assert out is not snap
+    assert (out.quotes, out.breadth, out.thermo) == (None, None, None)
+    assert (snap.quotes, snap.breadth, snap.thermo) == (old, old, old)
+
+
+def test_without_cross_day_leaves_missing_blocks_missing():
+    today = date(2026, 9, 25)
+    snap = live.LiveSnapshot(fetched_at=datetime.combine(today, time(10, 0)), trade_date=None,
+                             source_ok=False, sh_status=None)
+    out = live.without_cross_day(snap, today)
+    assert (out.quotes, out.breadth, out.thermo) == (None, None, None)

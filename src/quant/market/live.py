@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import time
 from concurrent.futures import ThreadPoolExecutor, wait
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from typing import Any
 
@@ -110,6 +110,17 @@ def _pick(current: Block | None, key: str, store: LiveStore, snap: LiveSnapshot,
     if not allow_cross_day and last.trade_date != snap.fetched_at.date():
         return None
     return Block(last.value, last.source, last.scope, last.ts, last.trade_date, fallback=True)
+
+
+def without_cross_day(snap: LiveSnapshot, today: date) -> LiveSnapshot:
+    """本轮是按「允许跨日」取的，重判后却落在不许跨日的状态（集合竞价/待开盘/交易中）时用：
+    返回一份拷贝，把**跨交易日的兜底块**（`fallback` 且交易日 ≠ today）换成 None，其余原样。
+    这是同间隔改判（未知 → 交易中都是 30 秒行，不整页重跑）那一跳的纯数据补丁，不重新取数。"""
+    def keep(block: Block | None) -> Block | None:
+        if block is not None and block.fallback and block.trade_date != today:
+            return None
+        return block
+    return replace(snap, quotes=keep(snap.quotes), breadth=keep(snap.breadth), thermo=keep(snap.thermo))
 
 
 def fetch_round(http_get: HttpGet, now: datetime, calendar_hint: date | None,

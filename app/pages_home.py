@@ -212,6 +212,9 @@ def _render_live(expected_interval: int, expected_key: str) -> None:
     hint = _hint(cal)
     snap = _snapshot(_remembered_decision(cal), hint)   # 缓存入口与 allow_cross_day 用上一轮的真实判定
     decision, _ = _decide(snap, cal)                    # 用真实源日期重判
+    if not session.allow_cross_day(decision.state):
+        # 本轮可能是按上一轮「允许跨日」取的（未知 → 交易中同为 30 秒行，不会整页重跑）
+        snap = live.without_cross_day(snap, market.now().date())
     st.session_state[DECISION_KEY] = (decision.state.value, decision.interval_s, decision.cache_ttl)
     # 每轮都记下想要的间隔：页面按它选 fragment。没有日历的休市日，_decide(None) 是「未知」
     # （30 秒行）而 _decide(snap) 是「休市」（60 秒行），不记下来的话整页重跑后又选回 30 秒。

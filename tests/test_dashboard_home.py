@@ -173,12 +173,51 @@ def test_trading_hours_never_show_a_previous_days_value(tmp_path, monkeypatch):
                         lambda raw, code: dataclasses.replace(real(raw, code), trade_date=nxt))
     monkeypatch.setattr(live, "HTTP_GET", _kill(TENCENT_QUOTES, SINA_QUOTES))
     _freeze(monkeypatch, datetime.combine(nxt, time(10, 15)))
+    allow_args = []
+    real_round = live.fetch_round
+
+    def spy(http_get, now, hint, store, allow_cross_day):
+        allow_args.append(allow_cross_day)
+        return real_round(http_get, now, hint, store, allow_cross_day)
+    monkeypatch.setattr(live, "fetch_round", spy)
     at.run()
     assert not at.exception, at.exception
     assert "交易中" in _status(at)
+    # 重跑后按「交易中」取数：请 live 自己就别捡跨日旧值（页面的 without_cross_day 是第二道）
+    assert allow_args and allow_args[-1] is False, allow_args
     head, _ = _fallback_parts()
     assert not [c for c in _captions(at) if c.startswith(head)], _captions(at)
     assert "暂不可用" in " ".join(_captions(at))
+
+
+def test_unknown_to_trading_on_the_same_interval_drops_the_previous_days_fallback(tmp_path, monkeypatch):
+    """同间隔改判：新会话、没有日历，上一轮判定是「未知」（30 秒行、允许跨日），本轮分时说
+    今天开市 → 交易中（也是 30 秒行，不整页重跑）。本轮是按「允许跨日」取的，行情两源都挂时
+    会捡回昨天的最近成功值——改判后必须丢掉它，指数区显示「暂不可用」（§3、§4.2）。"""
+    day = _fixture_day()
+    nxt = _next_weekday(day)
+    assert not _home(tmp_path).exception  # 录制日收盘后：进程里的最近成功值记下录制日的行情块
+    st.cache_data.clear()                 # 不清 live.STORE
+    real = sources.parse_tencent_minute
+    monkeypatch.setattr(sources, "parse_tencent_minute",
+                        lambda raw, code: dataclasses.replace(real(raw, code), trade_date=nxt))
+    monkeypatch.setattr(live, "HTTP_GET", _kill(TENCENT_QUOTES, SINA_QUOTES))
+    _freeze(monkeypatch, datetime.combine(nxt, time(10, 0)))
+    calls = {"n": 0}
+    real_round = live.fetch_round
+
+    def counting(*a, **k):
+        calls["n"] += 1
+        return real_round(*a, **k)
+    monkeypatch.setattr(live, "fetch_round", counting)
+    at = _home(tmp_path)                  # 新会话：session_state 里没有上一轮的判定
+    assert not at.exception, at.exception
+    assert calls["n"] == 1                # 同间隔，没有整页重跑——丢块必须发生在这一跳里
+    assert "交易中" in _status(at)
+    head, _ = _fallback_parts()
+    assert not [c for c in _captions(at) if c.startswith(head)], _captions(at)
+    assert not [h for h in _htmls(at) if 'class="qd-card"' in h]
+    assert app_module("guide").HOME_UNAVAILABLE in _captions(at)
 
 
 # ---------------------------------------------------------------- 状态条
