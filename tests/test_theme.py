@@ -391,3 +391,52 @@ def test_manual_row_wraps_tag_and_text_and_has_css():
     for cls in ("qd-manual-row", "qd-manual-text"):
         assert f".{cls} {{" in theme.CSS
 
+
+# ================================================================ 首页卡片（Task 20）
+
+def test_stat_card_renders_label_value_and_optional_image():
+    html = theme.stat_card("上证指数", "3939.76", sub="-12.37 · -0.31%", color=theme.DOWN,
+                           img="data:image/svg+xml;base64,QUJD", note="成交 7767亿")
+    assert 'class="qd-card"' in html and "上证指数" in html and "3939.76" in html
+    assert f'<div class="qd-card-sub" style="color: {theme.DOWN}">' in html, "有副文时颜色上副文"
+    assert '<img class="qd-card-img" src="data:image/svg+xml;base64,QUJD"' in html
+    assert "<svg" not in html, "小图必须走 img data URI，st.html 会删内联 svg"
+
+
+def test_stat_card_colors_the_value_when_there_is_no_sub():
+    html = theme.stat_card("涨停", "51", color=theme.UP)
+    assert f'<div class="qd-card-value" style="color: {theme.UP}">51</div>' in html
+
+
+def test_stat_card_can_be_image_only():
+    html = theme.stat_card("", "", img="data:image/svg+xml;base64,QUJD")
+    assert "qd-card-label" not in html and "qd-card-value" not in html and "qd-card-img" in html
+
+
+def test_stat_card_rejects_non_data_uri_images_and_off_palette_colors():
+    import pytest
+    with pytest.raises(ValueError):
+        theme.stat_card("x", "1", img="https://evil/x.svg")
+    with pytest.raises(ValueError):
+        theme.stat_card("x", "1", color="#123456")
+
+
+def test_stat_card_escapes_everything():
+    html = theme.stat_card("<b>", "<i>", sub="<u>", note="<s>")
+    assert "<b>" not in html and "<i>" not in html and "<u>" not in html and "<s>" not in html
+
+
+def test_status_line_only_uses_running_or_idle():
+    import pytest
+    html = theme.status_line("交易中 · 14:35:03", running=True, extra="数据延迟")
+    assert 'qd-pill-running' in html and "数据延迟" in html
+    assert 'qd-pill-idle' in theme.status_line("已收盘 · 2026-09-24", running=False)
+    for kind in ("success", "failed"):
+        assert f"qd-pill-{kind}" not in html
+
+
+def test_home_css_rules_exist_for_the_new_builders():
+    for cls in (".qd-card", ".qd-card-label", ".qd-card-value", ".qd-card-sub", ".qd-card-img",
+                ".qd-card-note", ".qd-status"):
+        assert cls + " {" in theme.CSS, cls
+

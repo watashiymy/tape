@@ -286,6 +286,51 @@ CSS = f"""@import url("{FONT_IMPORT}");
   border: 1px solid {MUTED_DIM};
   padding: 0.1rem 0.45rem;
 }}
+
+/* 首页卡片（市场概览）：一张卡 = 小标签 + 大数值 + 一行副文 + 一幅小图 + 一行注脚。
+   边框沿用 .qd-metric 的左侧发丝线，不四面描边。小图是 img（data URI），不是内联 svg。 */
+.qd-card {{
+  border-left: 2px solid var(--qd-hairline);
+  padding: 0.15rem 0 0.15rem 0.6rem;
+  margin-bottom: 0.4rem;
+}}
+.qd-card-label {{
+  font-family: var(--qd-sans);
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  color: var(--qd-muted);
+  white-space: nowrap;
+}}
+.qd-card-value {{
+  font-family: var(--qd-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 1.35rem;
+  font-weight: 500;
+  line-height: 1.2;
+  color: var(--qd-text);
+}}
+.qd-card-sub {{
+  font-family: var(--qd-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8rem;
+}}
+.qd-card-img {{
+  display: block;
+  width: 100%;
+  height: 32px;
+  margin: 0.25rem 0 0.1rem;
+}}
+.qd-card-note {{
+  font-family: var(--qd-sans);
+  font-size: 0.7rem;
+  color: var(--qd-muted);
+}}
+.qd-status {{
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.2rem 0 0.6rem;
+}}
 """
 
 
@@ -383,6 +428,43 @@ def manual_tag(text: str) -> str:
     """「人工步骤」标记：这一步没有开始按钮。灰色，不用琥珀——
     琥珀在本主题里只给可操作元素，给没有按钮的卡片上琥珀等于骗手。"""
     return f'<span class="qd-manual">{_esc(text)}</span>'
+
+
+def _img(uri: str) -> str:
+    if not uri.startswith("data:image/svg+xml;base64,"):
+        raise ValueError("小图只接受 SVG 的 data URI（st.html 会删内联 svg，外链更不许）")
+    return f'<img class="qd-card-img" src="{uri}" alt="">'
+
+
+def stat_card(label: str, value: str, *, sub: str = "", color: str | None = None,
+              img: str | None = None, note: str = "") -> str:
+    """首页卡片。`color` 上在副文那一行（涨跌）；没有副文时上在数值上。白名单同 metric()。
+    label 与 value 都为空 = 纯图卡（比例条、柱状图），不输出那两行。"""
+    style = ""
+    if color is not None:
+        if color not in _INLINE_COLORS:
+            raise ValueError(f"内联色值必须来自色板，收到 {color!r}")
+        style = f' style="color: {color}"'
+    parts = ['<div class="qd-card">']
+    if label or value:
+        parts.append(f'<div class="qd-card-label">{_esc(label)}</div>')
+        parts.append(f'<div class="qd-card-value"{"" if sub else style}>{_esc(value)}</div>')
+    if sub:
+        parts.append(f'<div class="qd-card-sub"{style}>{_esc(sub)}</div>')
+    if img:
+        parts.append(_img(img))
+    if note:
+        parts.append(f'<div class="qd-card-note">{_esc(note)}</div>')
+    parts.append("</div>")
+    return "".join(parts)
+
+
+def status_line(text: str, *, running: bool, extra: str = "") -> str:
+    """首页状态条：只用 running（琥珀）/ idle（灰）两种 pill——满屏红涨绿跌旁边不许出现
+    红色的「延迟」或绿色的「成功」。`extra` 是叠加标记（如「数据延迟」），灰 pill 追加。"""
+    kind = "running" if running else "idle"
+    tail = pill(extra, "idle") if extra else ""
+    return f'<div class="qd-status">{pill(text, kind)}{tail}</div>'
 
 
 def inject() -> None:
