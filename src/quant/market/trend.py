@@ -22,9 +22,11 @@ class ButtonState(Enum):
 
 
 def missing_days(snapshot_dates: list[date], calendar: Calendar | None, permanent: set[date],
-                 now: datetime, ready: time) -> list[date] | None:
+                 now: datetime, ready: time, window: int) -> list[date] | None:
     """日历里截至「最近一个已结束交易日」的交易日 − 已有 − 永久缺口。日历不覆盖 → None（未知）。
-    日历里找不到已结束的交易日（日历首日就是当前日期且未到就绪时刻，或首日之后还没开过市）→ 什么都不缺。"""
+    日历里找不到已结束的交易日（日历首日就是当前日期且未到就绪时刻，或首日之后还没开过市）→ 什么都不缺。
+    只看最近 `window` 个交易日（与 run_market_breadth 补数时留的窗口一致）——窗口之前的日子
+    补数任务本来就不会去补，日历比窗口更早不算缺。"""
     today = now.date()
     if calendar is None or not calendar.covers(today):
         return None
@@ -33,12 +35,13 @@ def missing_days(snapshot_dates: list[date], calendar: Calendar | None, permanen
     if last_done is None:
         return []
     have = set(snapshot_dates)
-    return sorted(d for d in calendar.trading if d <= last_done and d not in have and d not in permanent)
+    in_window = sorted(d for d in calendar.trading if d <= last_done)[-window:]
+    return sorted(d for d in in_window if d not in have and d not in permanent)
 
 
 def button_state(*, state_broken: bool, running: bool, busy_other: bool, last_failed: bool,
                  snapshot_dates: list[date], calendar: Calendar | None, permanent: set[date],
-                 now: datetime, ready: time) -> ButtonState:
+                 now: datetime, ready: time, window: int) -> ButtonState:
     if state_broken:
         return ButtonState.BROKEN
     if running:
@@ -49,7 +52,7 @@ def button_state(*, state_broken: bool, running: bool, busy_other: bool, last_fa
         return ButtonState.FAILED_START if not snapshot_dates else ButtonState.FAILED_UPDATE
     if not snapshot_dates:
         return ButtonState.NEVER
-    missing = missing_days(snapshot_dates, calendar, permanent, now, ready)
+    missing = missing_days(snapshot_dates, calendar, permanent, now, ready, window)
     if missing is None:
         return ButtonState.UPDATE          # 不知道缺不缺 → 给按钮，让任务自己判
     if missing:

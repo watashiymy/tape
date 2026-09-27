@@ -32,7 +32,7 @@ from quant.data.baostock_provider import BaostockError, BaostockProvider, Snapsh
 from quant.market import breadth
 from quant.market.store import MarketStore, calendar_complete
 
-WINDOW_TRADING_DAYS = 310           # MA200 + 52 周 250 + 小图 60（spec §5.2）
+WINDOW_TRADING_DAYS = market.WINDOW_TRADING_DAYS  # MA200 + 52 周 250 + 小图 60（spec §5.2）
 CALENDAR_BACK_DAYS, CALENDAR_AHEAD_DAYS = 500, 60
 RECOMPUTE_EVERY = 5
 SESSION_RETRIES = 2

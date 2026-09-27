@@ -16,7 +16,7 @@ READY = time(17, 30)
 def _st(**kw):
     base = dict(state_broken=False, running=False, busy_other=False, last_failed=False,
                 snapshot_dates=[], calendar=CAL, permanent=set(),
-                now=datetime(2026, 9, 24, 20, 0), ready=READY)
+                now=datetime(2026, 9, 24, 20, 0), ready=READY, window=310)
     base.update(kw)
     return trend.button_state(**base)
 
@@ -54,11 +54,34 @@ def test_missing_days_before_any_trading_day_in_the_calendar_is_empty():
     """日历首日就是今天（或往前找不到交易日）且就绪前：没有「最近一个已结束交易日」，
     也就没有缺的日子——不许拿 None 去比日期炸掉。"""
     cal = Calendar(D("2026-09-24"), D("2026-10-31"), frozenset({D("2026-09-24"), D("2026-09-28")}))
-    assert trend.missing_days([D("2026-09-24")], cal, set(), datetime(2026, 9, 24, 16, 0), READY) == []
+    assert trend.missing_days([D("2026-09-24")], cal, set(), datetime(2026, 9, 24, 16, 0), READY, 310) == []
     holiday_first = Calendar(D("2026-09-25"), D("2026-10-31"), frozenset({D("2026-09-28")}))
-    assert trend.missing_days([], holiday_first, set(), datetime(2026, 9, 25, 10, 0), READY) == []
+    assert trend.missing_days([], holiday_first, set(), datetime(2026, 9, 25, 10, 0), READY, 310) == []
     assert _st(snapshot_dates=[D("2026-09-23")], calendar=cal,
                now=datetime(2026, 9, 24, 16, 0)) is B.NOT_READY
+
+
+# ---------------------------------------------------------------- 缺日判定限定在 window 天窗口内
+WINDOW_CAL = Calendar(D("2026-09-01"), D("2026-09-30"),
+                      frozenset(D(f"2026-09-{d:02d}") for d in range(1, 16)))  # 15 个交易日
+WINDOW_NOW = datetime(2026, 9, 15, 20, 0)                                     # 就绪后
+
+
+def test_missing_days_only_looks_inside_the_window():
+    last5 = [D(f"2026-09-{d:02d}") for d in range(11, 16)]
+    assert trend.missing_days(last5, WINDOW_CAL, set(), WINDOW_NOW, READY, 5) == []
+    last4 = last5[1:]                                     # 缺窗口里最早的 9-11
+    assert trend.missing_days(last4, WINDOW_CAL, set(), WINDOW_NOW, READY, 5) == [D("2026-09-11")]
+    # 日历比窗口早得多的日子（9-01..9-10）没有快照，但在窗口之外 → 不算缺
+    assert trend.missing_days(last5, WINDOW_CAL, set(), WINDOW_NOW, READY, 310) == \
+        [D(f"2026-09-{d:02d}") for d in range(1, 11)]
+
+
+def test_button_state_up_to_date_when_only_the_window_is_covered():
+    last5 = [D(f"2026-09-{d:02d}") for d in range(11, 16)]
+    assert _st(snapshot_dates=last5, calendar=WINDOW_CAL, now=WINDOW_NOW, window=5) is B.UP_TO_DATE
+    last4 = last5[1:]
+    assert _st(snapshot_dates=last4, calendar=WINDOW_CAL, now=WINDOW_NOW, window=5) is B.UPDATE
 
 
 # ---------------------------------------------------------------- 卡片「—」写什么（spec §5.4）

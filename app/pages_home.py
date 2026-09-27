@@ -382,7 +382,8 @@ def _job_area(ms: MarketStore) -> None:
         busy_other=bool(busy) and busy != "market_breadth",
         last_failed=state is not None and state.status == process.FAILED,
         snapshot_dates=ms.snapshot_dates(), calendar=ms.load_calendar(),
-        permanent=ms.permanent_gaps(), now=now, ready=market.BREADTH_READY)
+        permanent=ms.permanent_gaps(), now=now, ready=market.BREADTH_READY,
+        window=market.WINDOW_TRADING_DAYS)
     if bstate is B.BROKEN:
         st.error(message)
         return

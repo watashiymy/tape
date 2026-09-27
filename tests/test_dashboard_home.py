@@ -631,6 +631,29 @@ def _breadth_fixture(tmp_path, k, *, skip=(), permanent=()):
     return ms, [d for d in days if d not in skip]
 
 
+def test_missing_days_older_than_the_window_do_not_block_up_to_date(tmp_path, monkeypatch):
+    """回归 bug：真实门店的日历比补数窗口早得多——补数任务只留最近 WINDOW_TRADING_DAYS 个
+    交易日的快照，窗口之前没快照是预期，不该被 missing_days 当成缺。这里把窗口收到 3 天来
+    复现：日历有 10 个交易日（末日 = 夹具日的前一个交易日，夹具日本身不是交易日），只留最后
+    3 天的快照——窗口之前的 7 天没快照也不该报「更新收盘数据」，按钮区什么都不该显示。"""
+    import pandas as pd
+    monkeypatch.setattr(market, "WINDOW_TRADING_DAYS", 3)
+    ms = _market_store(tmp_path)
+    day = _fixture_day()
+    window_days = _weekdays_until(day - timedelta(days=1), 10)
+    cal_days = list(pd.date_range(window_days[0] - timedelta(days=10), day + timedelta(days=30)).date)
+    ms.save_calendar(cal_days, window_days)      # 交易日只有这 10 天——夹具日本身不是交易日
+    for d in window_days[-3:]:
+        ms.save_snapshot(d, pd.DataFrame({"code": ["sh.600000"], "close": [1.0], "preclose": [1.0],
+                                           "tradestatus": [1], "isST": [0]}))
+    ms.save_breadth(pd.DataFrame({"date": [window_days[-1]], "above20": [1], "n20": [1], "above60": [0],
+                                  "n60": [0], "above200": [0], "n200": [0], "new_high": [0], "new_low": [0],
+                                  "n_hl": [0]}))
+    at = _home(tmp_path)
+    assert not at.exception, at.exception
+    assert not ({"home_breadth_start", "home_breadth_update"} & _keys(at))
+
+
 def test_trend_cards_date_and_shortfall_come_from_days_with_data(tmp_path):
     """夹具日 19:30、夹具日的快照还没存（任务在发布前跑过，只补到前一天）：标题旁写**有数据的
     最后一天**；20 日卡有数；60 日卡「—」并写还差 60 − k 天；按钮区给「更新收盘数据」。"""
