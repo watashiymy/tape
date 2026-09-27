@@ -31,6 +31,10 @@ def test_settled_flag_is_monotonic():
     assert turnover.settled(datetime(2026, 9, 26, 10, 0), D24, date(2026, 9, 26)) is True  # 休市
 
 
+def test_settled_boundary_at_exactly_close_cutoff():
+    assert turnover.settled(datetime(2026, 9, 24, 15, 30, 0), D24, D24) is True
+
+
 def test_intraday_wording_has_no_percentage():
     text = turnover.line(now=datetime(2026, 9, 24, 12, 0), today=D24, trade_date=D24,
                          current_wan=1.47e8, current_ts=time(11, 30),

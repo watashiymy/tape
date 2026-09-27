@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import time
 from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -15,7 +16,8 @@ from quant import market
 from quant.market import sources
 from quant.market.sources import HttpGet, Result
 
-ROUND_DEADLINE_S = 6.0       # 整轮最迟收口
+ROUND_DEADLINE_S = 6.0       # 整轮（两段合计）最迟收口——不是每段各 6 秒
+MIN_PHASE2_BUDGET_S = 0.5    # 第 1 段几乎耗尽预算时，也留给池子这么多，别让它一点机会都没有
 RECONCILE_TOLERANCE = 5      # 涨停池 tc 与分布 +11 档允许差几只（两个请求不是同一瞬间）
 HTTP_GET: HttpGet = sources.default_http_get     # 测试用替身覆盖这一个名字
 
@@ -73,14 +75,14 @@ class LiveStore:
 STORE = LiveStore()
 
 
-def _run_all(jobs: dict[str, Any]) -> dict[str, Result]:
-    """并发跑一组无参 callable，整体最迟 ROUND_DEADLINE_S 收口；超时的当失败。
+def _run_all(jobs: dict[str, Any], timeout: float) -> dict[str, Result]:
+    """并发跑一组无参 callable，最迟 `timeout` 秒收口；超时的当失败。
     不用 `with`：那会在退出时 shutdown(wait=True) 等完超时的任务，deadline 就成了摆设。"""
     out: dict[str, Result] = {}
     pool = ThreadPoolExecutor(max_workers=max(1, len(jobs)))
     try:
         futs = {pool.submit(fn): key for key, fn in jobs.items()}
-        done, not_done = wait(futs, timeout=ROUND_DEADLINE_S)
+        done, not_done = wait(futs, timeout=timeout)
         for f in done:
             out[futs[f]] = f.result()
         for f in not_done:
@@ -88,6 +90,11 @@ def _run_all(jobs: dict[str, Any]) -> dict[str, Result]:
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
     return out
+
+
+def _parse(raw: bytes, parse: Any) -> Result:
+    """对已经到手的原始字节复用 `fetch()` 的异常收编逻辑（不再发请求，http_get 直接把 raw 吐回去）。"""
+    return sources.fetch(lambda _url, _headers=None: raw, "", parse)
 
 
 def _pick(current: Block | None, key: str, store: LiveStore, snap: LiveSnapshot,
@@ -107,14 +114,14 @@ def _pick(current: Block | None, key: str, store: LiveStore, snap: LiveSnapshot,
 
 def fetch_round(http_get: HttpGet, now: datetime, calendar_hint: date | None,
                 store: LiveStore, allow_cross_day: bool) -> LiveSnapshot:
+    t0 = time.monotonic()          # 整轮（两段合计）的收口时刻从这里算，不是每段各给一份 ROUND_DEADLINE_S
     codes = [c for c, _ in market.INDEXES]
     snap = LiveSnapshot(fetched_at=now, trade_date=None, source_ok=False, sh_status=None)
 
     # —— 第 1 段：并发
+    # 腾讯只取一次原始字节；行情与家数各自独立解析（见下），任一份校验失败都不连累另一份。
     jobs = {
-        "tencent": lambda: sources.fetch(http_get, sources.tencent_quote_url(codes),
-                                         lambda raw: (sources.parse_tencent_quotes(raw, codes),
-                                                      sources.parse_tencent_breadth(raw))),
+        "tencent": lambda: sources.fetch(http_get, sources.tencent_quote_url(codes), lambda raw: raw),
         "fenbu": lambda: sources.fetch(http_get, sources.em_fenbu_url(), sources.parse_em_fenbu),
     }
     for code in codes:
@@ -123,7 +130,7 @@ def fetch_round(http_get: HttpGet, now: datetime, calendar_hint: date | None,
     # 新浪与主源同一轮并发发出（多 1 个请求），主源失败才采用；日期校验放到拿到预期交易日之后
     jobs["sina_raw"] = lambda: sources.fetch(http_get, sources.sina_quote_url(codes),
                                              lambda raw: raw, headers=sources.SINA_HEADERS)
-    res = _run_all(jobs)
+    res = _run_all(jobs, ROUND_DEADLINE_S)
 
     # —— 交易日期：6 次分时里成功的那些必须一致
     dates = set()
@@ -147,14 +154,27 @@ def fetch_round(http_get: HttpGet, now: datetime, calendar_hint: date | None,
     else:
         snap.trade_date = calendar_hint or store.last_trade_date
 
-    # —— 行情块
+    # —— 行情块：腾讯的行情与家数各自独立解析（同一份原始字节，两次校验），
+    # 一份校验不过不连累另一份——这就是为什么两者不能拼在同一个 lambda 里一起解析。
     quotes_block = None
+    tencent_breadth = None
     if res["tencent"].ok:
-        quotes, tencent_breadth = res["tencent"].value
-        quotes_block = Block(quotes, "tencent", "", quotes["sh000001"].ts, snap.trade_date)
+        raw = res["tencent"].value
+        quotes_res = _parse(raw, lambda r: sources.parse_tencent_quotes(r, codes))
+        breadth_res = _parse(raw, sources.parse_tencent_breadth)
+        if quotes_res.ok:
+            quotes = quotes_res.value
+            quotes_block = Block(quotes, "tencent", "", quotes["sh000001"].ts, snap.trade_date)
+        else:
+            snap.errors.append(f"腾讯行情: {quotes_res.error}")
+        if breadth_res.ok:
+            tencent_breadth = breadth_res.value
+        else:
+            snap.errors.append(f"腾讯家数: {breadth_res.error}")
     else:
         snap.errors.append(f"腾讯行情: {res['tencent'].error}")
-        tencent_breadth = None
+
+    if quotes_block is None:
         if res["sina_raw"].ok:
             try:
                 quotes = sources.parse_sina_quotes(res["sina_raw"].value, codes, snap.trade_date,
@@ -166,15 +186,17 @@ def fetch_round(http_get: HttpGet, now: datetime, calendar_hint: date | None,
             snap.errors.append(f"新浪行情: {res['sina_raw'].error}")
     snap.quotes = _pick(quotes_block, "quotes", store, snap, allow_cross_day)
 
-    # —— 第 2 段：池子（只在知道交易日时）
+    # —— 第 2 段：池子（只在知道交易日时）。预算是整轮剩下的，不是重新给一份 ROUND_DEADLINE_S——
+    # 否则最坏情况第 1 段吃满 6 秒、第 2 段又吃满 6 秒，整轮变成 12 秒（I-3）。
     zt = zb = None
     if snap.trade_date is not None:
+        phase2_budget = max(MIN_PHASE2_BUDGET_S, ROUND_DEADLINE_S - (time.monotonic() - t0))
         pools = _run_all({
             "zt": lambda: sources.fetch(http_get, sources.em_pool_url("zt", snap.trade_date),
                                         lambda raw: sources.parse_em_pool(raw, "zt", snap.trade_date)),
             "zb": lambda: sources.fetch(http_get, sources.em_pool_url("zb", snap.trade_date),
                                         lambda raw: sources.parse_em_pool(raw, "zb", snap.trade_date)),
-        })
+        }, phase2_budget)
         zt, zb = pools["zt"].value, pools["zb"].value
         for k in ("zt", "zb"):
             if not pools[k].ok:

@@ -125,13 +125,15 @@ def in_continuous_auction(now_t: time) -> bool:
     return any(a <= now_t < b for a, b in CONTINUOUS)
 
 
-def is_stale(now: datetime, last_point: time | None, quote_ts: datetime | None) -> bool:
-    """§4.3：只在连续竞价时段判；分时最后一点优先，拿不到才看行情时间戳。方向：数据落后于现在。"""
+def is_stale(now: datetime, last_point: datetime | None, quote_ts: datetime | None) -> bool:
+    """§4.3：只在连续竞价时段判；分时最后一点优先，拿不到才看行情时间戳。方向：数据落后于现在。
+    `last_point` 是分时最后一点的**完整日期时刻**（调用方用 `datetime.combine(minute.trade_date,
+    points[-1][0])` 拼出来）——只传 `time` 会在跨交易日时把昨天的点当成今天的，永远判不出过期。"""
     if not in_continuous_auction(now.time()):
         return False
     if last_point is not None:
         # 分时点按分钟**结束**时刻标注，所以那一分钟的数据其实新到 (last_point − 1 分钟)
-        point = datetime.combine(now.date(), last_point) - timedelta(minutes=1)
+        point = last_point - timedelta(minutes=1)
         return (now - point).total_seconds() > STALE_MINUTE_S
     if quote_ts is not None:
         return (now - quote_ts).total_seconds() > STALE_QUOTE_S
@@ -147,5 +149,9 @@ def expected_trade_day(source_date: date | None, calendar: Calendar | None, now_
     if calendar is not None and calendar.covers(today):
         if calendar.is_trading(today) and now_t >= AUCTION_START:
             return today
-        return calendar.previous_trading_day(today)
+        prev = calendar.previous_trading_day(today)
+        if prev is not None:
+            return prev
+        # 日历覆盖今天，但往前找不到任何交易日（例如日历首日就是今天）——
+        # 别把 None 当结果吐出去，退到上一轮成功的日期。
     return last_known

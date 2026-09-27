@@ -32,6 +32,13 @@ def test_snapshot_roundtrip_is_atomic_and_lists_by_date(tmp_path):
     assert list(ms.load_snapshot(D("2026-09-22")).columns) == list(_snap().columns)
 
 
+def test_snapshot_dates_skips_filenames_that_look_like_dates_but_are_not(tmp_path):
+    ms = store.MarketStore(tmp_path)
+    ms.save_snapshot(D("2026-09-22"), _snap())
+    (ms.daily_dir / "2026-13-45.parquet").write_text("garbage")   # 13 月 45 日：不是合法日期
+    assert ms.snapshot_dates() == [D("2026-09-22")]
+
+
 def test_snapshot_rows_and_neighbours(tmp_path):
     ms = store.MarketStore(tmp_path)
     ms.save_snapshot(D("2026-09-22"), _snap(5))
@@ -63,6 +70,12 @@ def test_calendar_roundtrip_and_view(tmp_path):
     assert ms.load_calendar() is not None and store.MarketStore(tmp_path / "nope").load_calendar() is None
 
 
+def test_load_calendar_empty_returns_none_instead_of_raising(tmp_path):
+    ms = store.MarketStore(tmp_path)
+    ms.save_calendar([], [])
+    assert ms.load_calendar() is None
+
+
 def test_calendar_completeness_rules():
     days = list(pd.date_range("2025-05-01", "2026-11-23").date)   # ≈ today−500 .. today+60
     trading = frozenset(d for d in days if d.weekday() < 5)
@@ -86,6 +99,18 @@ def test_gaps_record_and_promote(tmp_path):
     assert ms.permanent_gaps() == {D("2026-08-14")}
     doc = json.loads(ms.gaps_path.read_text())
     assert doc["2026-08-14"] == {"failed_on": ["2026-09-24", "2026-09-25"], "permanent": True}
+
+
+def test_gaps_corrupt_top_level_shape_is_not_silently_wiped(tmp_path):
+    """gaps.json 如果被写坏成一个顶层列表（不是「日期 -> {failed_on:[...]}」的字典），
+    permanent_gaps() 不能悄悄当成空注册表（那会让任务重新去抓明知会失败的日子），
+    但也不能让页面因为这个崩掉；record_failure 则必须炸，让任务失败得响亮。"""
+    ms = store.MarketStore(tmp_path)
+    ms.root.mkdir(parents=True, exist_ok=True)
+    ms.gaps_path.write_text("[1, 2, 3]", encoding="utf-8")
+    assert ms.permanent_gaps() == set()
+    with pytest.raises(RuntimeError):
+        ms.record_failure(D("2026-08-14"), failed_on=D("2026-09-24"))
 
 
 def test_retention_deletes_only_dated_parquets_before_the_window(tmp_path):

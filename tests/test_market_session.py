@@ -80,8 +80,8 @@ def test_transitions_change_the_decision(a, b, changes):
 def test_stale_by_last_minute_point():
     # 最后一点标 10:00（表示 09:59-10:00 那分钟，数据新到 09:59）：
     # 10:02:00 → 落后 180 秒，不算；10:02:01 → 181 秒 → 延迟
-    assert session.is_stale(at(10, 2, 1), time(10, 0), None) is True
-    assert session.is_stale(at(10, 2, 0), time(10, 0), None) is False
+    assert session.is_stale(at(10, 2, 1), at(10, 0), None) is True
+    assert session.is_stale(at(10, 2, 0), at(10, 0), None) is False
 
 
 def test_stale_falls_back_to_quote_timestamp_when_no_minute():
@@ -91,12 +91,39 @@ def test_stale_falls_back_to_quote_timestamp_when_no_minute():
 
 def test_stale_direction_is_not_reversed():
     """数据时刻晚于现在（时钟不同步）绝不能判成延迟。"""
-    assert session.is_stale(at(10, 0), time(10, 5), None) is False
+    assert session.is_stale(at(10, 0), at(10, 5), None) is False
+
+
+def test_stale_last_point_from_a_previous_day_is_always_stale():
+    """I-2：last_point 只带 time 时，跨交易日会被 now.date() 借尸还魂成「今天的点」，
+    永远判不出过期。现在 last_point 是完整日期时刻，昨天收盘的点摆到今天早盘必须判延迟。"""
+    yesterday_close = datetime.combine(WED, time(15, 0))
+    next_day_935 = datetime.combine(date(2026, 9, 24), time(9, 35))
+    assert session.is_stale(next_day_935, yesterday_close, None) is True
 
 
 @pytest.mark.parametrize("now", [at(9, 20), at(9, 30, 30), at(12, 0), at(14, 58), at(15, 10)])
 def test_stale_is_only_judged_in_continuous_auction(now):
-    assert session.is_stale(now, time(9, 0), at(9, 0)) is False
+    assert session.is_stale(now, at(9, 0), at(9, 0)) is False
+
+
+def test_stale_quote_ts_boundary_at_exactly_120s():
+    assert session.is_stale(at(10, 2, 0), None, at(10, 0, 0)) is False    # 恰好 120 秒：不算
+    assert session.is_stale(at(10, 2, 1), None, at(10, 0, 0)) is True     # 121 秒：延迟
+
+
+def test_in_continuous_auction_boundary_at_lunch_end():
+    assert session.in_continuous_auction(time(13, 0)) is False
+    assert session.in_continuous_auction(time(13, 1)) is True
+
+
+def test_clock_row_boundary_at_auction_end():
+    state, _, _ = session._clock_row(time(9, 25, 0))
+    assert state is State.WAIT_OPEN
+
+
+def test_trade_day_boundary_at_non_trading_cutoff():
+    assert session.trade_day(WED, None, True, date(2026, 9, 22), time(9, 45, 0)) is TradeDay.NON_TRADING
 
 
 def test_expected_trade_day_order():
@@ -106,3 +133,11 @@ def test_expected_trade_day_order():
     assert e(None, CAL, time(9, 0), None, today=WED) == date(2026, 9, 22)         # 开盘前 → 上一交易日
     assert e(None, None, time(10, 0), date(2026, 9, 22), today=WED) == date(2026, 9, 22)   # 上一轮成功的
     assert e(None, None, time(10, 0), None, today=WED) is None
+
+
+def test_expected_trade_day_falls_back_to_last_known_when_calendar_has_no_earlier_day():
+    """日历覆盖今天、今天不是交易日，但日历首日就是今天——previous_trading_day 往前找不到任何
+    交易日，只能返回 None。不能把 None 直接吐出去，得退到上一轮成功的日期（Minor 项）。"""
+    cal = Calendar(first=WED, last=date(2026, 10, 31), trading=frozenset())
+    last_known = date(2026, 9, 20)
+    assert session.expected_trade_day(None, cal, time(10, 0), last_known, today=WED) == last_known

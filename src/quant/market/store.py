@@ -22,6 +22,13 @@ _DATED = re.compile(r"^(\d{4}-\d{2}-\d{2})\.parquet$")
 SNAPSHOT_COLUMNS = ["code", "close", "preclose", "tradestatus", "isST"]
 
 
+def _is_gaps_shape(doc: object) -> bool:
+    """gaps.json 的预期形状：字典，值是「至少带 failed_on 列表」的字典。"""
+    if not isinstance(doc, dict):
+        return False
+    return all(isinstance(v, dict) and isinstance(v.get("failed_on"), list) for v in doc.values())
+
+
 def _atomic_write(path: Path, write) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
@@ -53,7 +60,10 @@ class MarketStore:
         for p in self.daily_dir.iterdir():
             m = _DATED.match(p.name)
             if m:
-                out.append(date.fromisoformat(m.group(1)))
+                try:
+                    out.append(date.fromisoformat(m.group(1)))
+                except ValueError:
+                    continue      # 文件名形似日期但不是合法日期（如 2026-13-45）——跳过，不许炸
         return sorted(out)
 
     def save_snapshot(self, day: date, df: pd.DataFrame) -> None:
@@ -98,18 +108,27 @@ class MarketStore:
             df = pd.read_parquet(self.calendar_path)
         except (OSError, ValueError):
             return None
+        if df.empty:
+            return None       # 空日历没有 first/last，装不出一个 Calendar
         days = [pd.Timestamp(d).date() for d in df["date"]]
         trading = frozenset(d for d, t in zip(days, df["is_trading"]) if bool(t))
         return Calendar(first=min(days), last=max(days), trading=trading)
 
     # —— 永久缺口
     def _gaps(self) -> dict:
+        """读 gaps.json。文件不存在、或存在但不是合法 JSON → 当空（可能是第一次写）。
+        文件存在、是合法 JSON，但形状不对（不是「日期 -> {failed_on: [...]}」的字典）→
+        **不能当空**：那样等于悄悄抹掉已登记的永久缺口，任务会重新去抓明知会失败的日子。
+        大声炸出来（RuntimeError），比默默把注册表清零安全。"""
         if not self.gaps_path.is_file():
             return {}
         try:
-            return json.loads(self.gaps_path.read_text(encoding="utf-8"))
+            doc = json.loads(self.gaps_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return {}
+        if not _is_gaps_shape(doc):
+            raise RuntimeError(f"{self.gaps_path} 不是预期的缺口登记格式（日期 -> failed_on 列表）")
+        return doc
 
     def record_failure(self, day: date, failed_on: date) -> None:
         doc = self._gaps()
@@ -121,7 +140,13 @@ class MarketStore:
             json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8"))
 
     def permanent_gaps(self) -> set[date]:
-        return {date.fromisoformat(k) for k, v in self._gaps().items() if v.get("permanent")}
+        """页面显示用：文件损坏就当「没有已知缺口」，绝不能让首页因为这个崩掉。
+        任务那边的 `record_failure` 不这样兜底——那是真正会写坏数据的地方，必须炸。"""
+        try:
+            doc = self._gaps()
+        except RuntimeError:
+            return set()
+        return {date.fromisoformat(k) for k, v in doc.items() if v.get("permanent")}
 
     # —— 指标表
     def save_breadth(self, df: pd.DataFrame) -> None:
