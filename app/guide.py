@@ -491,6 +491,12 @@ HOME_TREND_BUSY = "有任务在运行，稍后再更新"
 HOME_TREND_SHORT = "还差约 {n} 天的收盘数据，点「更新收盘数据」继续"
 HOME_TREND_GAP = "数据源缺 {days} 的数据，这几项要等窗口滚过它才有"
 HOME_BTN_START, HOME_BTN_UPDATE, HOME_BTN_STOP = "开始准备", "更新收盘数据", "停止"
+HOME_ABOVE_MA = "站上 {n} 日线"
+HOME_HIGH_LOW = "52 周新高 / 新低"
+HOME_RECENT_DAYS = "近 {n} 个交易日"
+HOME_JOB_FAILED = "上次运行失败"
+HOME_LOG_TITLE = "完整日志"
+HOME_LOG_EMPTY = "（暂无输出）"
 
 
 # ---------------------------------------------------------------- 就地帮助（§3.2）

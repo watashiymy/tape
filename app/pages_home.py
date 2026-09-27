@@ -8,17 +8,19 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
+import pandas as pd
 import streamlit as st
 
 import guide
 import theme
 import ui
 from quant import market
-from quant.market import live, session, sources, turnover
+from quant.market import live, session, sources, trend, turnover
 from quant.market.session import Calendar, Decision, State, TradeDay
 from quant.market.store import MarketStore
+from quant.market.trend import ButtonState as B
 from quant.report import fmt, minicharts
-from quant.runner import process
+from quant.runner import process, progress, view
 
 
 def _store() -> MarketStore:
@@ -318,9 +320,137 @@ def _first_run_hint() -> None:
                      icon=":material/menu_book:", help=guide.guide_page("guide").lead)
 
 
+# ---------------------------------------------------------------- 趋势宽度四卡 + 按钮区
+TREND_WINDOWS = ((20, "above20", "n20"), (60, "above60", "n60"), (200, "above200", "n200"))
+TREND_DAYS_SHOWN = 60
+
+
+def _trend_cards(ms: MarketStore) -> None:
+    table = ms.load_breadth()
+    asof = table["date"].iloc[-1] if table is not None and len(table) else None
+    pill = theme.pill(guide.HOME_TREND_ASOF.format(day=pd.Timestamp(asof).date()), "idle") if asof is not None else ""
+    st.html(theme.section(guide.HOME_TREND_TITLE, pill))
+    if table is None or not len(table):
+        return
+    tail = table.tail(TREND_DAYS_SHOWN)
+    gaps = ms.permanent_gaps()
+    cols = st.columns(4)
+    for col, (n, above, denom) in zip(cols, TREND_WINDOWS):
+        last = tail.iloc[-1]
+        label = guide.HOME_ABOVE_MA.format(n=n)
+        if last[denom] == 0:
+            col.html(theme.stat_card(label, fmt.MISSING, note=_short_note(table, denom, n, gaps)))
+            continue
+        pct = 100 * last[above] / last[denom]
+        series = [(r[above] / r[denom]) if r[denom] else None for _, r in tail.iterrows()]
+        col.html(theme.stat_card(label, f"{pct:.1f}%", sub=f"{int(last[above])}/{int(last[denom])}",
+                                 img=minicharts.trend_line(series),
+                                 note=guide.HOME_RECENT_DAYS.format(n=len(tail))))
+    last = tail.iloc[-1]
+    if last["n_hl"] == 0:
+        cols[3].html(theme.stat_card(guide.HOME_HIGH_LOW, fmt.MISSING,
+                                     note=_short_note(table, "n_hl", 250, gaps)))
+    else:
+        cols[3].html(theme.stat_card(guide.HOME_HIGH_LOW, f"{int(last['new_high'])} / {int(last['new_low'])}",
+                                     img=minicharts.highs_lows(tail["new_high"].tolist(), tail["new_low"].tolist()),
+                                     note=guide.HOME_RECENT_DAYS.format(n=len(tail))))
+    with st.popover("?"):
+        st.markdown(guide.HOME_HELP["above_ma"])
+        st.markdown(guide.HOME_HELP["high_low"])
+
+
+def _short_note(table, denom: str, n: int, gaps: set) -> str:
+    """分母为 0 的卡片写什么：补得上就说还差几天、去点按钮；表里天数其实够而分母仍为 0，
+    说明回看期跨过了永久缺口，那就说清要等窗口滚过它（spec §5.4）。"""
+    if len(table) >= n and gaps:
+        days = "、".join(d.isoformat() for d in sorted(gaps)[:3])
+        return guide.HOME_TREND_GAP.format(days=days)
+    return guide.HOME_TREND_SHORT.format(n=max(1, n - int(len(table))))
+
+
+def _job_area(ms: MarketStore) -> None:
+    try:
+        state = process.read_state("market_breadth", ui.RUNS_DIR)
+        busy = process.any_running(ui.RUNS_DIR)
+        broken = False
+    except RuntimeError as e:
+        st.error(str(e))
+        return
+    running = state is not None and state.status == process.RUNNING
+    now = market.now()
+    bstate = trend.button_state(
+        state_broken=broken, running=running,
+        busy_other=bool(busy) and busy != "market_breadth",
+        last_failed=state is not None and state.status == process.FAILED,
+        snapshot_dates=ms.snapshot_dates(), calendar=ms.load_calendar(),
+        permanent=ms.permanent_gaps(), now=now, ready=market.BREADTH_READY)
+    if bstate is B.RUNNING:
+        log = process.read_log(state)
+        prog = progress.parse_market_breadth(log)
+        head, detail = view.progress_lines(prog, view.elapsed_seconds(state), status=state.status)
+        ratio = view.progress_ratio(prog)
+        if ratio is not None:              # 必须是 if 语句：裸三元会被 streamlit magic 整条包进 st.write
+            st.progress(ratio, text=head)
+        else:
+            st.caption(head)
+        if detail:
+            st.caption(detail)
+        if st.button(f"⏹ {guide.HOME_BTN_STOP}", key="home_breadth_stop"):
+            ui.stop_job(state)
+        return
+    if bstate is B.BUSY_OTHER:
+        st.caption(guide.HOME_TREND_BUSY)
+        return
+    if bstate in (B.FAILED_START, B.FAILED_UPDATE):
+        log = process.read_log(state)
+        st.caption(progress.parse_market_breadth(log).extras.get("错误") or guide.HOME_JOB_FAILED)
+        with st.expander(guide.HOME_LOG_TITLE):
+            st.code(log or guide.HOME_LOG_EMPTY, language="text", height=ui.LOG_BOX_HEIGHT)
+    if bstate in (B.NEVER, B.FAILED_START):
+        if bstate is B.NEVER:
+            st.caption(guide.HOME_TREND_NEVER)
+        label, key = guide.HOME_BTN_START, "home_breadth_start"
+    elif bstate in (B.UPDATE, B.FAILED_UPDATE):
+        label, key = guide.HOME_BTN_UPDATE, "home_breadth_update"
+    elif bstate is B.NOT_READY:
+        st.caption(guide.HOME_TREND_NOT_READY.format(day=f"{now.month} 月 {now.day} 日"))
+        return
+    else:
+        return                                   # UP_TO_DATE：什么都不显示
+    help_col, btn_col = st.columns([1, 6])
+    with help_col.popover("?"):
+        st.markdown(guide.JOB_HELP["market_breadth"])
+    if btn_col.button(f"▶ {label}", key=key):
+        ui.start_job("market_breadth", {})
+
+
+@st.fragment(run_every=ui.AUTO_REFRESH_S)
+def _job_live(was_busy: str) -> None:
+    ms = _store()
+    _job_area(ms)
+    try:
+        busy = process.any_running(ui.RUNS_DIR) or ""
+    except RuntimeError:
+        busy = was_busy
+    if busy != was_busy:
+        st.rerun()                # 跑完/停了 → 整页重跑，宽度卡片跟着刷新
+
+
+@st.fragment
+def _job_idle(was_busy: str) -> None:
+    _job_area(_store())
+
+
 def page_home() -> None:
     ui.page_head("市场概览")
     _first_run_hint()
     key = _job_key()
     (_live_30 if _page_interval() == session.LIVE_INTERVAL_S else _live_60)(key)
+    ms = _store()
+    _trend_cards(ms)
+    try:
+        busy = process.any_running(ui.RUNS_DIR) or ""
+    except RuntimeError:
+        busy = ""
+    (_job_live if busy == "market_breadth" else _job_idle)(busy)
     st.caption(guide.HOME_FOOTER)

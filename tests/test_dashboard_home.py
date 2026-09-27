@@ -11,7 +11,10 @@
 # 时钟：conftest 的 offline_market 把 market.now 冻结在夹具录制日 19:30、取数走离线替身、
 # 清 st.cache_data 与 live.STORE。要换时刻就再 monkeypatch 一次 market.now（_freeze）。
 import dataclasses
+import json
+import os
 import re
+import sys
 from datetime import datetime, time, timedelta
 
 import pytest
@@ -22,7 +25,7 @@ from streamlit.testing.v1 import AppTest
 from quant import market
 from quant.market import live, session, sources
 from quant.market.sources import FetchError
-from quant.runner import process
+from quant.runner import jobs, process
 from tests.conftest import FIXTURES_MARKET, app_module, copy_app, fixture_http_get
 
 HOME = "市场概览"
@@ -488,3 +491,84 @@ def test_bucket_note_says_sealed_at_close_after_close_and_now_intraday(tmp_path,
     live.STORE.reset()
     at2 = _home(tmp_path)
     assert "封住涨停/跌停" in " ".join(_captions(at2))
+
+
+# ---------------------------------------------------------------- 趋势宽度四卡 + 按钮区
+def _fake_run(root, status, log="", exit_code=None):
+    runs = root / "output" / "runs"
+    (runs / "logs").mkdir(parents=True, exist_ok=True)
+    lp = runs / "logs" / "market_breadth_x.log"
+    lp.write_text(log, encoding="utf-8")
+    (runs / "market_breadth.json").write_text(json.dumps({
+        "script": "market_breadth", "run_id": "x", "pid": os.getpid(),
+        "argv": [sys.executable, "-u", jobs.JOBS["market_breadth"].script], "log_path": str(lp),
+        "started_at": "2026-09-24T19:00:00", "status": status, "exit_code": exit_code,
+        "finished_at": None if status == "running" else "2026-09-24T19:05:00"}), encoding="utf-8")
+
+
+def _keys(at) -> set[str]:
+    """AppTest 的 `at.button(key=…)` 对不存在的 key 抛 KeyError，不是返回假值——按集合判有无。"""
+    return {b.key for b in at.button}
+
+
+def test_never_prepared_shows_the_explanation_and_a_start_button(tmp_path):
+    at = _home(tmp_path)
+    assert "home_breadth_start" in _keys(at), "从没准备过 → 「开始准备」"
+    assert any("第一次准备需要" in c.value for c in at.caption)
+
+
+def test_running_shows_progress_and_stop(tmp_path):
+    _fake_run(tmp_path, "running", log="待补 310 天\n[57/310] 2026-06-30 5220 行 用时 18.4s\n")
+    at = _home(tmp_path)
+    assert "home_breadth_stop" in _keys(at) and "home_breadth_start" not in _keys(at)
+    # AppTest 没有 progress 访问器；st.progress 落在 UnknownElement，按类型名取，文案在 proto.text
+    bars = [e.proto.text for e in at.get("progress")]
+    assert any("57/310" in t for t in bars), bars
+
+
+def test_failed_first_run_shows_the_error_and_still_offers_start(tmp_path):
+    _fake_run(tmp_path, "failed", log="待补 3 天\n补数失败：交易日历不完整（日历为空）\n", exit_code=2)
+    at = _home(tmp_path)
+    assert "home_breadth_start" in _keys(at)
+    texts = [c.value for c in at.caption] + [e.value for e in at.error]     # ElementList 不能相加
+    assert any("交易日历不完整" in t for t in texts)
+
+
+def test_up_to_date_shows_only_the_date_in_the_title(tmp_path):
+    from quant.market.store import MarketStore
+    import pandas as pd
+    ms = MarketStore(tmp_path / "data" / "market")
+    day = market.now().date()
+    days = pd.date_range(day.replace(day=1), day + pd.Timedelta(days=40)).date
+    ms.save_calendar(days, {day})            # 交易日只有夹具那一天 → 补齐 = 已是最新
+    ms.save_snapshot(day, pd.DataFrame({"code": ["sh.600000"], "close": [1.0], "preclose": [1.0],
+                                        "tradestatus": [1], "isST": [0]}))
+    ms.save_breadth(pd.DataFrame({"date": [day], "above20": [1], "n20": [2], "above60": [0], "n60": [0],
+                                  "above200": [0], "n200": [0], "new_high": [0], "new_low": [0], "n_hl": [0]}))
+    at = _home(tmp_path)
+    assert not ({"home_breadth_start", "home_breadth_update"} & _keys(at))
+    body = " ".join(_htmls(at)) + " ".join(c.value for c in at.caption)
+    # 状态条「已收盘 · 日期」一次 + 宽度标题旁一次；按钮区在「已是最新」时什么都不显示
+    assert body.count(day.isoformat()) == 2, body
+    assert "还差约" in body, "60/200 日线历史不足要说清缺多少天"
+
+
+def test_trend_card_explains_a_permanent_gap_when_history_is_otherwise_enough(tmp_path):
+    """分母为 0，但表里天数其实已经够了（≥ n）——那是永久缺口把窗口卡住了，不是「还差几天」。"""
+    from quant.market.store import MarketStore
+    import pandas as pd
+    ms = MarketStore(tmp_path / "data" / "market")
+    day = market.now().date()
+    days = list(pd.date_range(day - pd.Timedelta(days=30), day).date)   # 31 天 ≥ above20 需要的 20 天
+    gap_day = days[0]
+    ms.record_failure(gap_day, day - pd.Timedelta(days=100))
+    ms.record_failure(gap_day, day - pd.Timedelta(days=99))             # 两次失败 → 永久缺口
+    rows = len(days)
+    ms.save_breadth(pd.DataFrame({
+        "date": days, "above20": [0] * rows, "n20": [0] * rows,
+        "above60": [0] * rows, "n60": [0] * rows, "above200": [0] * rows, "n200": [0] * rows,
+        "new_high": [0] * rows, "new_low": [0] * rows, "n_hl": [0] * rows}))
+    at = _home(tmp_path)
+    assert not at.exception, at.exception
+    body = " ".join(_htmls(at)) + " ".join(c.value for c in at.caption)
+    assert "数据源缺" in body and gap_day.isoformat() in body, body
