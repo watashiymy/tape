@@ -4050,7 +4050,8 @@ def _status(decision: Decision, snap: live.LiveSnapshot) -> None:
         text += f" · {q.ts:%H:%M:%S}"
     last_point = None
     if (m := snap.minutes.get("sh000001")) and m.points:
-        last_point = m.points[-1][0]
+        # 评审收口后 is_stale 收的是**完整的日期时间**：昨天 15:00 的点在今早必须判成延迟
+        last_point = datetime.combine(m.trade_date, m.points[-1][0])
     stale = session.is_stale(market.now(), last_point, q.ts if q else None)
     running = decision.state in (State.AUCTION, State.WAIT_OPEN, State.TRADING)
     st.html(theme.status_line(text, running=running, extra=guide.HOME_STALE if stale else ""))
