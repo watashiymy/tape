@@ -95,7 +95,7 @@ def test_the_readme_never_hardcodes_a_test_count():
 
 
 def test_the_two_small_numbers_the_readme_does_quote_are_true():
-    """README 保留了两个数：「1 skipped」与「3 deselected」。它们与总数不同——
+    """README 保留了两个数：「1 skipped」与「6 deselected」。它们与总数不同——
     是**结构性**的（有几条条件跳过、有几项联网用例），所以不禁，改成验真。
 
     禁掉一个数最省事，但那样 README 就只能说"会有一些跳过"，读者反而判断不出
@@ -131,8 +131,8 @@ def test_the_two_small_numbers_the_readme_does_quote_are_true():
                     and n.name.startswith("test_"):
                 decorated = any("network" in ast.unparse(d) for d in n.decorator_list)
                 marked += bool(module_marked or decorated)
-    assert marked == 3, (
-        f"联网用例现在有 {marked} 项，而 README 写着「3 deselected」")
+    assert marked == 6, (
+        f"联网用例现在有 {marked} 项，而 README 写着「6 deselected」")
 
 
 def test_no_upper_bound_excludes_the_version_actually_installed():

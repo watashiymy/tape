@@ -45,11 +45,11 @@ python3 -m venv .venv
 
 ```bash
 .venv/bin/python -m pytest
-# 期望：全部通过；末行还会带 1 skipped 与 3 deselected（原因见下）
+# 期望：全部通过；末行还会带 1 skipped 与 6 deselected（原因见下）
 .venv/bin/python -m pytest -m network   # 想跑联网集成测试时用这个
 ```
 
-那 3 项 deselected 是需要联网的 baostock 集成测试；**1 项 skipped 是正常的**——它检查「本机那份交易日志还读得动」，而新克隆本来就没有日志（`journal/trades.csv` 是用户数据、不进版本控制）。本机记过账之后这一项就不再跳过。
+那 6 项 deselected 是需要联网的集成测试（baostock 3 项、首页行情源 3 项）；**1 项 skipped 是正常的**——它检查「本机那份交易日志还读得动」，而新克隆本来就没有日志（`journal/trades.csv` 是用户数据、不进版本控制）。本机记过账之后这一项就不再跳过。
 
 这里刻意**不写具体条数**：每加一条用例它就过期一次，而它没有任何对账对象（不像 §2 那些实测结论有 `tests/test_guide.py` 逐字盯着）。`tests/test_packaging.py` 会拦住任何想把数字写回来的改动。
 
