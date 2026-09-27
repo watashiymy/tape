@@ -14,8 +14,8 @@ from quant.strategy import REGISTRY
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def test_three_jobs_only():
-    assert set(JOBS) == {"market_scan", "daily_signal", "backtest"}
+def test_four_jobs_only():
+    assert set(JOBS) == {"market_scan", "daily_signal", "backtest", "market_breadth"}
     assert all(isinstance(j, Job) and j.label for j in JOBS.values())
 
 
@@ -23,6 +23,7 @@ def test_scripts_exist_and_parsers_bound():
     assert JOBS["market_scan"].parser is progress.parse_market_scan
     assert JOBS["daily_signal"].parser is progress.parse_daily_signal
     assert JOBS["backtest"].parser is progress.parse_backtest
+    assert JOBS["market_breadth"].parser is progress.parse_market_breadth
     for job in JOBS.values():
         assert Path(job.script).is_file(), job.script
 

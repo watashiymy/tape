@@ -39,6 +39,13 @@ _REPORT_DIR = re.compile(r"^\s*报告目录: (\S+)$", re.M)
 _ALL_DONE = re.compile(r"^全部完成: \d+ 个策略$", re.M)
 # 共用：两个信号脚本的收尾行
 _SAVED = re.compile(r"^已保存: (\S+)$", re.M)
+# scripts/run_market_breadth.py
+_BREADTH_HEADER = re.compile(r"^待补 (\d+) 天$", re.M)
+_BREADTH_ROW = re.compile(
+    r"^\[(\d+)/(\d+)\] (\d{4}-\d{2}-\d{2}) (?:(\d+) 行 用时 ([\d.]+)s|跳过：(.*))$", re.M)
+_BREADTH_DONE = re.compile(r"^全部完成: ", re.M)
+_BREADTH_FAILED = re.compile(r"^补数失败：(.*)$", re.M)
+ETA_WINDOW = 10
 
 
 @dataclass(frozen=True)
@@ -182,6 +189,43 @@ def parse_backtest(log_text: str, total: int | None = None) -> Progress:
         extras |= crash
     return Progress(current=current, total=total, phase=phase, extras=extras,
                     outputs=outputs)
+
+
+def parse_market_breadth(log_text: str) -> Progress:
+    """更新收盘数据：`待补 N 天` 给 total，每天一行（存下/跳过两种）给 current。
+
+    ETA 按**最近 10 个存下的日子**的平均用时估（首日约 20 秒/天，抖动大，全程线性外推会被
+    前几天的慢请求带偏）。跳过的行不计入用时。完成/失败的判定与 process.DONE_MARKERS 同口径。
+    """
+    total = None
+    header = _BREADTH_HEADER.search(log_text)
+    if header:
+        total = int(header.group(1))
+    rows = _BREADTH_ROW.findall(log_text)
+    current = int(rows[-1][0]) if rows else None
+    if rows:
+        total = int(rows[-1][1])
+    saved = [float(r[4]) for r in rows if r[4]]
+    skipped = sum(1 for r in rows if r[5])
+    extras: dict[str, str] = {}
+    if rows:
+        extras = {"已补": f"{len(saved)} 天", "跳过": f"{skipped} 天"}
+    eta = None
+    if saved and total is not None and current is not None and total > current:
+        recent = saved[-ETA_WINDOW:]
+        eta = sum(recent) / len(recent) * (total - current)
+    phase = "补数中" if log_text.strip() else STARTING
+    if _BREADTH_DONE.search(log_text):
+        phase, eta = DONE, None
+    failed = _BREADTH_FAILED.search(log_text)
+    if failed:
+        phase, eta = "失败", None
+        extras["错误"] = failed.group(1)
+    crash = _crash(log_text)
+    if crash:
+        phase, eta = CRASHED, None
+        extras |= crash
+    return Progress(current=current, total=total, eta_s=eta, phase=phase, extras=extras)
 
 
 def tail(log_text: str, n: int = 30) -> str:

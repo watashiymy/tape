@@ -127,6 +127,12 @@ JOBS: dict[str, Job] = {
             Param("refresh", "--refresh", "flag", "重新下载全部行情（忽略本地缓存）"),
         ),
         parser=progress.parse_backtest, result_kind="backtest_run"),
+    # 首页「趋势宽度」的数据来源（spec §5）。无参数；控件只在「市场概览」页，控制台不渲染它。
+    "market_breadth": Job(
+        name="market_breadth", label="更新收盘数据",
+        script=str(SCRIPTS / "run_market_breadth.py"),
+        params=(),
+        parser=progress.parse_market_breadth, result_kind="market_breadth"),
 }
 
 

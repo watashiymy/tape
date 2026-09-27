@@ -388,3 +388,37 @@ def test_all_three_listing_entry_points_are_recognised(first_line):
 def test_an_empty_log_is_still_just_starting():
     """空日志仍是「启动中」——别让新加的正则把它误判成在拉清单。"""
     assert parse_market_scan("").phase == progress_module.STARTING
+
+
+from quant.runner import process, progress
+
+FIX = Path(__file__).resolve().parent / "fixtures"
+
+
+def test_parse_market_breadth_counts_saved_and_skipped_rows():
+    p = progress.parse_market_breadth((FIX / "market_breadth_sample.log").read_text("utf-8"))
+    assert (p.current, p.total) == (3, 3) and p.phase == progress.DONE
+    assert p.extras["已补"] == "2 天" and p.extras["跳过"] == "1 天"
+    assert p.eta_s is None                        # 已完成不给 ETA
+
+
+def test_parse_market_breadth_eta_uses_the_last_ten_durations():
+    log = "待补 20 天\n" + "\n".join(f"[{i}/20] 2026-0{9}-{25 - i:02d} 5000 行 用时 {10 + i}s" for i in range(1, 13))
+    p = progress.parse_market_breadth(log)
+    assert p.current == 12 and p.total == 20
+    avg = sum(10 + i for i in range(3, 13)) / 10           # 最近 10 行：i=3..12
+    assert abs(p.eta_s - avg * 8) < 1e-6 and p.phase == "补数中"
+
+
+def test_parse_market_breadth_header_only_is_starting():
+    p = progress.parse_market_breadth("login success!\n待补 5 天\n")
+    assert p.total == 5 and p.current is None and p.phase == "补数中"
+    assert progress.parse_market_breadth("").phase == progress.STARTING
+
+
+def test_failed_log_is_failed_after_zombie_reaping(tmp_path):
+    """面板重启后 runner 只凭日志判成败：失败路径的日志绝不能含收尾标记。"""
+    log = (FIX / "market_breadth_failed.log").read_text("utf-8")
+    assert not any(m in log for m in process.DONE_MARKERS)
+    p = progress.parse_market_breadth(log)
+    assert p.phase == "失败" and "2026-08-14" in p.extras["错误"]
