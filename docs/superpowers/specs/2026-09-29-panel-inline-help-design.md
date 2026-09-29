@@ -34,7 +34,7 @@ HTML 结构（类名定死，旧的无人使用的 `.qd-help` 规则在同一改
 ```
 
 - **圆点**：直径约 0.95rem 的描边圆圈，里面一个「?」；`position: relative`；颜色 `--qd-muted`，
-  悬停或键盘选中时圆圈与字变 `--qd-text`。尺寸与观感向原生 `help=` 图标看齐。
+  悬停或键盘选中（`:focus-visible`）时圆圈与字变 `--qd-text`。尺寸与观感向原生 `help=` 图标看齐。
   圆点**自己的字也定死**，不继承所在位置：`display: inline-flex` 居中、`font-family: var(--qd-sans)`、
   约 0.65rem、`font-weight: 400`、`letter-spacing: normal`、`line-height: 1`、`vertical-align: middle`。
   （否则控制台标题里的圆点会拿到 1.05rem 衬线加粗的「?」，几乎撑满圆圈，和首页卡片里的圆点长得不一样。）
@@ -49,7 +49,8 @@ HTML 结构（类名定死，旧的无人使用的 `.qd-help` 规则在同一改
   （它在首页挂在 `.qd-card-label` 里，那里是等宽感的 0.06em 字距加 `nowrap`；在控制台挂在 `.qd-section`
   里，那里是衬线字体。不定死的话两处提示框长得不一样。）
 - 提示框内部标签固定为：段落 `<p>`、列表 `<ul><li>`、加粗 `<b>`；`.qd-help-tip p` / `ul` / `li` 的外边距与
-  列表缩进在本项目 CSS 里**显式写出**（`st.html` 外层给 `ul` 加了很大的左内边距，不写死就看规则顺序碰运气）。
+  列表缩进在本项目 CSS 里**显式写出**，选择器写成 `.qd-help-dot .qd-help-tip ul` 这类两级类名（`st.html` 外层给 `ul`
+  加了很大的左内边距，那条规则与一级类名同权重，不提高权重就看规则顺序碰运气）。
 - 底色 `--qd-surface`（新增进 `:root`，值为 `SURFACE`）、1px `--qd-hairline` 描边、文字 `--qd-text`、圆角、投影；
   投影用 `rgba(0,0,0,…)` 这种非十六进制写法。`box-sizing: border-box`，宽度含内边距：
   **窄档 15rem**（默认，首页卡片短句）、**宽档 22rem**（`qd-help-wide`，任务说明）。
@@ -94,8 +95,8 @@ HTML 结构（类名定死，旧的无人使用的 `.qd-help` 规则在同一改
   （「收盘价高于自己近 {n} 日均价的股票占比……」），页面按 20/60/200 填；「52 周新高 / 新低」挂
   `HOME_HELP["high_low"]`。四卡一行：**第 1、2 张 `start`，第 3、4 张 `end`**。
   分母为 0、显示「—」的卡片也挂（那时最需要知道这个数是什么）——每张卡片「有数」与「—」两个分支**都**传
-  `help` 与 `help_align`。展开方向随列序定（第 1–4 张：start、start、end、end），写进 `TREND_WINDOWS` 旁的一个
-  常量或循环里的 `enumerate`，不要在两个分支里各写一遍字面量。删掉四卡下方的弹出框。
+  `help` 与 `help_align`。展开方向随列序定，写成 `TREND_WINDOWS` 旁一个四项常量（start、start、end、end）：三张「站上 N 日线」
+  在循环里按下标取，52 周卡片（在循环外、自己一对 if/else）取第四项；不要在任何分支里写 `"end"` 字面量。删掉四卡下方的弹出框。
   指标表读不出、整块降级时不渲染卡片，也就没有圆点（与现在弹出框在降级时不出现一致）。
 - **按钮区**：去掉 `st.columns([1, 6])` 与其中的弹出框；「开始准备」「更新收盘数据」按钮 `help=JOB_HELP["market_breadth"]`
   （原生按钮提示，支持加粗与列表，实测可用；AppTest 能读到 `Button.help`）。这两个按钮从不禁用。运行中、别的任务在跑、
@@ -161,14 +162,16 @@ HTML 结构（类名定死，旧的无人使用的 `.qd-help` 规则在同一改
 - `section`：圆点在标题文字后、pill 前；`help` 为空时输出与现在逐字相同。
 - CSS：用 `test_theme` 现有的选择器正则取规则头来查，`.qd-help-dot` `.qd-help-tip` 各有独立规则，
   `.qd-help-end` `.qd-help-wide` 以后代选择器形式出现（如 `.qd-help-end .qd-help-tip`），不要照抄 `cls + " {"` 的写法；
-  提示框规则含 `z-index` 与 `font-family`，圆点规则含 `font-family` 与 `line-height`；显示提示框的规则用
-  `:focus-visible`、不含裸 `:focus`；旧 `.qd-help {` 规则已删；无动画、无新十六进制（既有测试照常覆盖）。
+  提示框规则含 `z-index` 与 `font-family`，圆点规则含 `font-family` 与 `line-height`；所有 `.qd-help-*` 规则里只有
+  `:focus-visible`、没有裸 `:focus`（圆点变色与显示提示框都是）；旧 `.qd-help {` 规则已删；无动画、无新十六进制（既有测试照常覆盖）。
 - 转换器输出的标签固定为 `<p>` / `<ul><li>` / `<b>`，单测按这个断言。
 
 ### 5.2 `tests/test_dashboard_home.py`
 
 - 首页 `at.get("popover") == []`。
 - 温度计与趋势宽度每张卡片的 HTML 含**它自己**那句说明、不含别张的；「站上 60 日线」那张含「近 60 日」。
+  趋势行用 `_breadth_fixture` 且快照天数少于 200（如 22 天）：这样同一次渲染里既有「有数」的卡片也有「—」的卡片，
+  删掉任一分支的 `help=` 都会红。
 - **展开方向**：涨停、跌停、炸板率、最高连板、站上 200 日线、52 周新高 / 新低六张带 `qd-help-end`；
   站上 20 日线、站上 60 日线两张不带。
 - 按钮：`at.button(key="home_breadth_start" | "home_breadth_update").help == JOB_HELP["market_breadth"]`。
