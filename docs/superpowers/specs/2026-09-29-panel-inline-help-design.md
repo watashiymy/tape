@@ -34,8 +34,13 @@ HTML 结构（类名定死，旧的无人使用的 `.qd-help` 规则在同一改
 ```
 
 - **圆点**：直径约 0.95rem 的描边圆圈，里面一个「?」；`position: relative`；颜色 `--qd-muted`，
-  悬停或获得焦点时圆圈与字变 `--qd-text`。尺寸与观感向原生 `help=` 图标看齐。
-- **提示框** `.qd-help-tip`：平时 `display: none`；圆点 `:hover` 或 `:focus` 时 `display: block`。
+  悬停或键盘选中时圆圈与字变 `--qd-text`。尺寸与观感向原生 `help=` 图标看齐。
+  圆点**自己的字也定死**，不继承所在位置：`display: inline-flex` 居中、`font-family: var(--qd-sans)`、
+  约 0.65rem、`font-weight: 400`、`letter-spacing: normal`、`line-height: 1`、`vertical-align: middle`。
+  （否则控制台标题里的圆点会拿到 1.05rem 衬线加粗的「?」，几乎撑满圆圈，和首页卡片里的圆点长得不一样。）
+- **提示框** `.qd-help-tip`：平时 `display: none`；圆点 `:hover` 或 **`:focus-visible`** 时 `display: block`。
+  用 `:focus-visible` 而不是 `:focus`：鼠标点一下带 `tabindex` 的元素也会让它获得焦点，用 `:focus` 就成了
+  「点一下钉住、移开也不消失」，而这不在本次要做的范围内（见 §7）；`:focus-visible` 只在键盘选中时生效。
   `position: absolute`，在圆点下方；**正的 `z-index`**（Streamlit 每个元素容器都是 `position: relative`，
   不设层级就会被后面的卡片、说明行、参数控件盖住）。**无动画**（`tests/test_theme.py` 禁止
   `transition` / `animation` / `@keyframes`）。
@@ -43,6 +48,8 @@ HTML 结构（类名定死，旧的无人使用的 `.qd-help` 规则在同一改
   `letter-spacing: normal`、`white-space: normal`、`text-transform: none`、约 0.8rem、行高 1.5。
   （它在首页挂在 `.qd-card-label` 里，那里是等宽感的 0.06em 字距加 `nowrap`；在控制台挂在 `.qd-section`
   里，那里是衬线字体。不定死的话两处提示框长得不一样。）
+- 提示框内部标签固定为：段落 `<p>`、列表 `<ul><li>`、加粗 `<b>`；`.qd-help-tip p` / `ul` / `li` 的外边距与
+  列表缩进在本项目 CSS 里**显式写出**（`st.html` 外层给 `ul` 加了很大的左内边距，不写死就看规则顺序碰运气）。
 - 底色 `--qd-surface`（新增进 `:root`，值为 `SURFACE`）、1px `--qd-hairline` 描边、文字 `--qd-text`、圆角、投影；
   投影用 `rgba(0,0,0,…)` 这种非十六进制写法。`box-sizing: border-box`，宽度含内边距：
   **窄档 15rem**（默认，首页卡片短句）、**宽档 22rem**（`qd-help-wide`，任务说明）。
@@ -86,7 +93,9 @@ HTML 结构（类名定死，旧的无人使用的 `.qd-help` 规则在同一改
 - **趋势宽度**：三张「站上 N 日线」各挂 `HOME_HELP["above_ma"]`，**文案改成带 `{n}` 的模板**
   （「收盘价高于自己近 {n} 日均价的股票占比……」），页面按 20/60/200 填；「52 周新高 / 新低」挂
   `HOME_HELP["high_low"]`。四卡一行：**第 1、2 张 `start`，第 3、4 张 `end`**。
-  分母为 0、显示「—」的卡片也挂（那时最需要知道这个数是什么）。删掉四卡下方的弹出框。
+  分母为 0、显示「—」的卡片也挂（那时最需要知道这个数是什么）——每张卡片「有数」与「—」两个分支**都**传
+  `help` 与 `help_align`。展开方向随列序定（第 1–4 张：start、start、end、end），写进 `TREND_WINDOWS` 旁的一个
+  常量或循环里的 `enumerate`，不要在两个分支里各写一遍字面量。删掉四卡下方的弹出框。
   指标表读不出、整块降级时不渲染卡片，也就没有圆点（与现在弹出框在降级时不出现一致）。
 - **按钮区**：去掉 `st.columns([1, 6])` 与其中的弹出框；「开始准备」「更新收盘数据」按钮 `help=JOB_HELP["market_breadth"]`
   （原生按钮提示，支持加粗与列表，实测可用；AppTest 能读到 `Button.help`）。这两个按钮从不禁用。运行中、别的任务在跑、
@@ -98,9 +107,9 @@ HTML 结构（类名定死，旧的无人使用的 `.qd-help` 规则在同一改
 - `_card_head(job, pill_html="", *, help_align="start")`：去掉 `st.columns([5, 1])` 与弹出框，改为
   `theme.section(job.label, pill_html, help=JOB_HELP[job.name], help_align=help_align, help_wide=True)`：
   圆点紧跟卡片标题文字。**不挂在按钮上**：状态文件损坏的分支没有按钮，而 docstring 写明那正是最需要说明的时候。
-- 展开方向：流水线那一行里**右栏的卡片（信号跟踪）用 `end`**，其余用 `start`。由 `pages_console` 里一个常量记下
-  「哪张卡在右栏」（与 `scan_col, rail, signal_col` 的排法放在一起），`_render_card` 据此传给 `_card_head`；
-  状态文件损坏的分支同样传。
+- 展开方向：流水线那一行里**右栏的卡片（信号跟踪）用 `end`**，其余用 `start`。在 `_PIPELINE` 旁放一个模块级常量
+  （如 `_RIGHT_COLUMN = (_PIPELINE[1],)`），`_render_card` 自己据此算出方向，传给**两处** `_card_head`
+  （状态文件损坏的分支与正常分支）。两个 fragment 包装函数只转发任务名，签名不用改。
 - `_card_head` 的 docstring 改写（「右上角」→「紧跟标题」，保留「帮助必须与标题同一行」的理由）。
 - 「人工步骤」那行已在 2026-09-14 改成链接自带 `help=`，不动。
 
@@ -150,8 +159,11 @@ HTML 结构（类名定死，旧的无人使用的 `.qd-help` 规则在同一改
 - `stat_card`：`help` 的圆点在 `qd-card-label` div 内；空标签时不出圆点；`help` 为空时输出与现在逐字相同；
   `sub` 为 `str` 时输出与现在逐字相同、为 `tuple` 时每段一个 `qd-card-sub`、各自转义、同色。
 - `section`：圆点在标题文字后、pill 前；`help` 为空时输出与现在逐字相同。
-- CSS：`.qd-help-dot` `.qd-help-tip` `.qd-help-end` `.qd-help-wide` 都有规则；提示框规则含 `z-index` 与
-  `font-family`；旧 `.qd-help {` 规则已删；无动画、无新十六进制（既有测试照常覆盖）。
+- CSS：用 `test_theme` 现有的选择器正则取规则头来查，`.qd-help-dot` `.qd-help-tip` 各有独立规则，
+  `.qd-help-end` `.qd-help-wide` 以后代选择器形式出现（如 `.qd-help-end .qd-help-tip`），不要照抄 `cls + " {"` 的写法；
+  提示框规则含 `z-index` 与 `font-family`，圆点规则含 `font-family` 与 `line-height`；显示提示框的规则用
+  `:focus-visible`、不含裸 `:focus`；旧 `.qd-help {` 规则已删；无动画、无新十六进制（既有测试照常覆盖）。
+- 转换器输出的标签固定为 `<p>` / `<ul><li>` / `<b>`，单测按这个断言。
 
 ### 5.2 `tests/test_dashboard_home.py`
 
@@ -163,28 +175,37 @@ HTML 结构（类名定死，旧的无人使用的 `.qd-help` 规则在同一改
 - 六张指数卡片各有**两个** `class="qd-card-sub"`、不含「 · 」。
 - 52 周卡片「共 N 只」：用 `save_breadth` 写一张末行 `n_hl > 0` 的表，并按既有
   `test_up_to_date_shows_only_the_date_in_the_title` 的做法配齐快照与日历，走非「—」分支；再测 `n_hl == 0` 时无副文。
-- 既有测试的调整：`_card` 助手改为按标签前缀匹配（标签 div 里多了圆点）；原「`HOME_HELP["above_ma"]` 在
-  `at.markdown` 里」那条改为在卡片 HTML 里。
+- 两个分支都要测到：52 周卡片「共 N 只」那条（`n_hl > 0` 分支）同时断言该卡含 `HOME_HELP["high_low"]` 与
+  `qd-help-end`；既有 `n_hl == 0` 的趋势夹具覆盖「—」分支。
+- 既有测试的调整：`_card` 助手改为按标签前缀 `<div class="qd-card-label">{label}<` 匹配（标签 div 里多了圆点；
+  这个前缀对八个标签都唯一，含「站上 20」与「站上 200」）；`_card_value` 不用改。原「`HOME_HELP["above_ma"]` 在
+  `at.markdown` 里」那条改为在卡片 HTML 里找 `HOME_HELP["above_ma"].format(n=…)`（模板原文不会出现在页面上）。
 
 ### 5.3 `tests/test_dashboard_guide.py` 与 `tests/test_dashboard_console.py`
 
 - 控制台 `at.get("popover") == []`。
-- 三张卡片：各自的 `qd-section` HTML 里**包含** `theme.help_dot(JOB_HELP[name], align=…, wide=True)` 的完整输出
-  （用渲染后的形式比，不拿带 `**` 的原文首行去比）；信号跟踪那张的 `align` 是 `end`，另两张是 `start`。
-- 「帮助与标题同一行」改为断言圆点与标题在同一个 `qd-section` 里。
-- `test_dashboard_console::test_three_cards_render`：标题断言改为匹配 `>{label}<`（标题文字被标签夹住），
-  因为 `qd-section` 里现在也有以 `**全市场扫描**` 等开头的说明文字，只查子串会在标题丢失时照样通过。
+- **找卡片标题一律锚定在开头**：`f'class="qd-section">{label}<'`。不能只查 `>{label}<`：每条 `JOB_HELP` 都以
+  `**{label}**` 开头，渲染成 `<b>{label}</b>` 后同样包含 `>{label}<`，标题丢了也照样通过。
+- 三张卡片：用上面的锚定方式找到各自的 `qd-section`，其 HTML **包含** `theme.help_dot(JOB_HELP[name], align=…, wide=True)`
+  的完整输出（用渲染后的形式比，不拿带 `**` 的原文首行去比）；信号跟踪那张的 `align` 是 `end`，另两张是 `start`。
+  测试里取 `theme` 的方式照 `tests/test_theme.py` 按文件路径加载（`st.html` 的 proto 体就是服务端原样字符串，可直接比子串）。
+- 「帮助与标题同一行」改为：锚定找到的那个 `qd-section` 里含 `qd-help-dot`。
+- `test_dashboard_console::test_three_cards_render`：标题断言改为上面的锚定形式。
+- **状态文件损坏的分支也测**：写一个坏的任务状态文件，三张卡片的 `qd-section` 仍各含自己的 `help_dot(…)` 完整输出，
+  信号跟踪仍是 `end`。
 - 控制条那几页（回测报告、个股 K 线、信号）：既无弹出框，`qd-section` 里也**无 `qd-help-dot`**。
 
 ### 5.4 变异自查
 
-以下每项各至少让一条测试变红：删掉任一张首页卡片的 `help=`；任一张首页卡片的 `end` 反置；信号跟踪卡片的 `end` 反置；
-转义与 Markdown 转换的顺序颠倒；指数卡片副文合回一行；52 周卡片不出「共 N 只」；按钮不带 `help=`。
+以下每项各至少让一条测试变红：删掉任一张首页卡片的 `help=`（含 52 周卡片 `n_hl > 0` 分支）；任一张首页卡片的 `end` 反置；
+信号跟踪卡片的 `end` 反置（正常分支与状态文件损坏分支各一次）；控制台卡片标题文字丢失；显示规则由 `:focus-visible` 改回
+`:focus`；转义与 Markdown 转换的顺序颠倒；指数卡片副文合回一行；52 周卡片不出「共 N 只」；按钮不带 `help=`。
 
 ## 6. 验收（真浏览器）
 
 - 1280 px 与 1024 px 两种宽度，逐个悬停首页 8 个圆点与 2 个按钮、控制台 3 个圆点：提示框完整、没被后面的元素盖住、
-  不越出视口、文字是对应的那句；Tab 键能依次选中圆点并显示提示框。
+  不越出视口、文字是对应的那句；Tab 键能依次选中圆点并显示提示框；鼠标点一下圆点再移开，提示框消失；
+  提示框里的列表缩进正常；首页与控制台的圆点大小、字形一致。
 - 用脚本读六张指数卡片小图、四张趋势卡片小图的 `getBoundingClientRect().top`：各组内相差不超过 1 px。
 - 首页与控制台都没有「⌄」下拉箭头。
 
