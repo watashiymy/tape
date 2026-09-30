@@ -147,7 +147,7 @@ def test_guide_page_has_a_page_head_like_every_other_page(tmp_path):
 def test_every_section_of_the_guide_gets_a_serif_heading(tmp_path):
     """每节各出一个 .qd-section 小标题，顺序与 guide.SECTIONS 一致。
 
-    v0.5.0 起十节分在四页上（设计 §5），所以逐页收集再拼起来对账：
+    v0.5.0 起各节分在几页上（设计 §5；现在是三页），所以逐页收集再拼起来对账：
     **每一节恰好出现一次**，不重不漏、不错位。这条比拆分前更值钱——
     拆页最容易犯的错就是漏掉一节，而漏掉之后页面照常渲染、没有任何报错。
     """
@@ -157,20 +157,20 @@ def test_every_section_of_the_guide_gets_a_serif_heading(tmp_path):
         titles = [h for h in _htmls(at) if 'class="qd-section"' in h]
         seen += titles
     assert len(seen) == len(guide.SECTIONS), \
-        f"四页加起来应有 {len(guide.SECTIONS)} 个小标题，实际 {len(seen)}"
+        f"三页加起来应有 {len(guide.SECTIONS)} 个小标题，实际 {len(seen)}"
     for html, sec in zip(seen, guide.SECTIONS):
         assert sec.title in html, f"小标题错位: {html} vs {sec.title}"
 
 
 def test_every_section_body_is_on_some_guide_page(tmp_path):
-    """十节正文一节不少地落在四页里的某一页上。"""
+    """各节正文一节不少地落在三页里的某一页上。"""
     blob = ""
     for page in guide.GUIDE_PAGES:
         at = _page(tmp_path, page.title)
         blob += _markdowns(at) + "\n" + " ".join(w.value for w in at.main.warning) + "\n"
     for sec in guide.SECTIONS:
         head = sec.body.strip().splitlines()[0]
-        assert head in blob, f"「{sec.title}」的正文在四页里都没渲染出来: {head!r}"
+        assert head in blob, f"「{sec.title}」的正文在三页里都没渲染出来: {head!r}"
 
 
 @pytest.mark.parametrize("key", [p.key for p in guide.GUIDE_PAGES])
