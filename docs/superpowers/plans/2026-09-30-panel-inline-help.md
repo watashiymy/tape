@@ -26,8 +26,8 @@
 | `tests/test_theme.py` | 圆点、转换器、卡片、标题、CSS 的单测 | |
 | `tests/test_guide.py` | 改一条测试名与 docstring；加「每条帮助都能干净渲染」 | |
 | `tests/test_dashboard_home.py` | `_card` 助手改前缀匹配；新测试 7 条；改 1 条 | |
-| `tests/test_dashboard_guide.py` | 按路径加载 theme；换掉 4 条弹出框测试；删两个只为弹出框服务的助手 | |
-| `tests/test_dashboard_console.py` | `test_three_cards_render` 标题断言锚定开头 | |
+| `tests/test_dashboard_guide.py` | 按路径加载 theme；换掉 4 条弹出框测试；删三个只为弹出框服务的助手 | |
+| `tests/test_dashboard_console.py` | `test_three_cards_render` 标题断言锚定开头；一条 docstring 改引用 | |
 | `README.md`、首页设计文档 | 旧说法同步 | |
 
 任务顺序：Task 1–2 样式层（不碰页面，页面行为不变）→ Task 3 文案 → Task 4 首页 → Task 5 控制台 → Task 6 文档与收尾 → Task 7 真浏览器验收（由主会话做）。
@@ -351,8 +351,11 @@ def test_section_help_dot_follows_the_title_before_the_pill():
 
 - [ ] **Step 2: 跑，确认失败**
 
-Run: `.venv/bin/python -m pytest tests/test_theme.py -q -k "stat_card or section"`
-Expected: 新测试 FAIL（`TypeError: ... unexpected keyword argument 'help'`；元组 `sub` 被当成字符串转义）
+Run: `.venv/bin/python -m pytest tests/test_theme.py -q -k "stat_card or section or image_only"`
+Expected: 4 条 FAIL——`test_stat_card_help_dot_sits_inside_the_label`、`test_stat_card_sub_tuple_is_one_line_per_part`、
+`test_section_help_dot_follows_the_title_before_the_pill`、`test_image_only_card_ignores_help`（`TypeError: ... unexpected
+keyword argument 'help'`；元组 `sub` 被当成字符串转义）。另外 3 条新测试是回归护栏，此时就该 PASS：两条「逐字相同」与
+`test_stat_card_sub_str_is_not_split_into_characters`。
 
 - [ ] **Step 3: 实现**
 
@@ -708,7 +711,7 @@ TREND_HELP_ALIGN = ("start", "start", "end", "end")
 - [ ] **Step 4: 跑首页测试与全量**
 
 Run: `.venv/bin/python -m pytest tests/test_dashboard_home.py -q` → 全部 PASS
-Run: `.venv/bin/python -m pytest -q` → 全部 PASS（`N passed, 6 deselected`）
+Run: `.venv/bin/python -m pytest -q` → 全部 PASS（`N passed, 1 skipped, 6 deselected`）
 Run: `grep -n "popover" app/pages_home.py` → 无输出
 
 - [ ] **Step 5: 提交**
@@ -743,7 +746,9 @@ theme = importlib.util.module_from_spec(_THEME_SPEC)
 _THEME_SPEC.loader.exec_module(theme)
 ```
 
-1c. 删掉 `_popover_label` 助手（`def _popover_label(block) -> str:` 那 3 行）。
+1c. 删掉三个只为弹出框测试服务、改完就没人用的助手：`_popover_label`（`def _popover_label(block) -> str:` 那 3 行）、
+`_descend`（`def _descend(block):` 那 5 行）与 `_bodies_under`（`def _bodies_under(block) -> list[str]:` 那 3 行）。
+删之前 `grep -n "_descend\|_bodies_under\|_popover_label" tests/test_dashboard_guide.py`，确认除了将被换掉的那几条测试没有别处在用。
 
 1d. 把 `# ================================================================ 就地帮助：卡片 popover` 那一节——
 `CARDS_WITH_HELP` 常量与注释、`test_every_card_has_a_help_popover`、`test_the_popover_content_is_this_jobs_help`、
@@ -799,7 +804,11 @@ def test_control_bar_pages_have_no_help_dot_or_popover(tmp_path):
         assert not [s for s in sections if "qd-help-dot" in s], f"{page} 的控制条不该有帮助圆点"
 ```
 
-1e. `tests/test_dashboard_console.py::test_three_cards_render` 第一个循环换成：
+1e. `tests/test_dashboard_console.py::test_exactly_one_job_lives_elsewhere` 的 docstring 第一行
+「对账 tests/test_dashboard_guide.py::CARDS_WITH_HELP 里的那个「- 1」：」改为
+「对账 tests/test_dashboard_guide.py::CONSOLE_CARDS（排除掉 market_breadth 的那组卡片）：」。
+
+1f. `tests/test_dashboard_console.py::test_three_cards_render` 第一个循环换成：
 
 ```python
     for name in CONSOLE_JOBS:
@@ -846,7 +855,8 @@ def _card_head(job: jobs.Job, pill_html: str = "", *, help_align: str = "start")
 
 Run: `.venv/bin/python -m pytest tests/test_dashboard_guide.py tests/test_dashboard_console.py -q` → PASS
 Run: `.venv/bin/python -m pytest -q` → 全部 PASS
-Run: `grep -rn "popover" app/` → 无输出
+Run: `grep -rnE "\.popover\(" app/` → 无输出（只查调用；`theme.py` 的 CSS 注释与 `_card_head` docstring 里各有一处
+「st.popover」是历史理由，按计划原文保留）
 
 - [ ] **Step 5: 提交**
 
@@ -880,7 +890,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - [ ] **Step 3: 全量与文案对账**
 
 Run: `.venv/bin/python -m pytest -q` → 全部 PASS
-Run: `grep -rn "右上角\|popover\|弹出框" app/ README.md` → 只允许剩下与本改动无关的说法（逐条看一眼并在报告里列出）
+Run: `grep -rn "右上角\|popover\|弹出框" app/ README.md` → 只允许剩下历史理由与无关的说法（逐条看一眼并在报告里列出；
+预期至少有 `theme.py` CSS 注释与 `_card_head` docstring 两处「st.popover」）
 
 - [ ] **Step 4: 变异自查（每项改完立刻还原；用 `cp` 备份、`mv` 还原，**不许** `git checkout --`）**
 
