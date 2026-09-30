@@ -539,3 +539,48 @@ def test_help_dot_css_rules():
     all_help = [h for h, _ in _css_rule_pairs() if "qd-help" in h]
     assert len(all_help) == len(set(all_help)), "同一个 .qd-help 选择器写了两条，上面的查法只看到最后一条"
     assert ".qd-help {" not in theme.CSS, "旧的 .qd-help 规则没人用，删掉免得新类误继承"
+
+
+def test_stat_card_without_help_is_byte_identical():
+    want = ('<div class="qd-card"><div class="qd-card-label">涨停</div>'
+            f'<div class="qd-card-value" style="color: {theme.UP}">51</div></div>')
+    assert theme.stat_card("涨停", "51", color=theme.UP) == want
+
+
+def test_stat_card_help_dot_sits_inside_the_label():
+    html = theme.stat_card("炸板率", "12.3%", help="炸板 = 盘中碰到过涨停、收盘没封住。", help_align="end")
+    dot = theme.help_dot("炸板 = 盘中碰到过涨停、收盘没封住。", align="end")
+    assert f'<div class="qd-card-label">炸板率{dot}</div>' in html, html
+
+
+def test_image_only_card_ignores_help():
+    html = theme.stat_card("", "", img="data:image/svg+xml;base64,QUJD", help="x")
+    assert "qd-help-dot" not in html and "qd-card-label" not in html
+
+
+def test_stat_card_sub_tuple_is_one_line_per_part():
+    html = theme.stat_card("深证成指", "13316.97", sub=("-319.10", "-2.34%"), color=theme.DOWN)
+    line = f'<div class="qd-card-sub" style="color: {theme.DOWN}">'
+    assert html.count(line) == 2, html
+    assert f"{line}-319.10</div>{line}-2.34%</div>" in html
+    assert '<div class="qd-card-value">13316.97</div>' in html, "有副文时颜色上副文、不上数值"
+    escaped = theme.stat_card("x", "1", sub=("<u>", "<i>"))
+    assert "<u>" not in escaped and "<i>" not in escaped
+
+
+def test_stat_card_sub_str_is_not_split_into_characters():
+    html = theme.stat_card("站上 20 日线", "41.4%", sub="2070/5004")
+    assert html.count('class="qd-card-sub"') == 1 and ">2070/5004<" in html
+
+
+def test_section_without_help_is_byte_identical():
+    p = theme.pill("空闲", "idle")
+    assert theme.section("回测", p) == f'<div class="qd-section">回测<span class="qd-section-pill">{p}</span></div>'
+    assert theme.section("回测") == '<div class="qd-section">回测</div>'
+
+
+def test_section_help_dot_follows_the_title_before_the_pill():
+    p = theme.pill("空闲", "idle")
+    html = theme.section("信号跟踪", p, help="**信号跟踪**——x", help_align="end", help_wide=True)
+    dot = theme.help_dot("**信号跟踪**——x", align="end", wide=True)
+    assert html == f'<div class="qd-section">信号跟踪{dot}<span class="qd-section-pill">{p}</span></div>'

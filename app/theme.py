@@ -450,10 +450,13 @@ def page_head(title: str, subtitle: str, pill_html: str = "") -> str:
             f'<span class="qd-sub">{_esc(subtitle)}</span>{right}</div>')
 
 
-def section(title: str, pill_html: str = "") -> str:
-    """区块小标题：衬线 + 发丝线（§2.3 第 2 条，不用四面描边的卡片）。"""
+def section(title: str, pill_html: str = "", *, help: str = "", help_align: str = "start",
+            help_wide: bool = False) -> str:
+    """区块小标题：衬线 + 发丝线（§2.3 第 2 条，不用四面描边的卡片）。
+    `help` 非空时，标题文字后紧跟一个帮助圆点（在 pill 之前）；空时输出与以前逐字相同。"""
+    dot = help_dot(help, align=help_align, wide=help_wide) if help else ""
     right = f'<span class="qd-section-pill">{pill_html}</span>' if pill_html else ""
-    return f'<div class="qd-section">{_esc(title)}{right}</div>'
+    return f'<div class="qd-section">{_esc(title)}{dot}{right}</div>'
 
 
 def metric(label: str, value: str, color: str | None = None) -> str:
@@ -598,21 +601,28 @@ def _img(uri: str) -> str:
     return f'<img class="qd-card-img" src="{uri}" alt="">'
 
 
-def stat_card(label: str, value: str, *, sub: str = "", color: str | None = None,
-              img: str | None = None, note: str = "") -> str:
+def stat_card(label: str, value: str, *, sub: str | tuple[str, ...] = "", color: str | None = None,
+              img: str | None = None, note: str = "", help: str = "", help_align: str = "start") -> str:
     """首页卡片。`color` 上在副文那一行（涨跌）；没有副文时上在数值上。白名单同 metric()。
-    label 与 value 都为空 = 纯图卡（比例条、柱状图），不输出那两行。"""
+    label 与 value 都为空 = 纯图卡（比例条、柱状图），不输出那两行，`help` 也忽略。
+
+    `sub` 可以是一段字符串（一行，输出与以前逐字相同），也可以是元组（每段一行、同色）——
+    指数卡片把涨跌额与涨跌幅分两行，六张卡片才一样高、分时小图才对齐（spec §3.1）。
+    `help` 非空时标签后紧跟一个帮助圆点（在 qd-card-label 那个 div 里）。"""
     style = ""
     if color is not None:
         if color not in _INLINE_COLORS:
             raise ValueError(f"内联色值必须来自色板，收到 {color!r}")
         style = f' style="color: {color}"'
+    subs = (sub,) if isinstance(sub, str) else tuple(sub)
     parts = ['<div class="qd-card">']
     if label or value:
-        parts.append(f'<div class="qd-card-label">{_esc(label)}</div>')
-        parts.append(f'<div class="qd-card-value"{"" if sub else style}>{_esc(value)}</div>')
-    if sub:
-        parts.append(f'<div class="qd-card-sub"{style}>{_esc(sub)}</div>')
+        dot = help_dot(help, align=help_align) if (help and label) else ""
+        parts.append(f'<div class="qd-card-label">{_esc(label)}{dot}</div>')
+        parts.append(f'<div class="qd-card-value"{"" if any(subs) else style}>{_esc(value)}</div>')
+    for s in subs:
+        if s:
+            parts.append(f'<div class="qd-card-sub"{style}>{_esc(s)}</div>')
     if img:
         parts.append(_img(img))
     if note:
