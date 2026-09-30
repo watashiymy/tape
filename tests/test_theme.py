@@ -440,3 +440,64 @@ def test_home_css_rules_exist_for_the_new_builders():
                 ".qd-card-note", ".qd-status"):
         assert cls + " {" in theme.CSS, cls
 
+
+# ================================================================ 就地帮助圆点（2026-09-29 设计）
+
+def _css_rules() -> dict[str, str]:
+    """{选择器头: 规则体}。CSS 约定每条规则的选择器单独一行，所以按行首解析。"""
+    return {m.group(1).strip(): m.group(2)
+            for m in re.finditer(r"^\s*([^{}@\n][^{}\n]*?)\s*\{([^}]*)\}", theme.CSS, re.M)}
+
+
+def test_help_dot_structure_and_modifiers():
+    plain = theme.help_dot("一句话。")
+    assert plain == ('<span class="qd-help-dot" tabindex="0">?'
+                     '<span class="qd-help-tip"><p>一句话。</p></span></span>')
+    assert 'class="qd-help-dot qd-help-end"' in theme.help_dot("x", align="end")
+    assert 'class="qd-help-dot qd-help-wide"' in theme.help_dot("x", wide=True)
+    assert 'class="qd-help-dot qd-help-end qd-help-wide"' in theme.help_dot("x", align="end", wide=True)
+    assert "qd-help-end" not in theme.help_dot("x", align="middle"), "未知方向按 start"
+    assert "<svg" not in plain
+
+
+def test_help_dot_escapes_before_it_formats():
+    html = theme.help_dot('" onmouseover=alert(1) x="<script>x</script>**粗**')
+    assert "<script" not in html
+    assert 'onmouseover=alert(1) x="' not in html, "引号没转义就能跳出属性"
+    assert "&quot; onmouseover=alert(1)" in html
+    assert "<b>粗</b>" in html, "转义之后才认加粗"
+
+
+def test_help_dot_markdown_subset():
+    text = ("**信号跟踪**——盯着信号池，这是唯一会提示你**卖出**的任务。\n\n"
+            "- **做什么**：只看信号池里的标的，\n  与前一交易日比对。\n"
+            "- **多久**：通常十几秒。\n")
+    html = theme.help_dot(text)
+    assert "<p><b>信号跟踪</b>——盯着信号池，这是唯一会提示你<b>卖出</b>的任务。</p>" in html, html
+    assert ("<ul><li><b>做什么</b>：只看信号池里的标的， 与前一交易日比对。</li>"
+            "<li><b>多久</b>：通常十几秒。</li></ul>") in html, html
+    assert "**" not in html and "\n" not in html
+
+
+def test_help_dot_joins_single_newlines_inside_a_paragraph():
+    assert "<p>第一行 第二行</p><p>第二段</p>" in theme.help_dot("第一行\n第二行\n\n第二段")
+
+
+def test_help_dot_css_rules():
+    rules = _css_rules()
+    dot, tip = rules[".qd-help-dot"], rules[".qd-help-tip"]
+    for prop in ("position: relative", "font-family: var(--qd-sans)", "line-height: 1"):
+        assert prop in dot, prop
+    for prop in ("display: none", "position: absolute", "z-index:", "font-family: var(--qd-sans)",
+                 "letter-spacing: normal", "white-space: normal", "background: var(--qd-surface)"):
+        assert prop in tip, prop
+    assert f"--qd-surface: {theme.SURFACE};" in theme.CSS
+    heads = list(rules)
+    assert ".qd-help-end .qd-help-tip" in heads and ".qd-help-wide .qd-help-tip" in heads
+    shown = [h for h in heads if "qd-help-tip" in h and "display: block" in rules[h]]
+    assert len(shown) == 1 and ":hover" in shown[0] and ":focus-visible" in shown[0], shown
+    help_heads = [h for h in heads if "qd-help" in h]
+    assert not [h for h in help_heads if re.search(r":focus(?!-visible)", h)], \
+        "只能用 :focus-visible：鼠标点一下也会触发 :focus，提示框就钉住不走了"
+    assert ".qd-help-dot .qd-help-tip ul" in heads, "列表缩进要两级类名，压过 st.html 外层的 ul 内边距"
+    assert ".qd-help {" not in theme.CSS, "旧的 .qd-help 规则没人用，删掉免得新类误继承"

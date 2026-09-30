@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import base64
 import html as _html
+import re
 
 import streamlit as st
 from quant.report import fmt, palette
@@ -119,6 +120,7 @@ CSS = f"""@import url("{FONT_IMPORT}");
   --qd-text: {TEXT};
   --qd-muted: {MUTED};
   --qd-hairline: {HAIRLINE};
+  --qd-surface: {SURFACE};
   --qd-up: {UP};
   --qd-down: {DOWN};
   --qd-serif: {SERIF};
@@ -217,11 +219,6 @@ CSS = f"""@import url("{FONT_IMPORT}");
 .qd-pill-idle {{
   color: {MUTED};
   background: {MUTED_DIM};
-}}
-.qd-help {{
-  font-family: var(--qd-sans);
-  font-size: 0.76rem;
-  color: var(--qd-muted);
 }}
 .qd-flow {{
   display: flex;
@@ -331,6 +328,83 @@ CSS = f"""@import url("{FONT_IMPORT}");
   gap: 0.5rem;
   margin: 0.2rem 0 0.6rem;
 }}
+
+/* 就地帮助圆点（2026-09-29）：紧跟在卡片标签或卡片标题后面的小圆圈「?」，悬停或 Tab 键选中
+   出提示框。取代带下拉箭头的 st.popover（用户看了以为是选择框）。圆点与提示框都自己定死字体：
+   它们挂在 .qd-card-label（0.06em 字距 + nowrap）与 .qd-section（衬线）里，不定死两处长得不一样。
+   只用 :focus-visible 不用 :focus——鼠标点一下也会触发 :focus，提示框就钉住不走了。 */
+.qd-help-dot {{
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 0.95rem;
+  height: 0.95rem;
+  margin-left: 0.3rem;
+  border: 1px solid var(--qd-muted);
+  border-radius: 50%;
+  font-family: var(--qd-sans);
+  font-size: 0.62rem;
+  font-weight: 400;
+  letter-spacing: normal;
+  line-height: 1;
+  color: var(--qd-muted);
+  vertical-align: middle;
+  cursor: help;
+}}
+.qd-help-dot:hover, .qd-help-dot:focus-visible {{
+  color: var(--qd-text);
+  border-color: var(--qd-text);
+  outline: none;
+}}
+.qd-help-tip {{
+  display: none;
+  position: absolute;
+  top: 1.35rem;
+  left: -0.4rem;
+  z-index: 20;
+  box-sizing: border-box;
+  width: 15rem;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--qd-hairline);
+  border-radius: 6px;
+  background: var(--qd-surface);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  color: var(--qd-text);
+  font-family: var(--qd-sans);
+  font-size: 0.8rem;
+  font-weight: 400;
+  letter-spacing: normal;
+  line-height: 1.5;
+  text-align: left;
+  text-transform: none;
+  white-space: normal;
+  cursor: auto;
+}}
+.qd-help-wide .qd-help-tip {{
+  width: 22rem;
+}}
+.qd-help-end .qd-help-tip {{
+  left: auto;
+  right: -0.4rem;
+}}
+.qd-help-dot:hover .qd-help-tip, .qd-help-dot:focus-visible .qd-help-tip {{
+  display: block;
+}}
+.qd-help-dot .qd-help-tip p {{
+  margin: 0 0 0.4rem;
+}}
+.qd-help-dot .qd-help-tip ul {{
+  margin: 0 0 0.4rem;
+  padding-left: 1.1rem;
+}}
+.qd-help-dot .qd-help-tip li {{
+  margin: 0 0 0.2rem;
+}}
+.qd-help-dot .qd-help-tip > :last-child {{
+  margin-bottom: 0;
+}}
 """
 
 
@@ -428,6 +502,68 @@ def manual_tag(text: str) -> str:
     """「人工步骤」标记：这一步没有开始按钮。灰色，不用琥珀——
     琥珀在本主题里只给可操作元素，给没有按钮的卡片上琥珀等于骗手。"""
     return f'<span class="qd-manual">{_esc(text)}</span>'
+
+
+# ---------------------------------------------------------------- 就地帮助圆点（2026-09-29）
+_BOLD = re.compile(r"\*\*(.+?)\*\*")
+
+
+def _tip_inline(text: str) -> str:
+    return _BOLD.sub(r"<b>\1</b>", text)
+
+
+def _tip_markup(text: str) -> str:
+    """帮助文字 → 提示框 HTML。**先整体转义**，再只认三种写法（spec §1.2）：
+    `**加粗**`；空行分段；行首 `- ` 的列表项（紧随其后、以空格缩进的行是它的续行）。
+    段内单个换行当空格。不做通用 Markdown：现有帮助文案只用了这三种，要新写法时再扩。"""
+    blocks: list[str] = []
+    para: list[str] = []
+    items: list[list[str]] = []
+
+    def flush_para() -> None:
+        if para:
+            blocks.append(f"<p>{_tip_inline(' '.join(para))}</p>")
+            para.clear()
+
+    def flush_list() -> None:
+        if items:
+            lis = "".join(f"<li>{_tip_inline(' '.join(i))}</li>" for i in items)
+            blocks.append(f"<ul>{lis}</ul>")
+            items.clear()
+
+    for raw in _esc(text).split("\n"):
+        line = raw.strip()
+        if not line:
+            flush_para()
+            flush_list()
+        elif raw.startswith("- "):
+            flush_para()
+            items.append([line[2:].strip()])
+        elif raw[:1].isspace() and items:
+            items[-1].append(line)
+        else:
+            flush_list()
+            para.append(line)
+    flush_para()
+    flush_list()
+    return "".join(blocks)
+
+
+def help_dot(text: str, *, align: str = "start", wide: bool = False) -> str:
+    """紧跟在标签或标题后面的小圆圈「?」，悬停或 Tab 键选中出提示框（spec §1）。
+
+    `align="end"`：提示框从圆点右侧向左展开——挂点在页面右半边时用，免得越出视口右缘。
+    `wide=True`：宽档，给任务说明这种多段带列表的长文字。
+    文字由调用方从 guide 取来传入：本模块**不 import guide**（测试按文件路径单独加载本模块，
+    那时 app/ 不在 sys.path 上）。圆点里的「?」是符号，不是文案。
+    """
+    cls = "qd-help-dot"
+    if align == "end":
+        cls += " qd-help-end"
+    if wide:
+        cls += " qd-help-wide"
+    return (f'<span class="{cls}" tabindex="0">?'
+            f'<span class="qd-help-tip">{_tip_markup(text)}</span></span>')
 
 
 def _img(uri: str) -> str:
