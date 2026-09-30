@@ -144,6 +144,8 @@ def page_head(page: str, *, help_center: bool = True) -> None:
     st.container(horizontal=True) 在 1.61.1 强制允许换行，1024 宽、侧边栏展开时会把链接挤到下一行
     （评审实测）；分栏不换行，左栏变窄时靠 theme.CSS 只让说明折行。用 st.page_link 不用页头 HTML 里的
     <a>：后者整页刷新、开新会话，记账页填到一半的内容就丢了。手册三页自己传 False（它们有页内导航）。
+    两栏顶端对齐：页头自带下外边距、窄屏时说明折两行，居中会把链接压到页名下方 11–21 px；
+    顶端对齐与页名齐平（实测 1024/1280 两种宽度）。
 
     这里**不**报 st.error：状态文件损坏时下面的控制条/卡片会报，页头再喊一遍只是噪声；
     但 pill 必须如实说"未知"，不能退回"空闲"（那是猜的，而且正是 fail-safe 要挡的误导）。
@@ -156,7 +158,7 @@ def page_head(page: str, *, help_center: bool = True) -> None:
     if not help_center:
         st.html(head)
         return
-    left, right = st.columns([4, 1], vertical_alignment="center", gap="small")
+    left, right = st.columns([4, 1], vertical_alignment="top", gap="small")
     left.html(head)
     with right.container(horizontal=True, horizontal_alignment="right"):
         st.page_link(page_ref("guide"), label=guide.HELP_CENTER_LABEL, icon=":material/help:")

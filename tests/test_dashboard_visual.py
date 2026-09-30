@@ -747,7 +747,7 @@ def test_every_page_has_a_help_center_link_on_its_title_row(tmp_path, page):
     """手册不在侧边栏里了（它不是系统的功能），入口放在每页页名那一行的最右端。
     同一行的证据：页头 HTML 与链接是**同一组分栏**的第 1、2 栏（4/5 与 1/5 宽）——
     只看"某个 4/5 栏装页头、某个 1/5 栏装链接"的话，链接挪到页头下面另开一组 [4,1] 也会过。
-    另钉三处排版：两栏竖向居中、栏距 small、链接在右栏里靠右。"""
+    另钉三处排版：两栏顶端对齐（居中会把链接压到页名下方 11–21 px）、栏距 small、链接在右栏里靠右。"""
     at = _page(tmp_path, page)
     assert not at.exception, at.exception
     links = [el for el in at.get("page_link") if el.proto.label == HELP_CENTER]
@@ -766,7 +766,7 @@ def test_every_page_has_a_help_center_link_on_its_title_row(tmp_path, page):
             and any(getattr(e, "proto", None) is links[0].proto for e in _descend(b))]
     assert len(rows) == 1 and rows[0][0] is head_cols[0] and rows[0][1] is link_cols[0], len(rows)
     assert head_cols[0].gap == "small", head_cols[0].gap
-    assert head_cols[0].proto.vertical_alignment == BlockProto.Column.VerticalAlignment.CENTER, \
+    assert head_cols[0].proto.vertical_alignment == BlockProto.Column.VerticalAlignment.TOP, \
         head_cols[0].proto
     box = [e for e in _descend(link_cols[0]) if type(e).__name__ == "Block"]
     assert box and box[0].proto.flex_container.justify == BlockProto.FlexContainer.Justify.JUSTIFY_END, \

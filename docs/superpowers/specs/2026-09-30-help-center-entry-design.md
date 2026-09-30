@@ -22,11 +22,14 @@
 ## 2. 「帮助中心」入口
 
 - `ui.page_head(page, *, help_center=True)`：`help_center=True` 时页头改为一行两栏
-  `st.columns([4, 1], vertical_alignment="center", gap="small")`：
+  `st.columns([4, 1], vertical_alignment="top", gap="small")`：
   - 左栏：原来的页头 HTML（`theme.page_head(...)`，页名 + 一句话说明 + 任务状态标签，HTML 不改）；
   - 右栏：`st.container(horizontal=True, horizontal_alignment="right")` 里放
     `st.page_link(page_ref("guide"), label=guide.HELP_CENTER_LABEL, icon=":material/help:")`，靠右。
   `help_center=False` 时照旧是一个顶层 `st.html`，与现在逐字相同。
+- **为什么顶端对齐不是居中**（真浏览器实测）：页头自带 0.9rem 下外边距，1024 宽时说明又折成两行，居中会把链接
+  压到页名中线下方（居中 +11 / +21 px）；顶端对齐时链接在页名中线上方 4 px（−4 px），1024、1280 两种宽度一致，
+  与页名齐平，这才是「页名那一行」。
 - **为什么是分栏不是水平容器**（评审实测）：`st.container(horizontal=True)` 在 1.61.1 强制允许换行，页头 HTML 按自身整行宽度
   排版，1024 宽、侧边栏展开时「帮助中心」会被挤到下一行。分栏不换行（视口窄于 640 px 才上下堆叠，本面板只在桌面用）。
 - **窄屏时只让那句说明折行**：`theme.CSS` 里 `.qd-title` 加 `white-space: nowrap; flex-shrink: 0`，`.qd-head-right` 加
