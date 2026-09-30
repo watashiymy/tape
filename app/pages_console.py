@@ -106,17 +106,16 @@ _RESULT_RENDERERS = {"scan_csv": _result_scan, "signal_csv": _result_signal,
                      "backtest_run": _result_metrics}
 
 
-def _card_head(job: jobs.Job, pill_html: str = "") -> None:
-    """卡片标题行：衬线小标题 + 状态 pill，**右上角**一个 `?` 就地帮助（§3.2）。
+def _card_head(job: jobs.Job, pill_html: str = "", *, help_align: str = "start") -> None:
+    """卡片标题行：衬线小标题 + 帮助圆点 + 状态 pill（§3.2）。
 
-    帮助必须与标题同一行才算"右上角"：塞到参数控件下面就排在按钮后面，
-    正好在"不知道这个按钮会干什么"的那一刻看不见。
-    状态文件损坏的那条分支也走这里——那时候人最需要知道这个任务是干什么的。
+    帮助必须与标题同一行：塞到参数控件下面就排在按钮后面，正好在"不知道这个按钮会干什么"
+    的那一刻看不见。圆点紧跟标题文字，悬停或 Tab 键选中出说明（2026-09-29 起取代带下拉箭头的
+    st.popover——用户看了以为是选择框）。状态文件损坏的那条分支也走这里——那时候没有按钮，
+    人却最需要知道这个任务是干什么的，所以说明不能挂在按钮上。
     """
-    head, help_col = st.columns([5, 1], vertical_alignment="center")
-    head.html(theme.section(job.label, pill_html))
-    with help_col.popover("?"):
-        st.markdown(guide.JOB_HELP[job.name])
+    st.html(theme.section(job.label, pill_html, help=guide.JOB_HELP[job.name],
+                          help_align=help_align, help_wide=True))
 
 
 def _render_card(job_name: str) -> str | None:
@@ -125,15 +124,16 @@ def _render_card(job_name: str) -> str | None:
     判断与格式化全在 quant.runner.view（可单测），这里只把字符串塞进 st.*。
     """
     job = jobs.JOBS[job_name]
+    align = "end" if job_name in _RIGHT_COLUMN else "start"
     try:
         state = process.read_state(job_name, ui.RUNS_DIR)
         busy = process.any_running(ui.RUNS_DIR)
     except RuntimeError as e:
         # 状态文件损坏必须响亮失败：静默当"空闲"会放开互斥，两个 baostock 会话互踢。
-        _card_head(job)
+        _card_head(job, help_align=align)
         st.error(str(e))
         return None
-    _card_head(job, theme.pill(*view.status_pill(state)))
+    _card_head(job, theme.pill(*view.status_pill(state)), help_align=align)
     # 就绪状态紧跟标题（v0.5.0）：摆在标题**上面**的话，三列的状态行长短不一，
     # 三张卡片的标题就会各在一个高度上（实测 490 / 429 / 467 px），中间的箭头
     # 轨也就没有一条可对齐的基线。
@@ -234,6 +234,7 @@ def _card_for(busy: str | None):
 _PIPELINE = ("market_scan", "daily_signal")     # 链上的两个**可运行**任务
 _TOOLS = ("backtest",)                          # 不在链上的研究工具
 _ELSEWHERE = ("market_breadth",)                # 控件在别的页——「市场概览」（app/pages_home.py）
+_RIGHT_COLUMN = (_PIPELINE[1],)                 # 流水线那一行右栏的卡片：帮助提示框向左展开，免得越出视口右缘
 
 
 def _check_roster() -> None:
@@ -270,7 +271,7 @@ def _manual_step_strip() -> None:
     控制台上进行不了任何操作，却占了相当大的面积、还在页面正中间，整个布局很奇怪。
     它在这一页唯一的价值是三样：说清这是人工动作、现在盯着几只、去哪两页操作——
     一行放得下。闭环图（上面那行）已经把它画在两个任务之间，顺序不靑靠卡片位置表达。
-    详细说明挂在「去信号池」那个链接的 tooltip 上，不再单独开 ? 弹窗。
+    详细说明挂在「去信号池」那个链接的悬停提示上。
     """
     try:
         symbols = pool.current(ui.CONFIG_PATH)

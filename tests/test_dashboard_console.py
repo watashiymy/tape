@@ -128,13 +128,14 @@ def test_three_cards_render(tmp_path):
     assert not at.exception, at.exception
     text = " ".join(_sections(at))
     for name in CONSOLE_JOBS:
-        assert jobs.JOBS[name].label in text, f"缺少「{jobs.JOBS[name].label}」卡片，实际: {text}"
+        label = jobs.JOBS[name].label
+        assert f'class="qd-section">{label}<' in text, f"缺少「{label}」卡片，实际: {text}"
     for name in CONSOLE_JOBS:
         assert at.button(f"start_{name}"), name
 
 
 def test_exactly_one_job_lives_elsewhere(tmp_path):
-    """对账 tests/test_dashboard_guide.py::CARDS_WITH_HELP 里的那个「- 1」：
+    """对账 tests/test_dashboard_guide.py::CONSOLE_CARDS（排除掉 market_breadth 的那组卡片）：
     市场概览拿走了几个任务的卡片，这里数的是同一个数字（当前只有 market_breadth）。"""
     _console(tmp_path)
     assert len(app_module("pages_console")._ELSEWHERE) == 1

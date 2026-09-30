@@ -4,8 +4,8 @@
 # 文案本身在 tests/test_guide.py 里逐条对账过；这里只管"有没有真的渲染出来、
 # 挂在对的位置上"。三类容易静默失效的接线：
 #   - 说明页在「手册」组第一位（2026-09-05 起落地页是任务控制台，见 test_dashboard_nav.py）；
-#   - 每张任务卡片右上角的 st.popover，以及每个参数控件的 help=
-#     （漏挂不会报错，只是 tooltip 永远不出现）；
+#   - 每张任务卡片标题旁的帮助圆点，以及每个参数控件的 help=
+#     （漏挂不会报错，只是说明永远不出现）；
 #   - 空态文案与表格上方那行灰字（退回"暂无数据"也照样能跑）。
 import ast
 import importlib.util
@@ -44,6 +44,10 @@ guide = importlib.util.module_from_spec(_SPEC)
 sys.modules["qd_guide_ui"] = guide
 _SPEC.loader.exec_module(guide)
 
+_THEME_SPEC = importlib.util.spec_from_file_location("qd_theme_ui", ROOT / "app" / "theme.py")
+theme = importlib.util.module_from_spec(_THEME_SPEC)
+_THEME_SPEC.loader.exec_module(theme)
+
 SCAN_HEADER = "date,symbol,name,strategy,close,pct_chg,amount,amount_ratio_20d\n"
 TRADES_HEADER = "symbol,action,date,price,shares,commission,stamp,pnl,holding_days\n"
 
@@ -64,23 +68,6 @@ def _htmls(at: AppTest) -> list[str]:
 
 def _markdowns(at: AppTest) -> str:
     return "\n".join(m.value for m in at.main.markdown)
-
-
-def _descend(block):
-    """元素树递归展开（AppTest 只给顶层容器，列布局要自己走下去）。"""
-    yield block
-    for child in getattr(block, "children", {}).values():
-        yield from _descend(child)
-
-
-def _bodies_under(block) -> list[str]:
-    return [b for e in _descend(block)
-            if (b := getattr(getattr(e, "proto", None), "body", None))]
-
-
-def _popover_label(block) -> str:
-    """AppTest 里 popover 是个 Block，标签在 proto.popover.label（没有 .label）。"""
-    return block.proto.popover.label
 
 
 def _run_dir(root: Path, name: str = "ma_cross_20260826_112606", *,
@@ -305,61 +292,53 @@ def test_page_intro_covers_every_page(tmp_path):
     assert keys == PAGES, f"PAGE_INTRO 的键必须与侧栏页表一致: {keys}"
 
 
-# ================================================================ 就地帮助：卡片 popover
+# ================================================================ 就地帮助：卡片标题旁的帮助圆点
 
-#: 控制台上带 `?` 的卡片数 = 三个任务。「加进信号池」那一步 2026-09-14 起只占一行
-#: （详细说明挂在「去信号池」链接的 tooltip 上），不再是带 ? 的卡片。
-CARDS_WITH_HELP = len(jobs.JOBS) - 1  # market_breadth 的控件在首页（pages_console._ELSEWHERE），控制台不出它的卡片
+#: 控制台上的三张任务卡片（market_breadth 的控件在首页，pages_console._ELSEWHERE）。
+CONSOLE_CARDS = tuple(n for n in jobs.JOBS if n != "market_breadth")
+#: 流水线那一行右栏的卡片：提示框向左展开，免得越出视口右缘（spec §2.2）。
+RIGHT_COLUMN = ("daily_signal",)
 
 
-def test_every_card_has_a_help_popover(tmp_path):
-    """§3.2：每张卡片右上角一个 st.popover("?")。"""
+def _card_section(at: AppTest, name: str) -> str:
+    """name 那张卡片的标题 html。**锚定在开头**找：每条 JOB_HELP 都以 **{label}** 开头，渲染成
+    <b>{label}</b> 后同样包含 >{label}<，只查子串的话标题丢了也照样通过。"""
+    anchor = f'class="qd-section">{jobs.JOBS[name].label}<'
+    hits = [h for h in _htmls(at) if anchor in h]
+    assert len(hits) == 1, (name, hits)
+    return hits[0]
+
+
+def test_console_has_no_popover(tmp_path):
+    """带下拉箭头的「? ⌄」弹出框看起来像选择框（2026-09-29 用户反馈），全部换成帮助圆点。"""
     at = _page(tmp_path, "任务控制台")
     assert not at.exception, at.exception
-    labels = [_popover_label(p) for p in at.get("popover")]
-    assert len(labels) == CARDS_WITH_HELP, f"应各有一个 popover，实际 {labels}"
+    assert at.get("popover") == []
 
 
-def test_the_popover_content_is_this_jobs_help(tmp_path):
-    """popover 里必须是**这个**任务的帮助文案，不能三张卡片抄同一段。"""
+@pytest.mark.parametrize("corrupt", [False, True], ids=["normal", "corrupt-state"])
+def test_each_card_title_carries_its_own_job_help(tmp_path, corrupt):
+    """圆点紧跟卡片标题（同一个 qd-section 里），内容是**这个**任务的说明；右栏那张向左展开。
+    状态文件损坏的分支也要有——那时没有按钮，却最需要知道这个任务是干什么的。"""
+    if corrupt:
+        runs = tmp_path / "output" / "runs"
+        runs.mkdir(parents=True)
+        (runs / "backtest.json").write_text('{"script": "backtest", "pid":', encoding="utf-8")
     at = _page(tmp_path, "任务控制台")
-    blob = _markdowns(at)
-    for name, text in guide.JOB_HELP.items():
-        if name == "market_breadth":
-            continue    # 控件在市场概览页，控制台不渲染它的 popover（_ELSEWHERE）
-        head = text.strip().splitlines()[0]
-        assert head in blob, f"{name} 的帮助没渲染出来: {head!r}"
+    assert not at.exception, at.exception
+    for name in CONSOLE_CARDS:
+        align = "end" if name in RIGHT_COLUMN else "start"
+        want = theme.help_dot(guide.JOB_HELP[name], align=align, wide=True)
+        assert want in _card_section(at, name), name
 
 
-def test_the_popover_sits_next_to_the_card_title(tmp_path):
-    """「右上角」不是装饰：帮助要跟标题同一行。挤到参数控件下面就排在按钮后面，
-    正好在"不知道这按钮会干什么"的那一刻看不见。
-
-    结构证据：标题行是 st.columns([5, 1])，宽列里是 .qd-section 小标题，
-    窄列里只有那个 popover。只断言标签是 "?" 证明不了它在哪。
-    """
-    at = _page(tmp_path, "任务控制台")
-    pops = at.get("popover")
-    assert len(pops) == CARDS_WITH_HELP, f"应有 {CARDS_WITH_HELP} 个 popover，实际 {len(pops)}"
-    for pop in pops:
-        assert _popover_label(pop) == "?", _popover_label(pop)
-    narrow = [c for c in at.get("column")
-              if any(b.proto is p.proto for b in _descend(c) for p in pops)
-              and abs(c.proto.weight - 1 / 6) < 1e-6]
-    assert len(narrow) == CARDS_WITH_HELP, \
-        f"每个 popover 都该待在标题行的窄列里，实际 {len(narrow)}"
-    titled = [c for c in at.get("column")
-              if abs(c.proto.weight - 5 / 6) < 1e-6
-              and any('class="qd-section"' in b for b in _bodies_under(c))]
-    assert len(titled) == CARDS_WITH_HELP, \
-        f"每个卡片标题都该在宽列里与 ? 同行，实际 {len(titled)}"
-
-
-def test_control_bar_pages_have_no_popover(tmp_path):
-    """精简控制条要越薄越好（§4.2）：帮助只挂在控制台的完整卡片上。"""
+def test_control_bar_pages_have_no_help_dot_or_popover(tmp_path):
+    """精简控制条要越薄越好（§4.2）：任务说明只挂在控制台的完整卡片上。"""
     for page in ("回测报告", "个股K线", "信号"):
         at = _page(tmp_path, page)
-        assert at.get("popover") == [], f"{page} 的控制条不该有 popover"
+        assert at.get("popover") == [], f"{page} 的控制条不该有弹出框"
+        sections = [h for h in _htmls(at) if 'class="qd-section"' in h]
+        assert not [s for s in sections if "qd-help-dot" in s], f"{page} 的控制条不该有帮助圆点"
 
 
 # ================================================================ 就地帮助：参数 tooltip
