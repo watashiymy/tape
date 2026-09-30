@@ -366,7 +366,7 @@ class GuidePage:
 
     `section_keys` 里的键拼错 = import 期 KeyError（见 _PAGE_SECTIONS），
     响亮失败而不是在页面上少渲染一节——后者没人看得出来。
-    `lead` 是页头副标题，也是目录里那行提示：一句话说这页讲什么。
+    `lead` 是页头副标题，也是手册导航行里那条悬停提示：一句话说这页讲什么。
     """
     key: str
     title: str

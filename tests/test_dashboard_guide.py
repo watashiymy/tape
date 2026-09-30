@@ -55,7 +55,7 @@ TRADES_HEADER = "symbol,action,date,price,shares,commission,stamp,pnl,holding_da
 
 def _page(tmp_path: Path, page: str = GUIDE) -> AppTest:
     """app/ 整目录复制进 tmp_path 再交给 AppTest（ROOT/OUTPUT 全落在 tmp_path）。
-    一律显式切页：默认落地页是「任务控制台」，靠默认值取页会静默测错页面。"""
+    一律显式切页：默认落地页是「市场概览」，靠默认值取页会静默测错页面。"""
     return goto_page(
         AppTest.from_file(str(copy_app(tmp_path)), default_timeout=30).run(), page)
 
@@ -107,7 +107,8 @@ def _fake_run(root: Path, job: str, status: str, *, log: str = "",
 def test_the_guide_is_no_longer_the_landing_page(tmp_path):
     """2026-09-05 用户定：落地页换成「任务控制台」（v0.2.1～v0.5.0 是这一页）。
     不切页渲染出来的不再是说明页；说明页仍可显式切到（其余测试都这么切）。
-    第一次用的人怎么找到它：控制台在从未跑过任务时给链接（tests/test_dashboard_console.py）。"""
+    第一次用的人怎么找到它：落地页「市场概览」在从未跑过任务时给链接（tests/test_dashboard_console.py）；
+    平时的入口是各页页头右端的「帮助中心」。"""
     at = AppTest.from_file(str(copy_app(tmp_path)), default_timeout=30).run()
     assert not at.exception, at.exception
     heads = [h for h in _htmls(at) if 'class="qd-head"' in h]
@@ -175,19 +176,20 @@ def test_every_section_body_is_on_some_guide_page(tmp_path):
 @pytest.mark.parametrize("key", [p.key for p in guide.GUIDE_PAGES])
 def test_each_manual_page_has_the_manual_nav_and_no_help_center(tmp_path, key):
     """手册不在侧边栏里之后，三页之间靠页头下方这一行互相跳转（2026-09-30）：
-    按 GUIDE_PAGES 顺序三个 page_link，当前页灰掉（disabled），每个带一句「这页讲什么」。
+    按 GUIDE_PAGES 顺序三个 page_link，各自指向那一页，当前页灰掉（disabled），
+    悬停提示就是那页页头的一句话（lead）。页上除这三个之外不许再有 page_link（旧目录之类）。
     用 page_link 不用按钮：在这个面板里按钮意味着"会起进程"，说明页一个都不许有。
     手册页自己不放「帮助中心」——它就在帮助中心里，页内导航的第一项就是那一页。"""
     page = guide.guide_page(key)
     at = _page(tmp_path, page.title)
     assert not at.exception, at.exception
     links = [el.proto for el in at.get("page_link")]
-    titles = [p.title for p in guide.GUIDE_PAGES]
     assert "帮助中心" not in [pb.label for pb in links], links
-    nav = [pb for pb in links if pb.label in titles]
-    assert [pb.label for pb in nav] == titles, links
+    nav = links
+    assert [pb.label for pb in nav] == [p.title for p in guide.GUIDE_PAGES], nav
+    assert [pb.page for pb in nav] == [p.url_path for p in guide.GUIDE_PAGES], nav
     assert [pb.disabled for pb in nav] == [p.key == key for p in guide.GUIDE_PAGES], nav
-    assert all(pb.help for pb in nav), "每个链接都要有一句这页讲什么"
+    assert [pb.help for pb in nav] == [p.lead for p in guide.GUIDE_PAGES], nav
     assert not [h for h in _htmls(at) if "更多说明" in h], "页尾目录已换成页头下的导航行"
 
 

@@ -18,6 +18,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 import streamlit as st
+from streamlit.proto.Block_pb2 import Block as BlockProto
 from streamlit.testing.v1 import AppTest
 
 from quant.report import fmt
@@ -744,7 +745,9 @@ NON_MANUAL_PAGES = ["市场概览", "任务控制台", "信号", "记账", "持�
 @pytest.mark.parametrize("page", NON_MANUAL_PAGES)
 def test_every_page_has_a_help_center_link_on_its_title_row(tmp_path, page):
     """手册不在侧边栏里了（它不是系统的功能），入口放在每页页名那一行的最右端。
-    同一行的证据：页头 HTML 在 4/5 宽的那一栏，链接在 1/5 宽的那一栏。"""
+    同一行的证据：页头 HTML 与链接是**同一组分栏**的第 1、2 栏（4/5 与 1/5 宽）——
+    只看"某个 4/5 栏装页头、某个 1/5 栏装链接"的话，链接挪到页头下面另开一组 [4,1] 也会过。
+    另钉三处排版：两栏竖向居中、栏距 small、链接在右栏里靠右。"""
     at = _page(tmp_path, page)
     assert not at.exception, at.exception
     links = [el for el in at.get("page_link") if el.proto.label == HELP_CENTER]
@@ -756,6 +759,18 @@ def test_every_page_has_a_help_center_link_on_its_title_row(tmp_path, page):
     assert len(head_cols) == 1 and len(link_cols) == 1, (len(head_cols), len(link_cols))
     assert abs(head_cols[0].proto.weight - 0.8) < 1e-6, head_cols[0].proto.weight
     assert abs(link_cols[0].proto.weight - 0.2) < 1e-6, link_cols[0].proto.weight
+    rows = [list(b.children.values()) for b in _descend(at._tree)
+            if getattr(b, "children", None)   # 叶子元素没有 children，直接取会从 proto 上抛 AttributeError
+            and all(getattr(k, "type", None) == "column" for k in b.children.values())
+            and any('class="qd-head"' in x for x in _bodies_under(b))
+            and any(getattr(e, "proto", None) is links[0].proto for e in _descend(b))]
+    assert len(rows) == 1 and rows[0][0] is head_cols[0] and rows[0][1] is link_cols[0], len(rows)
+    assert head_cols[0].gap == "small", head_cols[0].gap
+    assert head_cols[0].proto.vertical_alignment == BlockProto.Column.VerticalAlignment.CENTER, \
+        head_cols[0].proto
+    box = [e for e in _descend(link_cols[0]) if type(e).__name__ == "Block"]
+    assert box and box[0].proto.flex_container.justify == BlockProto.FlexContainer.Justify.JUSTIFY_END, \
+        [b.proto for b in box]
 
 
 @pytest.mark.parametrize("page", NON_MANUAL_PAGES + ["使用说明", "读懂回测", "边界与安全"])

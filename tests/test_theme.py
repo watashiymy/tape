@@ -590,11 +590,13 @@ def test_section_help_dot_follows_the_title_before_the_pill():
 # ================================================================ 页头右端的「帮助中心」（2026-09-30 设计）
 
 def test_page_head_keeps_title_and_pill_on_one_line_and_lets_the_lead_wrap():
-    """页头左栏变窄时（1024 宽、侧边栏展开）只让那句说明折行：不加这几条，页名会被折成「信 / 号」。"""
+    """页头左栏变窄时（1024 宽、侧边栏展开）只让那句说明折行：不加这几条，页名会被折成「信 / 号」。
+    .qd-head 本身不许 flex-wrap：一换行，状态标签就掉到第二行去了。"""
     heads = [h for h, _ in _css_rule_pairs()]
-    for sel in (".qd-title", ".qd-sub", ".qd-head-right"):
+    for sel in (".qd-head", ".qd-title", ".qd-sub", ".qd-head-right"):
         assert heads.count(sel) == 1, sel
     rules = _css_rules()
+    assert "flex-wrap" not in rules[".qd-head"], rules[".qd-head"]
     assert "white-space: nowrap" in rules[".qd-title"] and "flex-shrink: 0" in rules[".qd-title"]
     assert "white-space: nowrap" in rules[".qd-head-right"] and "flex-shrink: 0" in rules[".qd-head-right"]
     assert "min-width: 0" in rules[".qd-sub"]

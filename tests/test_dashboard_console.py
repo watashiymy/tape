@@ -98,8 +98,10 @@ def _guide_links(at: AppTest) -> list[str]:
 
 
 def test_console_points_first_time_users_at_the_guide(tmp_path):
-    """落地页不再是手册了，第一次打开面板的人得有条明路：三个任务的状态文件一个都
-    没有时，控制台给一条去「使用说明」的链接（2026-09-05）。"""
+    """落地页不再是手册了，第一次打开面板的人得有条明路：任何任务的状态文件一个都
+    没有时，落地页给一条去「使用说明」的链接（2026-09-05 挂在控制台，09-23 落地页换成
+    「市场概览」后跟着搬过去，测试名是那时留下的）。这里不切页，测的就是落地页。
+    平时的入口是各页页头右端的「帮助中心」——标签里没有「使用说明」，不在这里的数里。"""
     at = AppTest.from_file(str(copy_app(tmp_path)), default_timeout=30).run()
     assert not at.exception, at.exception
     assert _guide_links(at) == ["第一次用？先看「使用说明」"], _guide_links(at)

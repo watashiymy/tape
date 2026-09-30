@@ -63,7 +63,7 @@ def page_guide_limits() -> None:
 
 
 #: {页 key: 渲染函数}。dashboard.py 照着 GUIDE_PAGES 的顺序建 st.Page，
-#: 漏一个就 KeyError——比"侧栏里静静少一页"强得多。
+#: 漏一个就 KeyError——比"手册里静静少一页"强得多。
 RENDERERS = {
     "guide": page_guide,
     "guide_metrics": page_guide_metrics,

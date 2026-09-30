@@ -39,7 +39,7 @@ import guide       # noqa: E402  说明页与就地帮助的全部文案（app/g
 import journal_ui  # noqa: E402  日志页的编排层（这里只用它那个跳页钩子）
 import theme       # noqa: E402  视觉基座（app/theme.py）
 import ui          # noqa: E402  共享件：页头 / 表格 / 控制条 / 路径（app/ui.py）
-import pages_guide  # noqa: E402  说明手册四页的渲染函数（RENDERERS 按页 key 取）
+import pages_guide  # noqa: E402  说明手册三页的渲染函数（RENDERERS 按页 key 取）
 from pages_backtest import page_backtest, page_kline        # noqa: E402
 from pages_console import page_console                      # noqa: E402
 from pages_home import page_home                            # noqa: E402
@@ -122,6 +122,7 @@ PAGES = {
         SIGNALS_PAGE,
     ],
     # 组名叫「手册」而不是「使用说明」：组里有一页就叫「使用说明」，同名会读成两个东西。
+    # 2026-09-30 起整组隐藏，组头从不渲染，这个名字只活在代码里。
     "手册": list(GUIDE_PAGE_OBJS.values()),
     "交易日志": [
         ENTRY_PAGE,

@@ -91,7 +91,7 @@ NAME_LOOKBACK_FILES = 30
 # 数字必须与实测一致（baostock 约 17:30 后才有当日数据 —— README/spec §11）。
 # 键就是页名（page_head 按页名取值），顺序与 dashboard.py 的 PAGES 一致；
 # 少一页会让那一页的页头 KeyError 崩页（tests/test_dashboard_nav.py 钉住两边一致）。
-# 说明手册那四页（v0.5.0）的键必须逐个**字面量**写出来，不许改写成
+# 说明手册那三页（v0.5.0）的键必须逐个**字面量**写出来，不许改写成
 # `**{p.title: p.lead for p in guide.GUIDE_PAGES}`：tests/test_dashboard_guide.py
 # 按 AST 读这个字典的键（`k.value`），推导式里的键在 AST 里是 None，那条测试会
 # 以 AttributeError 炸掉——而它守的正是"每页都有页头文案"这件事。
