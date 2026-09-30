@@ -128,7 +128,7 @@ def test_every_page_has_a_help_center_link_on_its_title_row(tmp_path, page):
     assert abs(link_cols[0].proto.weight - 0.2) < 1e-6, link_cols[0].proto.weight
 
 
-@pytest.mark.parametrize("page", NON_MANUAL_PAGES)
+@pytest.mark.parametrize("page", NON_MANUAL_PAGES + ["使用说明", "读懂回测", "边界与安全"])
 def test_page_head_lead_is_plain_text(tmp_path, page):
     """页头 HTML 会转义文字：说明里写 ** 会原样显示两对星号（记账页 2026-09-30 真机确认过）。"""
     at = _page(tmp_path, page)
@@ -139,11 +139,11 @@ def test_page_head_lead_is_plain_text(tmp_path, page):
 - [ ] **Step 2: 跑，确认失败**
 
 Run: `.venv/bin/python -m pytest tests/test_dashboard_visual.py -q -k "help_center or plain_text"`
-Expected: 8 条 `help_center` FAIL（没有「帮助中心」链接）；`plain_text[记账]` FAIL，其余 7 条 PASS。
+Expected: 8 条 `help_center` FAIL（没有「帮助中心」链接）；`plain_text[记账]` FAIL，其余 10 条 PASS。
 
 - [ ] **Step 3: 实现**
 
-3a. `app/guide.py`：在 `GUIDE_MORE_TITLE = "更多说明"` 上方加
+3a. `app/guide.py`：在 `#: 落地页页尾目录的小标题。…` 那段注释（`GUIDE_MORE_TITLE` 的注释）**上方**加（别插在注释与常量之间，Task 4 会连注释带常量一起删）
 
 ```python
 #: 各页页名那一行最右端的手册入口（2026-09-30：手册不占侧边栏，从这里进）。
@@ -294,7 +294,7 @@ def test_each_manual_page_has_the_manual_nav_and_no_help_center(tmp_path, key):
 `PAGES = [...]` 上方注释末尾加一行「# 2026-09-30：手册组整组隐藏，不在侧边栏里（见 test_dashboard_nav.py）。」
 
 - [ ] **Step 2: 跑，确认失败** → `.venv/bin/python -m pytest tests/test_dashboard_guide.py -q -k manual_nav`
-  → 3 条 FAIL（页头下没有导航行；「使用说明」页还有「帮助中心」与「更多说明」）
+  → 3 条 FAIL（三页都先卡在「帮助中心」那条断言上：Task 2 已经给每页加了它）
 
 - [ ] **Step 3: 实现**
 
@@ -340,7 +340,7 @@ def page_guide() -> None:
 「2026-09-30 起三页不在侧边栏里（手册不是系统的功能）：各页页头右端的「帮助中心」进第一页，
 三页之间靠页头下方的导航行互相跳转，原来第一页页尾的目录随之删掉（同一件事说两遍）。」
 
-3d. `app/guide.py`：删掉 `GUIDE_MORE_TITLE = "更多说明"` 那一行（及其上方只说它的注释，如有）。
+3d. `app/guide.py`：删掉 `GUIDE_MORE_TITLE = "更多说明"` 那一行及其上方以 `#: 落地页页尾目录的小标题` 开头的那段注释；删完别留下连续三个空行。
 删前 `grep -rn "GUIDE_MORE_TITLE" app/ tests/` 确认除了 1a 已改掉的那处再无引用。
 
 - [ ] **Step 4: 跑手册测试与全量**
@@ -371,6 +371,9 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   并在该行末尾补一句：「手册三页（**使用说明**、**读懂回测**、**边界与安全**，见 §4）不在侧边栏里：各页页名那一行最右端的「帮助中心」进第一页，三页之间靠页头下方的导航互相跳转（2026-09-30 用户定：手册不是系统的功能）。」
 - 第 366 行整段换成：
   「手册（使用说明 / 读懂回测 / 边界与安全）是面板自带的说明——不用回来翻 README 就能把三个任务和它们的输出读懂。它曾是默认落地页（v0.2.1～v0.5.0），2026-09-05～09-23 落地页是「任务控制台」，2026-09-23 起是「市场概览」；从未跑过任务时首页给一条去「使用说明」的链接。2026-09-30 起手册不在侧边栏里：从各页页名那一行最右端的「帮助中心」进，三页之间靠页头下方的导航互相跳转；`/guide`、`/guide-metrics`、`/guide-limits` 这几个地址照常能直接打开。」
+
+- 第 368 行开头「2026-09-23 起落地页又换成「市场概览」（见「市场概览（首页）」一节）：」与上面新写的那段重复，改成「（见「市场概览（首页）」一节）」接后文，
+  或把这句并进上面那段——保留它后面关于 `/console`、`/home` 路由的内容。
 
 - [ ] **Step 2: 全量**：`.venv/bin/python -m pytest -q` → 全部 PASS（`tests/test_guide.py` / `test_packaging.py` 里有对账 README 的测试）
 
