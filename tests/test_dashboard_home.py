@@ -419,8 +419,9 @@ def test_distribution_block_counts_add_up_to_the_histogram(tmp_path):
 
 
 def _card(at, label: str) -> str:
-    """label 那张首页卡片的 html（每张卡片是一个 st.html 元素）。"""
-    cards = [h for h in _htmls(at) if f'<div class="qd-card-label">{label}</div>' in h]
+    """label 那张首页卡片的 html（每张卡片是一个 st.html 元素）。标签后面可能跟着帮助圆点，
+    所以按前缀 `<div class="qd-card-label">{label}<` 匹配。"""
+    cards = [h for h in _htmls(at) if f'<div class="qd-card-label">{label}<' in h]
     assert len(cards) == 1, (label, cards)
     return cards[0]
 
@@ -694,7 +695,7 @@ def test_enough_history_shows_sixty_day_trend_lines_and_the_help(tmp_path):
         card = _card(at, label)
         assert "近 60 个交易日" in card and "qd-card-img" in card, card
     guide = app_module("guide")
-    assert guide.HOME_HELP["above_ma"] in [m.value for m in at.markdown]
+    assert guide.HOME_HELP["above_ma"].format(n=20) in _card(at, "站上 20 日线")
 
 
 def test_a_breadth_table_with_wrong_columns_degrades_only_that_block(tmp_path):
@@ -762,3 +763,83 @@ def test_a_broken_state_file_shows_an_error_and_no_buttons(tmp_path):
     assert not at.exception, at.exception
     assert [e.value for e in at.error], "状态文件损坏要报错"
     assert not ({"home_breadth_start", "home_breadth_update", "home_breadth_stop"} & _keys(at))
+
+
+# ---------------------------------------------------------------- 就地帮助圆点（2026-09-29 设计）
+THERMO_HELP = {"涨停": "limit_up", "跌停": "limit_down", "炸板率": "zb_rate", "最高连板": "max_lbc"}
+#: 标签 → (HOME_HELP 键, N, 是否向左展开)。右半边的挂点向左展开（spec §1.1）。
+TREND_HELP = {"站上 20 日线": ("above_ma", 20, False), "站上 60 日线": ("above_ma", 60, False),
+              "站上 200 日线": ("above_ma", 200, True), "52 周新高 / 新低": ("high_low", None, True)}
+
+
+def test_home_has_no_popover(tmp_path):
+    _breadth_fixture(tmp_path, 22)
+    at = _home(tmp_path)
+    assert not at.exception, at.exception
+    assert at.get("popover") == [], "带下拉箭头的「? ⌄」弹出框不该再出现"
+
+
+def test_each_thermometer_card_explains_only_itself_and_opens_leftward(tmp_path):
+    at = _home(tmp_path)
+    tips = app_module("guide").HOME_HELP
+    for label, key in THERMO_HELP.items():
+        card = _card(at, label)
+        assert tips[key] in card, label
+        assert not [k for k in THERMO_HELP.values() if k != key and tips[k] in card], label
+        assert "qd-help-end" in card, f"{label}：温度计整块在右栏，提示框要向左展开"
+
+
+def test_each_trend_card_explains_only_itself_and_the_right_half_opens_leftward(tmp_path):
+    _breadth_fixture(tmp_path, 22)     # 22 天：20 日线有数，60/200/52 周是「—」——两个分支都在这一次渲染里
+    at = _home(tmp_path)
+    assert not at.exception, at.exception
+    help_ = app_module("guide").HOME_HELP
+    texts = {label: (help_[key].format(n=n) if n else help_[key])
+             for label, (key, n, _) in TREND_HELP.items()}
+    for label, (_, _, end) in TREND_HELP.items():
+        card = _card(at, label)
+        assert texts[label] in card, label
+        assert not [o for other, o in texts.items() if other != label and o in card], label
+        assert ("qd-help-end" in card) is end, label
+    assert "近 60 日" in _card(at, "站上 60 日线")
+    assert "qd-card-sub" not in _card(at, "52 周新高 / 新低"), "「—」时不出「共 N 只」"
+
+
+def test_high_low_card_shows_its_denominator_and_help(tmp_path):
+    """n_hl > 0 那个分支：补一行「共 N 只」（与左边三张的分母同位置，小图才对齐），圆点照挂。"""
+    import pandas as pd
+    ms = _market_store(tmp_path)
+    day = _fixture_day()
+    days = pd.date_range(day.replace(day=1), day + pd.Timedelta(days=40)).date
+    ms.save_calendar(days, {day})
+    ms.save_snapshot(day, pd.DataFrame({"code": ["sh.600000"], "close": [1.0], "preclose": [1.0],
+                                        "tradestatus": [1], "isST": [0]}))
+    ms.save_breadth(pd.DataFrame({"date": [day], "above20": [1], "n20": [2], "above60": [0], "n60": [0],
+                                  "above200": [0], "n200": [0], "new_high": [36], "new_low": [104],
+                                  "n_hl": [4922]}))
+    at = _home(tmp_path)
+    assert not at.exception, at.exception
+    g = app_module("guide")
+    card = _card(at, "52 周新高 / 新低")
+    assert _card_value(card) == "36 / 104"
+    assert g.HOME_HL_TOTAL.format(n=4922) in card
+    assert g.HOME_HELP["high_low"] in card and "qd-help-end" in card
+
+
+def test_index_cards_put_change_and_percent_on_two_lines(tmp_path):
+    at = _home(tmp_path)
+    for _, name in market.INDEXES:
+        card = _card(at, name)
+        assert card.count('class="qd-card-sub"') == 2, card
+        assert " · " not in card, card
+
+
+def test_the_start_button_carries_the_job_help(tmp_path):
+    at = _home(tmp_path)                        # 从没准备过 → 「开始准备」
+    assert at.button(key="home_breadth_start").help == app_module("guide").JOB_HELP["market_breadth"]
+
+
+def test_the_update_button_carries_the_job_help(tmp_path):
+    _breadth_fixture(tmp_path, 22)              # 夹具日自己的快照还没有 → 「更新收盘数据」
+    at = _home(tmp_path)
+    assert at.button(key="home_breadth_update").help == app_module("guide").JOB_HELP["market_breadth"]

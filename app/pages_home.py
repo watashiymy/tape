@@ -155,7 +155,7 @@ def _index_cards(snap: live.LiveSnapshot) -> None:
         m = snap.minutes.get(code)
         pts = [(i, p) for i, (_, p) in enumerate(m.points)] if m else []
         img = minicharts.sparkline(pts, q.prev_close) if pts else None
-        sub = f"{q.change:+.2f} · {q.pct:+.2f}%"
+        sub = (f"{q.change:+.2f}", f"{q.pct:+.2f}%")    # 分两行：合一行时窄卡片有的折有的不折，小图就高低不齐
         col.html(theme.stat_card(name, f"{q.price:.2f}", sub=sub, color=fmt.signed_color(q.change),
                                  img=img))
 
@@ -291,6 +291,9 @@ def _distribution(snap: live.LiveSnapshot, decision: Decision) -> None:
         st.caption(guide.HOME_COUNTS_ONLY)        # 腾讯兜底：只有家数，画不了分布图
 
 
+THERMO_HELP_ALIGN = "end"     # 温度计整块在页面右侧那一栏：提示框向左展开，免得越出视口右缘
+
+
 def _thermometer(snap: live.LiveSnapshot) -> None:
     st.html(theme.section(guide.HOME_THERMO_TITLE, theme.pill(guide.HOME_THERMO_PILL, "idle")))
     t = snap.thermo
@@ -303,16 +306,16 @@ def _thermometer(snap: live.LiveSnapshot) -> None:
     denom = v.zt_tc + v.zb_tc
     rate = fmt.MISSING if denom == 0 else f"{100 * v.zb_tc / denom:.1f}%"
     lbc = fmt.MISSING if v.max_lbc is None else guide.HOME_LBC.format(n=v.max_lbc)
-    labels = guide.HOME_THERMO_LABELS
+    labels, tips = guide.HOME_THERMO_LABELS, guide.HOME_HELP
     c1, c2 = st.columns(2)
-    c1.html(theme.stat_card(labels["limit_up"], str(v.limit_up), color=fmt.UP))    # 没有副文 → 颜色上数值（Task 20）
-    c2.html(theme.stat_card(labels["limit_down"], str(v.limit_down), color=fmt.DOWN))
+    c1.html(theme.stat_card(labels["limit_up"], str(v.limit_up), color=fmt.UP,     # 没有副文 → 颜色上数值（Task 20）
+                            help=tips["limit_up"], help_align=THERMO_HELP_ALIGN))
+    c2.html(theme.stat_card(labels["limit_down"], str(v.limit_down), color=fmt.DOWN,
+                            help=tips["limit_down"], help_align=THERMO_HELP_ALIGN))
     c3, c4 = st.columns(2)
-    c3.html(theme.stat_card(labels["zb_rate"], rate, note=guide.HOME_ZB_COUNT.format(n=v.zb_tc)))
-    c4.html(theme.stat_card(labels["max_lbc"], lbc))
-    with st.popover("?"):
-        for key in ("limit_up", "limit_down", "zb_rate", "max_lbc"):
-            st.markdown(guide.HOME_HELP[key])
+    c3.html(theme.stat_card(labels["zb_rate"], rate, note=guide.HOME_ZB_COUNT.format(n=v.zb_tc),
+                            help=tips["zb_rate"], help_align=THERMO_HELP_ALIGN))
+    c4.html(theme.stat_card(labels["max_lbc"], lbc, help=tips["max_lbc"], help_align=THERMO_HELP_ALIGN))
 
 
 def _first_run_hint() -> None:
@@ -324,6 +327,8 @@ def _first_run_hint() -> None:
 # ---------------------------------------------------------------- 趋势宽度四卡 + 按钮区
 TREND_WINDOWS = ((20, "above20", "n20"), (60, "above60", "n60"), (200, "above200", "n200"))
 TREND_DAYS_SHOWN = 60
+#: 四张趋势卡片提示框的展开方向（按列序）：右半边两张向左展开，免得越出视口右缘。
+TREND_HELP_ALIGN = ("start", "start", "end", "end")
 
 
 def _trend_cards(ms: MarketStore) -> None:
@@ -338,26 +343,26 @@ def _trend_cards(ms: MarketStore) -> None:
     last = tail.iloc[-1]
     have, cal, gaps = set(ms.snapshot_dates()), ms.load_calendar(), ms.permanent_gaps()
     cols = st.columns(4)
-    for col, (n, above, denom) in zip(cols, TREND_WINDOWS):
+    for i, (col, (n, above, denom)) in enumerate(zip(cols, TREND_WINDOWS)):
         label = guide.HOME_ABOVE_MA.format(n=n)
+        tip = dict(help=guide.HOME_HELP["above_ma"].format(n=n), help_align=TREND_HELP_ALIGN[i])
         if last[denom] == 0:
-            col.html(theme.stat_card(label, fmt.MISSING, note=_shortfall_note(n, asof, cal, have, gaps)))
+            col.html(theme.stat_card(label, fmt.MISSING, note=_shortfall_note(n, asof, cal, have, gaps), **tip))
             continue
         pct = 100 * last[above] / last[denom]
         series = [(r[above] / r[denom]) if r[denom] else None for _, r in tail.iterrows()]
         col.html(theme.stat_card(label, f"{pct:.1f}%", sub=f"{int(last[above])}/{int(last[denom])}",
                                  img=minicharts.trend_line(series),
-                                 note=guide.HOME_RECENT_DAYS.format(n=len(tail))))
+                                 note=guide.HOME_RECENT_DAYS.format(n=len(tail)), **tip))
+    hl_tip = dict(help=guide.HOME_HELP["high_low"], help_align=TREND_HELP_ALIGN[3])
     if last["n_hl"] == 0:
         note = _shortfall_note(breadth.HIGH_LOW_WINDOW, asof, cal, have, gaps)
-        cols[3].html(theme.stat_card(guide.HOME_HIGH_LOW, fmt.MISSING, note=note))
+        cols[3].html(theme.stat_card(guide.HOME_HIGH_LOW, fmt.MISSING, note=note, **hl_tip))
     else:
         cols[3].html(theme.stat_card(guide.HOME_HIGH_LOW, f"{int(last['new_high'])} / {int(last['new_low'])}",
+                                     sub=guide.HOME_HL_TOTAL.format(n=int(last["n_hl"])),
                                      img=minicharts.highs_lows(tail["new_high"].tolist(), tail["new_low"].tolist()),
-                                     note=guide.HOME_RECENT_DAYS.format(n=len(tail))))
-    with st.popover("?"):
-        st.markdown(guide.HOME_HELP["above_ma"])
-        st.markdown(guide.HOME_HELP["high_low"])
+                                     note=guide.HOME_RECENT_DAYS.format(n=len(tail)), **hl_tip))
 
 
 def _shortfall_note(n: int, asof: date, cal: Calendar | None, have: set[date], gaps: set[date]) -> str:
@@ -420,10 +425,8 @@ def _job_area(ms: MarketStore) -> None:
         return
     else:
         return                                   # UP_TO_DATE：什么都不显示
-    help_col, btn_col = st.columns([1, 6])
-    with help_col.popover("?"):
-        st.markdown(guide.JOB_HELP["market_breadth"])
-    if btn_col.button(f"▶ {label}", key=key):
+    # 说明挂在按钮自己身上（原生按钮提示，支持加粗与列表）；不再在旁边另开一个带下拉箭头的「?」。
+    if st.button(f"▶ {label}", key=key, help=guide.JOB_HELP["market_breadth"]):
         ui.start_job("market_breadth", {})
 
 
