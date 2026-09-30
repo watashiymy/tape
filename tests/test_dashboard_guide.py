@@ -3,7 +3,7 @@
 #
 # 文案本身在 tests/test_guide.py 里逐条对账过；这里只管"有没有真的渲染出来、
 # 挂在对的位置上"。三类容易静默失效的接线：
-#   - 说明页在「手册」组第一位（2026-09-05 起落地页是任务控制台，见 test_dashboard_nav.py）；
+#   - 手册三页不在侧边栏里（2026-09-30），靠页头下方的页内导航互相跳转，其余各页从页头「帮助中心」进；
 #   - 每张任务卡片标题旁的帮助圆点，以及每个参数控件的 help=
 #     （漏挂不会报错，只是说明永远不出现）；
 #   - 空态文案与表格上方那行灰字（退回"暂无数据"也照样能跑）。
@@ -33,6 +33,7 @@ GUIDE = "使用说明"
 # 由 tests/test_dashboard_nav.py 对账，这里只借它来遍历"每页都要成立"的断言。
 # v0.5.0：说明拆成四页，后三页单独成「手册」组，紧跟主组。
 # 2026-09-05：「自定义策略」搬去 docs/，手册组剩两页。
+# 2026-09-30：手册组整组隐藏，不在侧边栏里（见 test_dashboard_nav.py）。
 PAGES = ["市场概览", GUIDE, "读懂回测", "边界与安全",
          "任务控制台", "信号", "记账", "持仓与盈亏",
          "信号池", "回测报告", "个股K线"]
@@ -153,8 +154,7 @@ def test_every_section_of_the_guide_gets_a_serif_heading(tmp_path):
     for page in guide.GUIDE_PAGES:
         at = _page(tmp_path, page.title)
         titles = [h for h in _htmls(at) if 'class="qd-section"' in h]
-        # 落地页尾多一个「更多说明」的目录小标题，它不是正文节
-        seen += [h for h in titles if guide.GUIDE_MORE_TITLE not in h]
+        seen += titles
     assert len(seen) == len(guide.SECTIONS), \
         f"四页加起来应有 {len(guide.SECTIONS)} 个小标题，实际 {len(seen)}"
     for html, sec in zip(seen, guide.SECTIONS):
@@ -172,28 +172,23 @@ def test_every_section_body_is_on_some_guide_page(tmp_path):
         assert head in blob, f"「{sec.title}」的正文在四页里都没渲染出来: {head!r}"
 
 
-def test_the_landing_page_links_to_the_other_pages(tmp_path):
-    """落地页页尾的目录：其余各页各一个链接。
-
-    拆页最大的风险是"另外几页没人找得到"。侧栏里有它们，但落地页也必须有
-    一条明路——第一次用的人是从这一页开始读的。
-    """
-    at = _page(tmp_path)
-    # AppTest 不给 page_link 建模（拿到的是 UnknownElement），但 .proto 里有 label。
-    # 走 proto 而不是"页面上有没有这三个字"：后者在正文里随便提一句也能蒙混过关。
+@pytest.mark.parametrize("key", [p.key for p in guide.GUIDE_PAGES])
+def test_each_manual_page_has_the_manual_nav_and_no_help_center(tmp_path, key):
+    """手册不在侧边栏里之后，三页之间靠页头下方这一行互相跳转（2026-09-30）：
+    按 GUIDE_PAGES 顺序三个 page_link，当前页灰掉（disabled），每个带一句「这页讲什么」。
+    用 page_link 不用按钮：在这个面板里按钮意味着"会起进程"，说明页一个都不许有。
+    手册页自己不放「帮助中心」——它就在帮助中心里，页内导航的第一项就是那一页。"""
+    page = guide.guide_page(key)
+    at = _page(tmp_path, page.title)
+    assert not at.exception, at.exception
     links = [el.proto for el in at.get("page_link")]
-    assert [pb.label for pb in links] == [p.title for p in guide.GUIDE_PAGES[1:]], links
-    assert all(pb.help for pb in links), "每个链接都要有一句「什么时候需要点进去」"
-
-
-def test_the_toc_uses_page_links_not_buttons(tmp_path):
-    """目录用 st.page_link 而**不是** st.button。
-
-    这不是口味：在这个面板里按钮意味着"会起进程"（上面那条逐页钉着一个都不许有），
-    而 page_link 只导航、不触发任何任务。
-    """
-    at = _page(tmp_path)
-    assert len(at.get("page_link")) == len(guide.GUIDE_PAGES) - 1
+    titles = [p.title for p in guide.GUIDE_PAGES]
+    assert "帮助中心" not in [pb.label for pb in links], links
+    nav = [pb for pb in links if pb.label in titles]
+    assert [pb.label for pb in nav] == titles, links
+    assert [pb.disabled for pb in nav] == [p.key == key for p in guide.GUIDE_PAGES], nav
+    assert all(pb.help for pb in nav), "每个链接都要有一句这页讲什么"
+    assert not [h for h in _htmls(at) if "更多说明" in h], "页尾目录已换成页头下的导航行"
 
 
 def test_the_closed_loop_diagram_is_rendered(tmp_path):

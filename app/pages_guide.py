@@ -9,6 +9,9 @@
 
 **刻意不放控制条**：这几页没有任何产物可看，也不该让人在读说明时误点一次
 十几分钟的全量扫描。
+
+2026-09-30 起三页不在侧边栏里（手册不是系统的功能）：各页页头右端的「帮助中心」进第一页，
+三页之间靠页头下方的导航行互相跳转，原来第一页页尾的目录随之删掉（同一件事说两遍）。
 """
 from __future__ import annotations
 
@@ -20,13 +23,22 @@ import ui
 
 
 def _render(page_key: str) -> None:
-    """渲染手册的一页：页头 + 属于这一页的那几节。
+    """渲染手册的一页：页头 + 手册导航行 + 属于这一页的那几节。
+
+    手册三页不在侧边栏里（2026-09-30 用户定：手册不是系统的功能），所以页头下方放一行导航：
+    三页各一个 page_link，当前页灰掉。其余各页从页头右端的「帮助中心」进来；手册页自己不放
+    「帮助中心」（help_center=False）——导航行的第一项就是那一页。
+    用 page_link 不用 st.button：说明页不许出现按钮（在这个面板里按钮意味着"会起进程"）。
 
     循环体与拆分前逐行相同——安全提示仍单独走 st.warning（§3.1 第 7 条），
     闭环图仍跟在有 flow 的那一节标题下面。
     """
     page = guide.guide_page(page_key)
-    ui.page_head(page.title)
+    ui.page_head(page.title, help_center=False)
+    with st.container(horizontal=True, gap="small"):
+        for p in guide.GUIDE_PAGES:
+            st.page_link(ui.page_ref(p.key), label=p.title, icon=p.icon, help=p.lead,
+                         disabled=(p.key == page_key))
     for sec in guide.page_sections(page_key):
         st.html(theme.section(sec.title))
         if sec.flow:
@@ -37,27 +49,9 @@ def _render(page_key: str) -> None:
             st.markdown(sec.body)
 
 
-def _contents() -> None:
-    """落地页页尾的目录：手册还有哪几页、各讲什么。
-
-    **只在落地页出现**。子页顶部不放面包屑、页尾不放「下一页」：几页全在侧栏里
-    看得见，再加一层页内导航就是纯噪声。标题下也不放导语——"日常只需要上面那些"
-    是文档在讲自己，使用者看了没有任何可做的事。
-
-    用 `st.page_link` 而不是 `st.button`：说明页不许出现按钮
-    （tests/test_dashboard_guide.py 钉着——一个"读文档"的页面上出现按钮，
-    在这个面板里意味着"会起进程"）。page_link 只是导航，不触发任何任务。
-    """
-    st.html(theme.section(guide.GUIDE_MORE_TITLE))
-    for page in guide.GUIDE_PAGES[1:]:
-        st.page_link(ui.page_ref(page.key), label=page.title, icon=page.icon,
-                     help=page.lead)
-
-
 def page_guide() -> None:
-    """落地页（侧栏第一位、default=True，位置与 v0.2.1 起完全一致）。"""
+    """手册第一页，也是各页页头「帮助中心」的落点。"""
     _render("guide")
-    _contents()
 
 
 def page_guide_metrics() -> None:
