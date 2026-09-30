@@ -45,6 +45,7 @@ _SPEC.loader.exec_module(theme)
 # 并进「手册」组（「自定义策略」同日搬去 docs/custom-strategy.md）。
 # 2026-09-23（用户定）：落地页再换成「市场概览」（先看市场、再干活）——它插进
 # 主组第一位、拿走 default=True；「任务控制台」退到第二位，「信号」第三位。
+# 2026-09-30（用户定）：「手册」组三页全部 visibility="hidden"，侧边栏不显示，从页头「帮助中心」进。
 EXPECTED_GROUPS = {
     "": [
         ("市场概览", ":material/monitoring:", "home"),
@@ -173,6 +174,16 @@ def test_navigation_groups_match_the_design(tmp_path, monkeypatch):
     actual = {name: [(p.title, p.icon, p.url_path) for p in members]
               for name, members in pages.groups.items()}
     assert actual == EXPECTED_GROUPS
+
+
+def test_the_manual_is_hidden_from_the_sidebar_but_still_registered(tmp_path, monkeypatch):
+    """2026-09-30 用户定：手册不是系统的功能，不占侧边栏；从各页页头右端的「帮助中心」进。
+    三页仍在 st.navigation 里注册（「手册」组整组隐藏时侧边栏连组头都不出现，实测），
+    所以 /guide 等地址、st.page_link、st.switch_page 照常可用。"""
+    _, pages = _declared_pages(tmp_path, monkeypatch)
+    assert [p.title for p in pages.groups["手册"]] == ["使用说明", "读懂回测", "边界与安全"]
+    hidden = [p.title for p in pages if p.visibility == "hidden"]
+    assert hidden == ["使用说明", "读懂回测", "边界与安全"], hidden
 
 
 def test_the_journal_group_holds_exactly_the_two_split_pages(tmp_path, monkeypatch):

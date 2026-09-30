@@ -79,7 +79,8 @@ st.logo(theme.BRAND_LOGO, size=theme.BRAND_LOGO_SIZE)
 #     它现在是一条**普通路由**——不认识的路径回落到默认页时那句「Page not found」
 #     只在真的走丢时出现，/console 本身不会再弹（它是已注册页面自己的 url_path）。
 #   -「信号」第三位：看信号紧跟着控制台；
-#   -「手册」组紧跟主组：使用说明 / 读懂回测 / 边界与安全，三页说明放一起才读得通；
+#   -「手册」组整组隐藏（2026-09-30 用户定：手册不是系统的功能，不该占侧边栏）：三页仍在这里注册，
+#     地址与 st.page_link 照常可用；一个组的页全部隐藏时侧边栏连组头都不出现（实测 1.61.1）；
 #   -「交易日志」组：组内「记账」在前、「持仓与盈亏」在后——先记后看，就是使用顺序。
 #     「记账」沿用老的 journal 路径（老书签不断），报表页用新的 positions；
 #   -「研究」组（信号池 / 回测报告 / 个股K线）殿后。
@@ -94,12 +95,12 @@ st.logo(theme.BRAND_LOGO, size=theme.BRAND_LOGO_SIZE)
 # （函数页没有文件路径可给），而按下标从组里取第几个日后一定会错位。
 ENTRY_PAGE = st.Page(page_journal_entry, title="记账", icon=":material/edit_note:",
                      url_path="journal")
-# 说明手册三页（v0.5.0 拆页；2026-09-05 起整组进「手册」，不再有一页当落地页）。
+# 说明手册三页（v0.5.0 拆页；2026-09-30 起整组隐藏：不在侧边栏里，从各页页头右端的「帮助中心」进）。
 # 从 guide.GUIDE_PAGES 循环建，标题/图标/url_path 只有那一份定义
 # ——两处各写一遍迟早有一处悄悄过期。
 GUIDE_PAGE_OBJS = {
     p.key: st.Page(pages_guide.RENDERERS[p.key], title=p.title, icon=p.icon,
-                   url_path=p.url_path)
+                   url_path=p.url_path, visibility="hidden")
     for p in guide.GUIDE_PAGES
 }
 # 控制台的流水线区要用 st.page_link 指向这两页，所以它们得有名字（同 ENTRY_PAGE
@@ -153,7 +154,7 @@ if not ui.is_loopback(st.get_option("server.address")):
 # 必须排在 st.navigation **之后**：st.switch_page 只认已注册的页，而注册就发生在
 # st.navigation 里；也不能放进按钮回调——那时脚本还没重跑，页面也还没注册。
 nav = st.navigation(PAGES)
-# 登记页对象，供 st.page_link 使用（说明落地页的目录、控制台第二步的两个跳转）。
+# 登记页对象，供 st.page_link 使用（各页页头的「帮助中心」、手册的页内导航、控制台第二步的两个跳转）。
 # 必须在 st.navigation **之后**：链接只能指向已注册的页。
 # 只登记**显式命名**的那几页，不去遍历 PAGES 读 p.url_path：真 st.Page 在 bare
 # 模式（没有 ScriptRunContext）下 __init__ 提前 return，连 _url_path 都没设，
