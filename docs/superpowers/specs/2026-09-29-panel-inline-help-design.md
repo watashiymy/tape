@@ -51,6 +51,9 @@ HTML 结构（类名定死，旧的无人使用的 `.qd-help` 规则在同一改
 - 提示框内部标签固定为：段落 `<p>`、列表 `<ul><li>`、加粗 `<b>`；`.qd-help-tip p` / `ul` / `li` 的外边距与
   列表缩进在本项目 CSS 里**显式写出**，选择器写成 `.qd-help-dot .qd-help-tip ul` 这类两级类名（`st.html` 外层给 `ul`
   加了很大的左内边距，那条规则与一级类名同权重，不提高权重就看规则顺序碰运气）。
+  `p` 与 `ul` 还要写 **`font-size: inherit`**：Streamlit 全局样式给 `p, ol, ul, dl` 一律定了 `font-size: 1rem`，
+  直接落在元素上、压过从 `.qd-help-tip` 继承来的 0.8rem（2026-09-30 评审发现，真浏览器实测不写时段落与列表是 16 px、
+  写了是 12.8 px；`li` 与 `b` 跟着 `ul` / `p` 继承）。
 - 底色 `--qd-surface`（新增进 `:root`，值为 `SURFACE`）、1px `--qd-hairline` 描边、文字 `--qd-text`、圆角、投影；
   投影用 `rgba(0,0,0,…)` 这种非十六进制写法。`box-sizing: border-box`，宽度含内边距：
   **窄档 15rem**（默认，首页卡片短句）、**宽档 22rem**（`qd-help-wide`，任务说明）。
@@ -70,14 +73,18 @@ HTML 结构（类名定死，旧的无人使用的 `.qd-help` 规则在同一改
 | 空行分段 | 段落 |
 | 行首 `- ` 的列表项；紧随其后、以空格缩进的行是该项的续行 | 列表 |
 
-段内单个换行当作空格（与 Markdown 一致；`JOB_HELP` 的列表项靠两空格缩进的续行写长句）。这三种正好覆盖现有
+段内单个换行当作空格（与 Markdown 一致；`JOB_HELP` 的列表项靠两空格缩进的续行写长句），**但换行两边都是全角字**
+（汉字与中文标点，Unicode 东亚宽度 W / F；看 `**` 里面的字，不看星号）时直接相接、不插空格——Chrome 把软换行画成空格，
+照搬就会冒出「标的， 与前一交易日」这种中文里的空格（2026-09-30 评审改）。一边是半角（数字、字母）照样当空格。
+加粗**逐行**认：先把一段的各行分别转换再接起来，这一行落单的 `**` 不会和下一行的配成对。这三种正好覆盖现有
 全部帮助文案：`HOME_HELP` 是纯文字；四条 `JOB_HELP` 只用了加粗、带续行的列表与空行（2026-09-29 逐条核对，
 无代码、链接、标题、编号列表、单星号；没有哪一行的 `**` 是奇数个）。**不做通用 Markdown**：要新写法时再扩，并同步本表与测试。
 
 ### 1.3 放在哪一层
 
 - 纯函数 `theme.help_dot(text: str, *, align: str = "start", wide: bool = False) -> str`（`align` 取 `"start"` / `"end"`，
-  其他值按 `"start"`）。极简 Markdown 转换是它的私有辅助函数，单独单测。
+  其他值按 `"start"`）。极简 Markdown 转换是它的私有辅助函数，单独单测。`text` 为空或只有空白时返回空串（不出一个
+  悬停只见空框的圆点）。
 - `theme.stat_card(..., help: str = "", help_align: str = "start")`：`help` 非空时圆点紧跟在标签文字后，**在
   `qd-card-label` 那个 div 里**。`label` 为空（纯图卡）时忽略 `help`。`help` 为空时输出与现在逐字相同。
 - `theme.section(title, pill_html="", *, help: str = "", help_align: str = "start", help_wide: bool = False)`：
@@ -155,14 +162,16 @@ HTML 结构（类名定死，旧的无人使用的 `.qd-help` 规则在同一改
 ### 5.1 `tests/test_theme.py`
 
 - `help_dot`：转义（含 `" onmouseover=` 与 `<script>`）在 Markdown 转换之前；三种写法；一行两处加粗（取
-  `JOB_HELP["daily_signal"]` 首行那种）；续行并入列表项；段内单换行变空格；`align="end"` 出 `qd-help-end`、
+  `JOB_HELP["daily_signal"]` 首行那种）；续行并入列表项；段内单换行变空格、两边全角时直接相接；加粗不跨行配对；
+  没有列表时的缩进行是普通段落行；列表后紧跟的不缩进行先收尾列表再起段落；空文字返回空串；`align="end"` 出 `qd-help-end`、
   `wide=True` 出 `qd-help-wide`、未知 `align` 按 start；无 `<svg`。
 - `stat_card`：`help` 的圆点在 `qd-card-label` div 内；空标签时不出圆点；`help` 为空时输出与现在逐字相同；
   `sub` 为 `str` 时输出与现在逐字相同、为 `tuple` 时每段一个 `qd-card-sub`、各自转义、同色。
 - `section`：圆点在标题文字后、pill 前；`help` 为空时输出与现在逐字相同。
 - CSS：用 `test_theme` 现有的选择器正则取规则头来查，`.qd-help-dot` `.qd-help-tip` 各有独立规则，
   `.qd-help-end` `.qd-help-wide` 以后代选择器形式出现（如 `.qd-help-end .qd-help-tip`），不要照抄 `cls + " {"` 的写法；
-  提示框规则含 `z-index` 与 `font-family`，圆点规则含 `font-family` 与 `line-height`；所有 `.qd-help-*` 规则里只有
+  提示框规则含正的 `z-index` 与 `font-family`，圆点规则含 `font-family` 与 `line-height`；提示框里 `p` 与 `ul` 的规则含
+  `font-size: inherit`；`.qd-help-*` 选择器没有重复的头；所有 `.qd-help-*` 规则里只有
   `:focus-visible`、没有裸 `:focus`（圆点变色与显示提示框都是）；旧 `.qd-help {` 规则已删；无动画、无新十六进制（既有测试照常覆盖）。
 - 转换器输出的标签固定为 `<p>` / `<ul><li>` / `<b>`，单测按这个断言。
 
@@ -209,6 +218,8 @@ HTML 结构（类名定死，旧的无人使用的 `.qd-help` 规则在同一改
 - 1280 px 与 1024 px 两种宽度，逐个悬停首页 8 个圆点与 2 个按钮、控制台 3 个圆点：提示框完整、没被后面的元素盖住、
   不越出视口、文字是对应的那句；Tab 键能依次选中圆点并显示提示框；鼠标点一下圆点再移开，提示框消失；
   提示框里的列表缩进正常；首页与控制台的圆点大小、字形一致。
+- 用脚本读任一提示框里 `p`、`li` 的 `getComputedStyle(…).fontSize`：约 12.8 px（0.8rem），不是 16 px
+  （Streamlit 全局的 `p, ol, ul, dl { font-size: 1rem }` 没被压住时就是 16 px）。
 - 用脚本读六张指数卡片小图、四张趋势卡片小图的 `getBoundingClientRect().top`：各组内相差不超过 1 px。
 - 首页与控制台都没有「⌄」下拉箭头。
 

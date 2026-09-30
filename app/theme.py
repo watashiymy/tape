@@ -28,6 +28,7 @@ from __future__ import annotations
 import base64
 import html as _html
 import re
+import unicodedata
 
 import streamlit as st
 from quant.report import fmt, palette
@@ -332,7 +333,9 @@ CSS = f"""@import url("{FONT_IMPORT}");
 /* 就地帮助圆点（2026-09-29）：紧跟在卡片标签或卡片标题后面的小圆圈「?」，悬停或 Tab 键选中
    出提示框。取代带下拉箭头的 st.popover（用户看了以为是选择框）。圆点与提示框都自己定死字体：
    它们挂在 .qd-card-label（0.06em 字距 + nowrap）与 .qd-section（衬线）里，不定死两处长得不一样。
-   只用 :focus-visible 不用 :focus——鼠标点一下也会触发 :focus，提示框就钉住不走了。 */
+   只用 :focus-visible 不用 :focus——鼠标点一下也会触发 :focus，提示框就钉住不走了。
+   提示框里的 p / ul 要写 font-size: inherit：Streamlit 全局样式给 p、ol、ul、dl 一律定了 1rem，
+   直接落在元素上、压过从 .qd-help-tip 继承来的 0.8rem（实测不写时段落与列表都是 16px）。 */
 .qd-help-dot {{
   position: relative;
   display: inline-flex;
@@ -394,10 +397,12 @@ CSS = f"""@import url("{FONT_IMPORT}");
 }}
 .qd-help-dot .qd-help-tip p {{
   margin: 0 0 0.4rem;
+  font-size: inherit;
 }}
 .qd-help-dot .qd-help-tip ul {{
   margin: 0 0 0.4rem;
   padding-left: 1.1rem;
+  font-size: inherit;
 }}
 .qd-help-dot .qd-help-tip li {{
   margin: 0 0 0.2rem;
@@ -512,22 +517,40 @@ def _tip_inline(text: str) -> str:
     return _BOLD.sub(r"<b>\1</b>", text)
 
 
+def _is_wide(ch: str) -> bool:
+    """汉字与中文标点（Unicode 东亚宽度 W / F）。空串不算。"""
+    return bool(ch) and unicodedata.east_asian_width(ch) in ("W", "F")
+
+
+def _tip_lines(lines: list[str]) -> str:
+    """一段（或一个列表项）的几行 → 一串 HTML。
+
+    加粗**逐行**认（spec §1.2「同一行内」：这一行落单的 `**` 不会和下一行的配成对）。
+    软换行按空格接；但换行两边都是全角字时直接相接——Chrome 把软换行画成空格，
+    中文里冒出空格很扎眼（「标的， 与前一交易日」）。看的是 `**` 里面的字，不是星号。"""
+    out = _tip_inline(lines[0])
+    for prev, nxt in zip(lines, lines[1:]):
+        tight = _is_wide(prev.rstrip("*")[-1:]) and _is_wide(nxt.lstrip("*")[:1])
+        out += ("" if tight else " ") + _tip_inline(nxt)
+    return out
+
+
 def _tip_markup(text: str) -> str:
     """帮助文字 → 提示框 HTML。**先整体转义**，再只认三种写法（spec §1.2）：
     `**加粗**`；空行分段；行首 `- ` 的列表项（紧随其后、以空格缩进的行是它的续行）。
-    段内单个换行当空格。不做通用 Markdown：现有帮助文案只用了这三种，要新写法时再扩。"""
+    段内单个换行的接法见 `_tip_lines`。不做通用 Markdown：现有帮助文案只用了这三种，要新写法时再扩。"""
     blocks: list[str] = []
     para: list[str] = []
     items: list[list[str]] = []
 
     def flush_para() -> None:
         if para:
-            blocks.append(f"<p>{_tip_inline(' '.join(para))}</p>")
+            blocks.append(f"<p>{_tip_lines(para)}</p>")
             para.clear()
 
     def flush_list() -> None:
         if items:
-            lis = "".join(f"<li>{_tip_inline(' '.join(i))}</li>" for i in items)
+            lis = "".join(f"<li>{_tip_lines(i)}</li>" for i in items)
             blocks.append(f"<ul>{lis}</ul>")
             items.clear()
 
@@ -556,7 +579,10 @@ def help_dot(text: str, *, align: str = "start", wide: bool = False) -> str:
     `wide=True`：宽档，给任务说明这种多段带列表的长文字。
     文字由调用方从 guide 取来传入：本模块**不 import guide**（测试按文件路径单独加载本模块，
     那时 app/ 不在 sys.path 上）。圆点里的「?」是符号，不是文案。
+    文字为空（或只有空白）时返回空串：不出一个悬停只见空框的圆点。
     """
+    if not text.strip():
+        return ""
     cls = "qd-help-dot"
     if align == "end":
         cls += " qd-help-end"

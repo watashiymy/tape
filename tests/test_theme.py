@@ -334,7 +334,7 @@ def test_metric_color_only_takes_palette_values():
 def test_html_builders_never_emit_streamlit_internals():
     """与 CSS 同一条纪律：我们只包自己的 .qd-* 容器。"""
     blobs = [theme.pill("x", "idle"), theme.page_head("a", "b"), theme.section("c"),
-             theme.metric("d", "e")]
+             theme.metric("d", "e"), theme.help_dot("f")]
     for html in blobs:
         for banned in ("st-emotion", "data-testid", "emotion-cache"):
             assert banned not in html
@@ -443,10 +443,18 @@ def test_home_css_rules_exist_for_the_new_builders():
 
 # ================================================================ 就地帮助圆点（2026-09-29 设计）
 
+_RULE = re.compile(SELECTOR.pattern + r"([^}]*)\}", re.M)
+
+
+def _css_rule_pairs() -> list[tuple[str, str]]:
+    """[(选择器头, 规则体)]，按出现顺序、重复的头也都留着（@media 里会重写同名规则）。"""
+    return [(m.group(1).strip(), m.group(2)) for m in _RULE.finditer(theme.CSS)]
+
+
 def _css_rules() -> dict[str, str]:
-    """{选择器头: 规则体}。CSS 约定每条规则的选择器单独一行，所以按行首解析。"""
-    return {m.group(1).strip(): m.group(2)
-            for m in re.finditer(r"^\s*([^{}@\n][^{}\n]*?)\s*\{([^}]*)\}", theme.CSS, re.M)}
+    """{选择器头: 规则体}。CSS 约定每条规则的选择器单独一行，所以按行首解析。
+    头重复时只剩最后一条——要查的规则先用 `_css_rule_pairs` 确认不重复。"""
+    return dict(_css_rule_pairs())
 
 
 def test_help_dot_structure_and_modifiers():
@@ -474,13 +482,37 @@ def test_help_dot_markdown_subset():
             "- **多久**：通常十几秒。\n")
     html = theme.help_dot(text)
     assert "<p><b>信号跟踪</b>——盯着信号池，这是唯一会提示你<b>卖出</b>的任务。</p>" in html, html
-    assert ("<ul><li><b>做什么</b>：只看信号池里的标的， 与前一交易日比对。</li>"
+    assert ("<ul><li><b>做什么</b>：只看信号池里的标的，与前一交易日比对。</li>"
             "<li><b>多久</b>：通常十几秒。</li></ul>") in html, html
     assert "**" not in html and "\n" not in html
 
 
 def test_help_dot_joins_single_newlines_inside_a_paragraph():
-    assert "<p>第一行 第二行</p><p>第二段</p>" in theme.help_dot("第一行\n第二行\n\n第二段")
+    assert "<p>one two</p><p>next</p>" in theme.help_dot("one\ntwo\n\nnext")
+    assert "<p>第一行第二行</p><p>第二段</p>" in theme.help_dot("第一行\n第二行\n\n第二段"), \
+        "换行两边都是全角字时直接相接：Chrome 会把软换行渲染成空格，中文里不该冒出空格"
+    assert "<p>约 60 只</p>" in theme.help_dot("约 60\n只"), "一边是半角（数字、字母）照样当空格"
+    assert "<p><b>已扫出的信号</b>（结果整轮跑完才保存）</p>" in theme.help_dot(
+        "**已扫出的信号**\n（结果整轮跑完才保存）"), "看的是 ** 里面的字，不是星号"
+
+
+def test_help_dot_bold_stays_within_one_line():
+    """spec §1.2「同一行内」：这一行落单的 ** 不能和下一行的配成对。"""
+    assert theme.help_dot("a ** b\n**c** d").endswith(
+        '<span class="qd-help-tip"><p>a ** b <b>c</b> d</p></span></span>')
+
+
+def test_help_dot_parser_edge_branches():
+    assert "<p>indented next</p>" in theme.help_dot("  indented\nnext"), \
+        "前面没有列表时，缩进行只是普通段落行（不能去找上一个列表项）"
+    assert "<ul><li>甲</li></ul><p>段落</p>" in theme.help_dot("- 甲\n段落"), \
+        "列表后面紧跟不缩进的行：先收尾列表、再起段落，顺序不能颠倒"
+
+
+def test_help_dot_empty_text_gives_no_dot():
+    """空说明不出圆点：否则悬停出一个空的描边框。"""
+    assert theme.help_dot("") == ""
+    assert theme.help_dot(" \n\n  ") == ""
 
 
 def test_help_dot_css_rules():
@@ -488,9 +520,10 @@ def test_help_dot_css_rules():
     dot, tip = rules[".qd-help-dot"], rules[".qd-help-tip"]
     for prop in ("position: relative", "font-family: var(--qd-sans)", "line-height: 1"):
         assert prop in dot, prop
-    for prop in ("display: none", "position: absolute", "z-index:", "font-family: var(--qd-sans)",
+    for prop in ("display: none", "position: absolute", "font-family: var(--qd-sans)",
                  "letter-spacing: normal", "white-space: normal", "background: var(--qd-surface)"):
         assert prop in tip, prop
+    assert re.search(r"z-index:\s*[1-9]", tip), "层级要为正，否则被后面的元素容器盖住"
     assert f"--qd-surface: {theme.SURFACE};" in theme.CSS
     heads = list(rules)
     assert ".qd-help-end .qd-help-tip" in heads and ".qd-help-wide .qd-help-tip" in heads
@@ -500,4 +533,9 @@ def test_help_dot_css_rules():
     assert not [h for h in help_heads if re.search(r":focus(?!-visible)", h)], \
         "只能用 :focus-visible：鼠标点一下也会触发 :focus，提示框就钉住不走了"
     assert ".qd-help-dot .qd-help-tip ul" in heads, "列表缩进要两级类名，压过 st.html 外层的 ul 内边距"
+    for tag in ("p", "ul"):
+        assert "font-size: inherit" in rules[f".qd-help-dot .qd-help-tip {tag}"], \
+            f"Streamlit 全局给 p、ol、ul、dl 定了 1rem，{tag} 不写 inherit 就拿不到提示框的 0.8rem"
+    all_help = [h for h, _ in _css_rule_pairs() if "qd-help" in h]
+    assert len(all_help) == len(set(all_help)), "同一个 .qd-help 选择器写了两条，上面的查法只看到最后一条"
     assert ".qd-help {" not in theme.CSS, "旧的 .qd-help 规则没人用，删掉免得新类误继承"
