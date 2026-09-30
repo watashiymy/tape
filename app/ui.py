@@ -95,6 +95,7 @@ NAME_LOOKBACK_FILES = 30
 # `**{p.title: p.lead for p in guide.GUIDE_PAGES}`：tests/test_dashboard_guide.py
 # 按 AST 读这个字典的键（`k.value`），推导式里的键在 AST 里是 None，那条测试会
 # 以 AttributeError 炸掉——而它守的正是"每页都有页头文案"这件事。
+# 页头是纯文字（theme.page_head 会转义）：不许写 ** 之类的 Markdown，会原样显示。
 PAGE_INTRO = {
     # 硬约束：不能含「今天」/「今日」（test_home_copy_never_says_today）。
     "市场概览": guide.HOME_LEAD,
@@ -105,7 +106,7 @@ PAGE_INTRO = {
     # 「17:30」只留在空态文案里：那才是用户问"为什么是空的"的时刻，
     # 而空态每天都会出现（绝大多数日子没有新信号）。页头这句覆盖面更广但不可执行。
     "信号": "信号池标的的最新买卖信号；页尾是全市场扫描发现的新买入信号。",
-    "记账": "记你**真实成交**的每一笔；历史记录可筛选、可修改、可删除、可导出。",
+    "记账": "记你真实成交的每一笔；历史记录可筛选、可修改、可删除、可导出。",
     "持仓与盈亏": "按全部记录算出的当前持仓、已实现盈亏与来源对比。",
     "信号池": "增删「信号跟踪」每天盯着的那批标的。",
     "回测报告": "历史检验的结果：绩效指标、净值曲线与逐笔成交。",
@@ -135,8 +136,14 @@ SCAN_COLOR_COLUMNS = ("pct_chg",)   # 扫描表里唯一有方向的列（红涨
 CONSOLE_HINT = "这里按默认参数运行；要改参数请去「任务控制台」。"
 
 
-def page_head(page: str) -> None:
+def page_head(page: str, *, help_center: bool = True) -> None:
     """通用页头（§2.4）：页名衬线大字 + 一句话说明 + 右侧全局任务状态 pill。
+
+    `help_center=True`（默认）时一行两栏：左栏是页头，右栏靠右一个「帮助中心」链接到「使用说明」
+    （2026-09-30：手册不是系统的功能，不占侧边栏，从这里进）。用分栏不用水平容器：
+    st.container(horizontal=True) 在 1.61.1 强制允许换行，1024 宽、侧边栏展开时会把链接挤到下一行
+    （评审实测）；分栏不换行，左栏变窄时靠 theme.CSS 只让说明折行。用 st.page_link 不用页头 HTML 里的
+    <a>：后者整页刷新、开新会话，记账页填到一半的内容就丢了。手册三页自己传 False（它们有页内导航）。
 
     这里**不**报 st.error：状态文件损坏时下面的控制条/卡片会报，页头再喊一遍只是噪声；
     但 pill 必须如实说"未知"，不能退回"空闲"（那是猜的，而且正是 fail-safe 要挡的误导）。
@@ -145,7 +152,14 @@ def page_head(page: str) -> None:
         text, kind = view.busy_pill(process.any_running(RUNS_DIR))
     except RuntimeError:
         text, kind = view.UNKNOWN_TEXT, view.PILL_IDLE
-    st.html(theme.page_head(page, PAGE_INTRO[page], theme.pill(text, kind)))
+    head = theme.page_head(page, PAGE_INTRO[page], theme.pill(text, kind))
+    if not help_center:
+        st.html(head)
+        return
+    left, right = st.columns([4, 1], vertical_alignment="center", gap="small")
+    left.html(head)
+    with right.container(horizontal=True, horizontal_alignment="right"):
+        st.page_link(page_ref("guide"), label=guide.HELP_CENTER_LABEL, icon=":material/help:")
 
 
 def metric_grid(metrics: dict, per_row: int = 4) -> None:

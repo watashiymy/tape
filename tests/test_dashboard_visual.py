@@ -734,3 +734,33 @@ def test_run_symbols_returns_empty_rather_than_inventing_one(tmp_path):
     run = tmp_path / "empty_run"
     run.mkdir()
     assert ui_mod.run_symbols(run) == []
+
+
+# ================================================================ 页头右端的「帮助中心」（2026-09-30 设计）
+HELP_CENTER = "帮助中心"
+NON_MANUAL_PAGES = ["市场概览", "任务控制台", "信号", "记账", "持仓与盈亏", "信号池", "回测报告", "个股K线"]
+
+
+@pytest.mark.parametrize("page", NON_MANUAL_PAGES)
+def test_every_page_has_a_help_center_link_on_its_title_row(tmp_path, page):
+    """手册不在侧边栏里了（它不是系统的功能），入口放在每页页名那一行的最右端。
+    同一行的证据：页头 HTML 在 4/5 宽的那一栏，链接在 1/5 宽的那一栏。"""
+    at = _page(tmp_path, page)
+    assert not at.exception, at.exception
+    links = [el for el in at.get("page_link") if el.proto.label == HELP_CENTER]
+    assert len(links) == 1, [el.proto.label for el in at.get("page_link")]
+    assert links[0].proto.page == "guide", links[0].proto
+    cols = at.get("column")
+    head_cols = [c for c in cols if any('class="qd-head"' in b for b in _bodies_under(c))]
+    link_cols = [c for c in cols if any(getattr(e, "proto", None) is links[0].proto for e in _descend(c))]
+    assert len(head_cols) == 1 and len(link_cols) == 1, (len(head_cols), len(link_cols))
+    assert abs(head_cols[0].proto.weight - 0.8) < 1e-6, head_cols[0].proto.weight
+    assert abs(link_cols[0].proto.weight - 0.2) < 1e-6, link_cols[0].proto.weight
+
+
+@pytest.mark.parametrize("page", NON_MANUAL_PAGES + ["使用说明", "读懂回测", "边界与安全"])
+def test_page_head_lead_is_plain_text(tmp_path, page):
+    """页头 HTML 会转义文字：说明里写 ** 会原样显示两对星号（记账页 2026-09-30 真机确认过）。"""
+    at = _page(tmp_path, page)
+    head = [h for h in _htmls(at) if 'class="qd-head"' in h][0]
+    assert "**" not in head, head
