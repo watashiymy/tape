@@ -515,8 +515,9 @@ def test_the_cli_section_warns_that_terminal_jobs_dodge_the_mutex():
 
 # ================================================================ 就地帮助（§3.2）
 
-def test_every_job_has_a_popover_help():
-    """三张任务卡片右上角的 `?`。JOBS 里加了新任务却忘了写帮助，这条会红。"""
+def test_every_job_has_its_help_text():
+    """每个任务一段就地说明（控制台卡片标题旁的圆点、首页按钮的悬停提示）。
+    JOBS 里加了新任务却忘了写说明，这条会红。"""
     assert set(guide.JOB_HELP) == set(jobs.JOBS), \
         f"JOB_HELP 与 JOBS 不一致: {set(guide.JOB_HELP) ^ set(jobs.JOBS)}"
 
@@ -765,6 +766,32 @@ def test_home_state_text_covers_every_state_enum():
 def test_home_help_covers_the_terms_on_the_page():
     for key in ("limit_up", "limit_down", "zb_rate", "max_lbc", "above_ma", "high_low", "buckets"):
         assert 10 < len(guide.HOME_HELP[key]) < 200, key
+
+
+def test_above_ma_help_is_a_template_for_each_window():
+    text = guide.HOME_HELP["above_ma"]
+    assert "{n}" in text and "近 {n} 日" in text
+    assert "近 60 日" in text.format(n=60)
+
+
+def test_high_low_total_is_a_template():
+    assert guide.HOME_HL_TOTAL.format(n=4922) == "共 4922 只"
+
+
+def test_breadth_job_help_names_no_button_and_has_no_stray_space():
+    text = guide.JOB_HELP["market_breadth"]
+    assert "需要 约" not in text, "FACTS 值自带「约」，前面不能再有空格"
+    assert "更新收盘数据" not in text.splitlines()[0], "从没准备过时按钮叫「开始准备」，首句不点名按钮"
+    assert "首页" not in text, "这段只在首页出现，不再写「首页」"
+
+
+def test_every_help_text_renders_cleanly_in_a_help_dot():
+    """帮助圆点只认加粗 / 空行分段 / 带续行列表三种写法：现有全部文案渲染后不能剩下 ** 或换行。"""
+    texts = list(guide.JOB_HELP.values()) + list(guide.HOME_HELP.values())
+    for t in texts:
+        html = theme.help_dot(t, wide=True)
+        assert "**" not in html and "\n" not in html, t[:24]
+        assert html.count("<b>") == html.count("</b>"), t[:24]
 
 
 HOME_FORBIDDEN = ("今天", "今日")
