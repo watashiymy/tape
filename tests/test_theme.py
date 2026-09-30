@@ -556,6 +556,7 @@ def test_stat_card_help_dot_sits_inside_the_label():
 def test_image_only_card_ignores_help():
     html = theme.stat_card("", "", img="data:image/svg+xml;base64,QUJD", help="x")
     assert "qd-help-dot" not in html and "qd-card-label" not in html
+    assert "qd-help-dot" not in theme.stat_card("", "5", help="x"), "没有标签就没有挂圆点的地方"
 
 
 def test_stat_card_sub_tuple_is_one_line_per_part():
