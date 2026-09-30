@@ -128,6 +128,7 @@ CSS = f"""@import url("{FONT_IMPORT}");
   --qd-sans: {SANS};
   --qd-mono: {MONO};
 }}
+/* 页名与状态标签不收缩、说明可折行：页头与右端「帮助中心」同一行（2026-09-30），左栏变窄时只折说明。 */
 .qd-head {{
   display: flex;
   align-items: baseline;
@@ -143,14 +144,19 @@ CSS = f"""@import url("{FONT_IMPORT}");
   letter-spacing: 0.04em;
   color: var(--qd-text);
   line-height: 1.2;
+  white-space: nowrap;
+  flex-shrink: 0;
 }}
 .qd-sub {{
   font-family: var(--qd-sans);
   font-size: 0.8rem;
   color: var(--qd-muted);
+  min-width: 0;
 }}
 .qd-head-right {{
   margin-left: auto;
+  flex-shrink: 0;
+  white-space: nowrap;
 }}
 .qd-section {{
   font-family: var(--qd-serif);

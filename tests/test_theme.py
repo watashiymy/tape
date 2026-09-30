@@ -585,3 +585,16 @@ def test_section_help_dot_follows_the_title_before_the_pill():
     html = theme.section("信号跟踪", p, help="**信号跟踪**——x", help_align="end", help_wide=True)
     dot = theme.help_dot("**信号跟踪**——x", align="end", wide=True)
     assert html == f'<div class="qd-section">信号跟踪{dot}<span class="qd-section-pill">{p}</span></div>'
+
+
+# ================================================================ 页头右端的「帮助中心」（2026-09-30 设计）
+
+def test_page_head_keeps_title_and_pill_on_one_line_and_lets_the_lead_wrap():
+    """页头左栏变窄时（1024 宽、侧边栏展开）只让那句说明折行：不加这几条，页名会被折成「信 / 号」。"""
+    heads = [h for h, _ in _css_rule_pairs()]
+    for sel in (".qd-title", ".qd-sub", ".qd-head-right"):
+        assert heads.count(sel) == 1, sel
+    rules = _css_rules()
+    assert "white-space: nowrap" in rules[".qd-title"] and "flex-shrink: 0" in rules[".qd-title"]
+    assert "white-space: nowrap" in rules[".qd-head-right"] and "flex-shrink: 0" in rules[".qd-head-right"]
+    assert "min-width: 0" in rules[".qd-sub"]
