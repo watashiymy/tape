@@ -42,7 +42,7 @@
   - `HOME_HELP["above_ma"]` 末尾加一句：「小图固定按 0–100% 画，虚线是 50%。」——**不写天数**：注脚里的天数是实际行数
     （历史不足 60 天时会是「近 22 个交易日」），帮助里写死 60 会前后矛盾。（帮助文案 10–200 字的既有测试要过；`{n}` 模板不变。）
 - `app/pages_home.py::_trend_cards`：三张均线卡片有数那一支的 `note` 改为 `guide.HOME_ABOVE_MA_NOTE.format(n=len(tail))`
-  （「—」那一支没有 `note`，不动）；52 周卡片两支都不动。
+  （「—」那一支的注脚是缺多少天的说明，不动）；52 周卡片两支都不动。
 
 ## 3. 测试
 
@@ -55,8 +55,10 @@
   - 不足两个有效点：没有 `<polyline`、没有 `<line `、没有 `<rect`。
   - 越界截断：`trend_line([-0.5, 1.5])` 的 y 不越出 `[2, H − 2]`。
   - 既有 `test_trend_line_is_grey_and_skips_nan` 保留。
-- `tests/test_dashboard_home.py`：用 70 天夹具，三张均线卡片各含 `HOME_ABOVE_MA_NOTE.format(n=60)` 的完整字样，
-  52 周卡片含 `HOME_RECENT_DAYS.format(n=60)` 且不含「虚线」；`test_enough_history_shows_sixty_day_trend_lines_and_the_help`
+- `tests/test_dashboard_home.py`：用 70 天夹具，有数据的两张均线卡片（20 日、60 日）各含 `HOME_ABOVE_MA_NOTE.format(n=60)` 的完整字样；
+  200 日卡片是「—」，它的注脚是缺多少天的说明、不含「虚线」（只看注脚那一行——整张卡片的 html 里还有帮助圆点的说明，那里本来就写着「虚线是 50%」）；
+  52 周卡片在 70 天夹具下同样是「—」、不含「虚线」；另用只有一行指标表的夹具单独渲染一次，52 周卡片有数的那一支含
+  `HOME_RECENT_DAYS.format(n=1)` 且不含「虚线」；`test_enough_history_shows_sixty_day_trend_lines_and_the_help`
   里「近 60 个交易日」的断言照常成立。
 - `tests/test_guide.py`：既有的 `above_ma` 模板测试照常；帮助文案长度 10–200 字的测试照常。
 - 变异自查：去掉虚线、恢复自动缩放、去掉末端标记、标记用 `<circle>`、52 周卡片误用 `HOME_ABOVE_MA_NOTE`——各至少一条测试红。

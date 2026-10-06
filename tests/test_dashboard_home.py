@@ -432,6 +432,12 @@ def _card_value(card: str) -> str:
     return m.group(1)
 
 
+def _card_note(card: str) -> str:
+    """卡片注脚那一行的文字（没有注脚则为空串）。"""
+    m = re.search(r'<div class="qd-card-note">([^<]*)</div>', card)
+    return m.group(1) if m else ""
+
+
 def test_thermometer_shows_four_readings_and_a_dash_for_zero_division(tmp_path, monkeypatch):
     at = _home(tmp_path)
     body = " ".join(_htmls(at))
@@ -846,7 +852,8 @@ def test_the_update_button_carries_the_job_help(tmp_path):
 
 
 def test_ma_card_notes_say_the_dashed_line_is_fifty_percent(tmp_path):
-    """三张均线卡片的注脚带「虚线 = 50%」；52 周卡片的注脚不带（它没有那条虚线）。"""
+    """70 天夹具下有数据的两张均线卡片（20 日、60 日）注脚带「虚线 = 50%」；200 日卡片是「—」，
+    注脚是缺多少天的说明、不提虚线；52 周卡片的注脚不带（它没有那条虚线）。"""
     import pandas as pd
     _breadth_fixture(tmp_path, 70)
     at = _home(tmp_path)
@@ -854,17 +861,17 @@ def test_ma_card_notes_say_the_dashed_line_is_fifty_percent(tmp_path):
     g = app_module("guide")
     for label in ("站上 20 日线", "站上 60 日线"):
         assert g.HOME_ABOVE_MA_NOTE.format(n=60) in _card(at, label), label
+    # 只看注脚那一行：整张卡片的 html 里还有帮助圆点的说明，那里本来就写着「虚线是 50%」
+    note200 = _card_note(_card(at, "站上 200 日线"))
+    assert "还差约" in note200 and "虚线" not in note200, note200
     assert "虚线" not in _card(at, "52 周新高 / 新低")
     # 52 周卡片有数的那一支：注脚仍是「近 N 个交易日」，不带虚线
     ms = _market_store(tmp_path)
     day = _fixture_day()
-    days = pd.date_range(day.replace(day=1), day + pd.Timedelta(days=40)).date
-    ms.save_calendar(days, {day})
-    ms.save_snapshot(day, pd.DataFrame({"code": ["sh.600000"], "close": [1.0], "preclose": [1.0],
-                                        "tradestatus": [1], "isST": [0]}))
     ms.save_breadth(pd.DataFrame({"date": [day], "above20": [1], "n20": [2], "above60": [0], "n60": [0],
                                   "above200": [0], "n200": [0], "new_high": [36], "new_low": [104],
                                   "n_hl": [4922]}))
     at2 = _home(tmp_path)
+    assert not at2.exception, at2.exception
     hl = _card(at2, "52 周新高 / 新低")
     assert g.HOME_RECENT_DAYS.format(n=1) in hl and "虚线" not in hl, hl

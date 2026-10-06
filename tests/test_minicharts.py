@@ -37,11 +37,6 @@ def test_ratio_bar_widths_are_proportional():
     assert widths[0] == widths[1] and abs(widths[2] - 2 * widths[0]) < 1e-6
 
 
-def test_trend_line_is_grey_and_skips_nan():
-    svg = _svg(minicharts.trend_line([0.4, None, 0.5, 0.6]))
-    assert palette.NEUTRAL in svg and palette.UP not in svg
-
-
 def _attrs(tag: str, svg: str) -> list[dict[str, str]]:
     """svg 里每个 <tag …> 的属性字典（按出现顺序）。"""
     return [dict(re.findall(r'(\w[\w-]*)="([^"]*)"', m)) for m in re.findall(rf"<{tag}\b[^>]*>", svg)]
@@ -49,6 +44,26 @@ def _attrs(tag: str, svg: str) -> list[dict[str, str]]:
 
 def _ys(points: str) -> list[float]:
     return [float(p.split(",")[1]) for p in points.split()]
+
+
+def test_trend_line_is_grey_and_skips_nan():
+    """NaN 与 None 一样当缺值：断开折线、不计入有效点；不能被 max(0.0, nan) 悄悄钳成 0% 画出来。"""
+    nan = float("nan")
+    svg = _svg(minicharts.trend_line([0.4, nan, None, 0.5, 0.6]))
+    assert palette.NEUTRAL in svg and palette.UP not in svg
+    lines = _attrs("polyline", svg)
+    assert len(lines) == 1 and len(lines[0]["points"].split()) == 2, svg       # 只剩 0.5–0.6 一段；0.4 孤立不成线
+    # 两个有效点被 NaN 隔开：不成线段，但末端标记仍落在最后一个有效值（下标 2）上
+    gap = _svg(minicharts.trend_line([0.4, nan, 0.6]))
+    assert "<polyline" not in gap, gap
+    rects = _attrs("rect", gap)
+    assert len(rects) == 1, gap
+    r = rects[0]
+    assert abs(float(r["x"]) + float(r["width"]) / 2 - (1 + 2 * (minicharts.W - 2) / 2)) < 0.11, r
+    assert abs(float(r["y"]) + float(r["height"]) / 2 - (minicharts.H - 2 - 0.6 * (minicharts.H - 4))) < 0.11, r
+    # 全是 NaN：有效点不足两个，只出空画布
+    empty = _svg(minicharts.trend_line([nan, nan]))
+    assert "<line " not in empty and "<rect" not in empty and "<polyline" not in empty, empty
 
 
 def test_trend_line_uses_a_fixed_zero_to_hundred_scale():
@@ -66,6 +81,7 @@ def test_trend_line_has_a_fifty_percent_dashed_baseline_under_the_line():
     svg = _svg(minicharts.trend_line([0.4, 0.6]))
     lines = _attrs("line", svg)
     assert len(lines) == 1 and lines[0]["stroke-dasharray"] == "2 2", svg
+    assert lines[0]["stroke-width"] == "0.8" and lines[0]["stroke"] == palette.NEUTRAL, lines[0]   # 与分时小图昨收虚线同一套语言
     assert lines[0]["x1"] == "0" and lines[0]["x2"] == str(minicharts.W)
     assert float(lines[0]["y1"]) == float(lines[0]["y2"]) == minicharts.H / 2
     assert svg.index("<line ") < svg.index("<polyline"), "虚线在折线下面"
@@ -79,6 +95,9 @@ def test_trend_line_marks_the_last_valid_point_with_a_near_square_rect():
         rects = _attrs("rect", svg)
         assert len(rects) == 1 and "<circle" not in svg, svg
         r = rects[0]
+        assert (r["width"], r["height"]) == (str(minicharts.MARK_W), str(minicharts.MARK_H)), r
+        for stretch in (1.3, 2.4):                     # 卡片把画布横向拉伸 1.3–2.4 倍后，标记仍接近正方形（不是扁长条或横向椭圆）
+            assert 0.5 <= minicharts.MARK_W * stretch / minicharts.MARK_H <= 1.1, (stretch, r)
         cx = float(r["x"]) + float(r["width"]) / 2
         cy = float(r["y"]) + float(r["height"]) / 2
         sx = (W - 2) / (len(values) - 1)
