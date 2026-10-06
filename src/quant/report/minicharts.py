@@ -15,6 +15,7 @@ from quant.report import palette
 W, H = 120, 32          # 分时/趋势小图
 HW, HH = 300, 60        # 分布柱状图
 BW, BH = 300, 6         # 比例条
+MARK_W, MARK_H = 1.4, 3.2   # 趋势小图末端标记：画布横向随卡片拉伸 1.3–2.4 倍，这个比例拉伸后接近正方形（圆会变椭圆）
 
 
 def to_data_uri(svg: str) -> str:
@@ -80,12 +81,20 @@ def ratio_bar(up: int, flat: int, down: int) -> str:
 
 
 def trend_line(values: Sequence[float | None]) -> str:
-    """单条灰线（零类别配色）：均线占比的近 60 日走势。None 处断开。"""
+    """均线占比的近 60 日走势，**固定 0–100% 的尺子**（0 → 底、1 → 顶），不按序列自身的最小/最大缩放——
+    否则站上 200 日线那张 13%–31% 的小幅波动会被拉得和 20 日线 19%–91% 一样剧烈（2026-10-06 用户反馈）。
+    画布正中一条 50% 虚线（与分时小图的昨收虚线同一套语言）；单条灰线（零类别配色）；None 处断开；
+    末端一个小矩形标出当前位置（画在最后一个有效值上，哪怕它是孤立点）。不足两个有效点只出空画布。
+    绘制顺序：虚线 → 折线段 → 标记。"""
     pts = [(i, v) for i, v in enumerate(values) if v is not None]
     if len(pts) < 2:
         return to_data_uri(_frame(W, H, ""))
-    lo, k = _scale([v for _, v in pts], H)
+    pad = 2
     sx = (W - 2) / max(1, len(values) - 1)
+
+    def px(i): return 1 + i * sx
+    def py(v): return H - pad - min(1.0, max(0.0, v)) * (H - 2 * pad)
+    mid = H / 2
     segs, cur = [], []
     for i, v in enumerate(values):
         if v is None:
@@ -93,11 +102,16 @@ def trend_line(values: Sequence[float | None]) -> str:
                 segs.append(cur)
             cur = []
         else:
-            cur.append(f"{1 + i * sx:.1f},{H - 2 - (v - lo) * k:.1f}")
+            cur.append(f"{px(i):.1f},{py(v):.1f}")
     if len(cur) > 1:
         segs.append(cur)
-    body = "".join(f'<polyline points="{" ".join(s)}" fill="none" stroke="{palette.NEUTRAL}" '
-                   f'stroke-width="1.2"/>' for s in segs)
+    li, lv = pts[-1]
+    body = (f'<line x1="0" y1="{mid:.1f}" x2="{W}" y2="{mid:.1f}" stroke="{palette.NEUTRAL}" '
+            f'stroke-width="0.8" stroke-dasharray="2 2"/>'
+            + "".join(f'<polyline points="{" ".join(s)}" fill="none" stroke="{palette.NEUTRAL}" '
+                      f'stroke-width="1.2"/>' for s in segs)
+            + f'<rect x="{px(li) - MARK_W / 2:.1f}" y="{py(lv) - MARK_H / 2:.1f}" width="{MARK_W}" '
+              f'height="{MARK_H}" fill="{palette.NEUTRAL}"/>')
     return to_data_uri(_frame(W, H, body))
 
 
