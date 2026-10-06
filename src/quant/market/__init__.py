@@ -19,7 +19,7 @@ INDEXES: tuple[tuple[str, str], ...] = (
     ("sh000688", "科创50"), ("sh000300", "沪深300"), ("sh000852", "中证1000"),
 )
 
-WINDOW_TRADING_DAYS = 310           # MA200 + 52 周 250 + 小图 60（spec §5.2）
+WINDOW_TRADING_DAYS = 310           # MA200 + 52 周 250 + 图表默认 60（spec §5.2）
 
 
 def now() -> datetime:
