@@ -96,6 +96,19 @@ KLINE_SPANS: dict[str, tuple[str, int | None]] = {
     "all": ("全部", None),
 }
 
+#: 趋势宽度图表（首页，2026-10-06）上半幅的三条线：(均线天数, 显示名, 线型)。显示名与首页卡片标签同文
+#: （tests/test_dashboard_home.py 钉住不漂）；琥珀 / 灰 / 暖白三色之间色差不够大，再用实线 / 虚线 / 点线区分
+#: （同 equity_chart 给基准线加点线）。
+BREADTH_LINES: tuple[tuple[int, str, str], ...] = (
+    (20, "站上 20 日线", "solid"), (60, "站上 60 日线", "dash"), (200, "站上 200 日线", "dot"))
+
+#: 趋势宽度图表显示最近多少个交易日：内部键 → (显示名, 行数；None = 全部)。同 KLINE_SPANS：键永不改。
+BREADTH_SPANS: dict[str, tuple[str, int | None]] = {
+    "60": ("60 个交易日", 60),
+    "120": ("120 个交易日", 120),
+    "all": ("全部", None),
+}
+
 #: K 线描边宽度。plotly 默认 2px：几百根挤在一起时描边比实体还宽，整根看着像一条线。
 _CANDLE_LINE_WIDTH = 1
 
@@ -347,3 +360,39 @@ def _source_note(summary: dict) -> str:
     money = f"{total:,.0f}" if round(total) == 0 else f"{total:+,.0f}"
     win = summary.get("win_rate")
     return f"{money} 元 · 胜率 {'—' if win is None else f'{win:.0%}'}"
+
+
+# ================================================================ 趋势宽度（首页，2026-10-06）
+
+def breadth_chart(table: pd.DataFrame, span: int | None) -> go.Figure:
+    """首页「趋势宽度」卡片下方那张图：上半幅三条「站上 N 日线」占比线 + 50% 虚线，下半幅 52 周新高红柱向上 /
+    新低绿柱向下。`table` 是指标表（按日期升序，只含有快照的日子），`span` 只画最近多少行，None 画全部。
+
+    **单图、一条横轴、两个纵轴区域，不用 make_subplots**：分行子图各有自己的横轴，`hovermode="x unified"` 会上下各弹
+    一个提示框，看不到「同一天的三个占比加新高新低」（真浏览器实测）。横轴是交易日的类目轴（同 K 线图），不留周末空档。
+    分母为 0 的日子记 NaN——线断开，不画成 0%。下半幅的刻度用 tickvals/ticktext 显示绝对值（tickformat 打不出绝对值），
+    新低柱 y 取负、悬停用 customdata 显示正数；悬停模板里不写 trace 名（统一悬停自带名字，写了就成「新低 : 新低 87 只」）。
+    """
+    rows = table if span is None else table.tail(span)
+    x = [pd.Timestamp(d).strftime("%Y-%m-%d") for d in rows["date"]]
+    fig = go.Figure()
+    for n, name, dash in BREADTH_LINES:
+        denom = rows[f"n{n}"].astype(float)
+        ratio = (rows[f"above{n}"] / denom.where(denom > 0)).tolist()     # 分母 0 → NaN
+        fig.add_trace(go.Scatter(x=x, y=ratio, name=name, mode="lines", line=dict(width=2, dash=dash),
+                                 hovertemplate="%{y:.1%}"))
+    fig.add_hline(y=0.5, line=dict(dash="dot", color=palette.NEUTRAL))
+    highs = [int(v) for v in rows["new_high"]]
+    lows = [int(v) for v in rows["new_low"]]
+    fig.add_trace(go.Bar(x=x, y=highs, name="新高", marker_color=palette.UP, hovertemplate="%{y:,d} 只", yaxis="y2"))
+    fig.add_trace(go.Bar(x=x, y=[-v for v in lows], name="新低", marker_color=palette.DOWN, customdata=lows,
+                         hovertemplate="%{customdata:,d} 只", yaxis="y2"))
+    top = max(max(highs, default=0), max(lows, default=0), 1)
+    fig.update_layout(
+        xaxis=dict(type="category", categoryorder="category ascending", nticks=8, anchor="y2"),
+        yaxis=dict(domain=[0.36, 1.0], range=[0, 1], tickformat=".0%", tickvals=[0, 0.25, 0.5, 0.75, 1]),
+        yaxis2=dict(domain=[0.0, 0.30], anchor="x", tickvals=[-top, 0, top],
+                    ticktext=[f"{top:,d}", "0", f"{top:,d}"]),
+        barmode="relative", hovermode="x unified", hoversubplots="axis", height=420,
+        margin=dict(t=40, b=30, l=50, r=20), legend=dict(orientation="h", y=1.02, yanchor="bottom"))
+    return _apply_dark(fig)

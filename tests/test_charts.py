@@ -7,7 +7,7 @@ import pytest
 
 from quant.backtest.portfolio import Trade
 from quant.report import charts, palette
-from quant.report.charts import (equity_chart, journal_cum_pnl_chart, kline_chart,
+from quant.report.charts import (breadth_chart, equity_chart, journal_cum_pnl_chart, kline_chart,
                                  position_weights_chart, source_compare_chart)
 from quant.report.metrics import compute_metrics
 from tests.conftest import make_bars
@@ -370,6 +370,70 @@ _BY_SOURCE = {
 }
 
 
+def _breadth_table(n: int = 70) -> pd.DataFrame:
+    """指标表的最小夹具：n 个工作日；200 日线前 n−1 天分母为 0（线要断开）；新高 3、新低 5。"""
+    days = pd.bdate_range("2026-06-01", periods=n)
+    return pd.DataFrame({"date": days.date, "above20": range(n), "n20": [100] * n,
+                         "above60": [50] * n, "n60": [100] * n,
+                         "above200": [0] * n, "n200": [0] * (n - 1) + [100],
+                         "new_high": [3] * n, "new_low": [5] * n, "n_hl": [100] * n})
+
+
+def test_breadth_chart_puts_three_lines_on_y_and_two_bars_on_y2():
+    """单图双纵轴（不用 make_subplots）：分行子图各有横轴，统一悬停会上下各弹一个框。"""
+    fig = breadth_chart(_breadth_table(), None)
+    lines = [t for t in fig.data if t.type == "scatter"]
+    bars = [t for t in fig.data if t.type == "bar"]
+    assert [(t.name, t.line.dash) for t in lines] == [(name, dash) for _, name, dash in charts.BREADTH_LINES]
+    assert all(t.yaxis in (None, "y") for t in lines) and all(t.yaxis == "y2" for t in bars)
+    assert all(t.xaxis in (None, "x") for t in fig.data), "五条 trace 共用同一条横轴"
+    assert fig.layout.colorway == palette.CHART_SERIES
+    assert all(t.line.color not in (palette.UP, palette.DOWN) for t in lines)
+    hi, lo = bars
+    assert hi.name == "新高" and hi.marker.color == palette.UP and min(hi.y) >= 0
+    assert lo.name == "新低" and lo.marker.color == palette.DOWN and max(lo.y) <= 0
+    assert all(v > 0 for v in lo.customdata) and "customdata" in lo.hovertemplate and "只" in lo.hovertemplate
+    assert "只" in hi.hovertemplate and "新高" not in hi.hovertemplate and "新低" not in lo.hovertemplate
+
+
+def test_breadth_chart_zero_denominator_breaks_the_line_instead_of_drawing_zero():
+    import math
+    y200 = breadth_chart(_breadth_table(), None).data[2].y
+    assert all(math.isnan(v) for v in y200[:-1]) and y200[-1] == 0.0
+
+
+def test_breadth_chart_axes_fixed_percent_scale_with_fifty_percent_line_and_abs_ticks():
+    fig = breadth_chart(_breadth_table(), None)
+    assert fig.layout.yaxis.range == (0, 1) and fig.layout.yaxis.tickformat == ".0%"
+    assert fig.layout.yaxis.domain[0] > fig.layout.yaxis2.domain[1], "上半幅在下半幅之上、不重叠"
+    shapes = [s for s in fig.layout.shapes if s.y0 == 0.5 and s.y1 == 0.5]
+    assert len(shapes) == 1 and shapes[0].line.dash == "dot"
+    assert list(fig.layout.yaxis2.ticktext) == ["5", "0", "5"]      # top = max(新高 3, 新低 5)：刻度显示绝对值
+    assert fig.layout.xaxis.type == "category" and fig.layout.xaxis.nticks == 8
+    assert fig.layout.hovermode == "x unified" and fig.layout.hoversubplots == "axis"
+    assert fig.layout.legend.orientation == "h" and fig.layout.legend.y > 1
+
+
+def test_breadth_chart_x_is_one_category_per_row_without_calendar_gaps():
+    table = _breadth_table(10)
+    x = list(breadth_chart(table, None).data[0].x)
+    assert x == [pd.Timestamp(d).strftime("%Y-%m-%d") for d in table["date"]]
+    assert len(x) == 10 and x[0] == "2026-06-01" and x[-1] == "2026-06-12"   # 跨了一个周末，类目轴不留空档
+
+
+def test_breadth_chart_span_keeps_only_the_most_recent_rows():
+    table = _breadth_table(70)
+    x60 = list(breadth_chart(table, 60).data[0].x)
+    assert len(x60) == 60 and x60[-1] == list(breadth_chart(table, None).data[0].x)[-1]
+    assert len(breadth_chart(table, None).data[0].x) == 70
+    assert len(breadth_chart(table, 120).data[0].x) == 70        # 表不足 120 行 → 画全部
+
+
+def test_breadth_spans_offer_60_120_and_all():
+    assert list(charts.BREADTH_SPANS) == ["60", "120", "all"]
+    assert [v[1] for v in charts.BREADTH_SPANS.values()] == [60, 120, None]
+
+
 def _figs() -> dict:
     """每个图表函数各来一张。暗色是**图表基线**，不是某个函数的特性——
     只改一个函数、另一个仍白底，是这次缺陷最可能的复发形态。"""
@@ -378,11 +442,12 @@ def _figs() -> dict:
             "kline": kline_chart(_bars(), [], "TEST"),
             "journal_cum": journal_cum_pnl_chart(_CUM_POINTS),
             "weights": position_weights_chart(_WEIGHT_ROWS),
-            "source": source_compare_chart(_BY_SOURCE)}
+            "source": source_compare_chart(_BY_SOURCE),
+            "breadth": breadth_chart(_breadth_table(), 60)}
 
 
 @pytest.mark.parametrize("kind", ["equity", "kline", "journal_cum",
-                                  "weights", "source"])
+                                  "weights", "source", "breadth"])
 def test_chart_surfaces_come_from_the_palette(kind):
     """paper 用卡片底色（与面板内嵌它的容器同色），plot 用页面底色（同族、下沉一档）。
     默认模板下这两个值是 white / #E5ECF6。"""
@@ -392,7 +457,7 @@ def test_chart_surfaces_come_from_the_palette(kind):
 
 
 @pytest.mark.parametrize("kind", ["equity", "kline", "journal_cum",
-                                  "weights", "source"])
+                                  "weights", "source", "breadth"])
 def test_chart_font_is_palette_text_in_mono(kind):
     """暗底上必须显式给字色：默认模板是给浅底配的深灰（#444），暗底上几乎看不见。
     等宽字体是为了数值轴标签对齐（与面板的数字同一套字体栈）。"""
@@ -402,7 +467,7 @@ def test_chart_font_is_palette_text_in_mono(kind):
 
 
 @pytest.mark.parametrize("kind", ["equity", "kline", "journal_cum",
-                                  "weights", "source"])
+                                  "weights", "source", "breadth"])
 def test_chart_grid_lines_are_the_low_contrast_hairline(kind):
     """默认模板的网格线是白色（浅底上才成立）。暗底上必须换成低对比发丝灰，
     否则一屏白格子比数据还抢眼。两个子图的四条轴都要覆盖到。"""
@@ -415,7 +480,7 @@ def test_chart_grid_lines_are_the_low_contrast_hairline(kind):
 
 
 @pytest.mark.parametrize("kind", ["equity", "kline", "journal_cum",
-                                  "weights", "source"])
+                                  "weights", "source", "breadth"])
 def test_chart_colorway_avoids_the_direction_colors(kind):
     """线条自动配色不许落到红/绿：那两个色在本项目里专门表示涨跌，
     一条红色的基准线就是个假信号（plotly 默认 colorway 的第 2、3 位正是红和绿）。"""
