@@ -225,7 +225,8 @@ def test_trend_chart_copy_exists_and_is_plain():
 
 - [ ] **Step 2: 跑，确认失败**
 
-Run: `.venv/bin/python -m pytest tests/test_dashboard_home.py -q -k "span_switch or wrong_columns"` → 2 FAIL（卡片里有 `qd-card-img`；没有 radio / plotly_chart）
+Run: `.venv/bin/python -m pytest tests/test_dashboard_home.py -q -k "span_switch or wrong_columns"` → 1 FAIL（`span_switch`：卡片里有 `qd-card-img`）；
+`wrong_columns` 本就通过（降级分支既无图表也无 radio，新加的两条断言此时就成立）
 Run: `.venv/bin/python -m pytest tests/test_guide.py -q -k "above_ma or trend_chart_copy"` → 2 FAIL
 
 - [ ] **Step 3: 实现**
@@ -303,19 +304,22 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 - `src/quant/report/minicharts.py`：删掉 `MARK_W, MARK_H = ...` 行、`_ok`、`trend_line`、`highs_lows` 三个函数；
   `W, H = 120, 32          # 分时/趋势小图` 的注释改为 `# 分时小图`；模块 docstring 首行「首页小图」保持，不用改。
-  删前 `grep -rn "trend_line\|highs_lows\|_ok(\|MARK_W" app/ src/ tests/` 确认只剩本文件与 `tests/test_minicharts.py`。
+  删前 `grep -rnw "trend_line\|highs_lows\|_ok\|MARK_W" app/ src/ tests/` 确认只剩本文件与 `tests/test_minicharts.py`（用 `-w`：
+  `_ok(` 会误中 `test_limit_ok(` 之类的名字）。
 - `tests/test_minicharts.py`：删掉 `_attrs`、`_ys`、`test_trend_line_*` 五条、`test_highs_lows_bars_point_opposite_ways`。
 
 - [ ] **Step 2: 旧说法**
 
-- `src/quant/market/__init__.py` 第 23 行注释 `# MA200 + 52 周 250 + 小图 60` → `# MA200 + 52 周 250 + 图表默认 60`（代码不动）。
+- `src/quant/market/__init__.py` 第 22 行注释 `# MA200 + 52 周 250 + 小图 60` → `# MA200 + 52 周 250 + 图表默认 60`（代码不动）。
 - `docs/superpowers/specs/2026-09-23-market-overview-homepage-design.md`：
   - 第 82 行「每张卡片附「分子/分母」只数，外加一幅近 60 个交易日的小图：均线占比用单条灰线；新高/新低画成上红下绿的柱，这里红绿本来就是涨跌语义。」
     → 「每张卡片附「分子/分母」只数；走势在四张卡片下方一张两行图表里（2026-10-06 由小图改来，见 `2026-10-06-trend-breadth-chart-design.md`）：上半幅三条占比线 + 50% 虚线，下半幅新高红柱向上 / 新低绿柱向下，带 60/120/全部 切换。」
   - 第 238 行「再加小图 60 天」→「再加图表默认显示的 60 天」。
-  - 第 458 行「四张趋势小图、新高/新低图都完整显示」→「（趋势小图 2026-10-06 已换成 plotly 图表）」。
+  - 第 458 行「六张分时小图、比例条、23 档柱状图、四张趋势小图、新高/新低图都完整显示」→
+    「六张分时小图、比例条、23 档柱状图都完整显示（四张趋势小图与新高/新低图 2026-10-06 已换成 plotly 图表）」。
 
-- [ ] **Step 3: 全量** → `.venv/bin/python -m pytest -q` 全 PASS；`grep -rn "trend_line\|highs_lows\|HOME_RECENT_DAYS\|HOME_ABOVE_MA_NOTE\|TREND_DAYS_SHOWN" app/ src/ tests/` → 无输出。
+- [ ] **Step 3: 全量** → `.venv/bin/python -m pytest -q` 全 PASS；`grep -rn "trend_line\|highs_lows\|HOME_RECENT_DAYS\|HOME_ABOVE_MA_NOTE\|TREND_DAYS_SHOWN" app/ src/ tests/ | grep -v hasattr`
+  → 无输出（`tests/test_guide.py` 里那条 `hasattr(...)` 断言本来就提到这两个旧常量名）。
 
 - [ ] **Step 4: 变异自查**（`cp` 备份 → 改 → `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -B -m pytest <tests> -q -x` 应 FAIL → `mv` 还原）
 
