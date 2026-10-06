@@ -693,15 +693,32 @@ def test_trend_card_names_the_permanent_gap_inside_its_lookback(tmp_path):
     assert f"数据源缺 {gap.isoformat()} 的数据，还需约 15 个交易日" in card20, card20
 
 
-def test_enough_history_shows_sixty_day_trend_lines_and_the_help(tmp_path):
+def test_trend_block_has_numbers_only_cards_and_one_chart_with_a_span_switch(tmp_path):
+    """2026-10-06：四张卡片只留数字；走势看卡片下方那张两行图表（坐标轴、图例、悬停），带 60/120/全部 切换。"""
+    import json
+    from quant.report import charts
     _breadth_fixture(tmp_path, 70)
     at = _home(tmp_path)
     assert not at.exception, at.exception
-    for label in ("站上 20 日线", "站上 60 日线"):
-        card = _card(at, label)
-        assert "近 60 个交易日" in card and "qd-card-img" in card, card
-    guide = app_module("guide")
-    assert guide.HOME_HELP["above_ma"].format(n=20) in _card(at, "站上 20 日线")
+    for label in ("站上 20 日线", "站上 60 日线", "站上 200 日线", "52 周新高 / 新低"):
+        assert "qd-card-img" not in _card(at, label), label
+    assert "qd-card-note" not in _card(at, "站上 20 日线"), "有数的卡片不再有「近 N 个交易日」注脚"
+    assert "还差约" in _card_note(_card(at, "站上 200 日线")), "「—」的卡片仍写缺多少天"
+    g = app_module("guide")
+    assert g.HOME_HELP["above_ma"].format(n=20) in _card(at, "站上 20 日线")
+    assert [name for _, name, _ in charts.BREADTH_LINES] == [g.HOME_ABOVE_MA.format(n=n) for n, _, _ in charts.BREADTH_LINES], \
+        "图例名与卡片标签不许漂"
+    r = at.radio(key="home_trend_span")
+    assert r.options == [v[0] for v in charts.BREADTH_SPANS.values()] and r.value == "60"   # AppTest 读到的是显示名
+    el = at.get("plotly_chart")
+    assert len(el) == 1, "四张卡片下方恰一张图表"
+    assert len(json.loads(el[0].proto.spec)["data"][0]["x"]) == 60
+    assert "displayModeBar" in el[0].proto.config
+    assert g.HOME_TREND_CHART_NOTE in _captions(at)
+    at = r.set_value("120").run()
+    assert not at.exception, at.exception
+    assert len(json.loads(at.get("plotly_chart")[0].proto.spec)["data"][0]["x"]) == 70    # 表只有 70 行 → 画全部
+    assert at.radio(key="home_trend_span").value == "120"
 
 
 def test_a_breadth_table_with_wrong_columns_degrades_only_that_block(tmp_path):
@@ -714,6 +731,8 @@ def test_a_breadth_table_with_wrong_columns_degrades_only_that_block(tmp_path):
     assert any('class="qd-section">趋势宽度' in h for h in _htmls(at))
     assert not [h for h in _htmls(at) if "站上 20 日线" in h]
     assert any(h.startswith('<div class="qd-card">') for h in _htmls(at)), "其余板块照常"
+    assert at.get("plotly_chart") == [], "表读不出就没有图表"
+    assert "home_trend_span" not in {r.key for r in at.radio}
 
 
 def test_another_job_running_polls_the_button_area_every_two_seconds(tmp_path, monkeypatch):
@@ -849,29 +868,3 @@ def test_the_update_button_carries_the_job_help(tmp_path):
     _breadth_fixture(tmp_path, 22)              # 夹具日自己的快照还没有 → 「更新收盘数据」
     at = _home(tmp_path)
     assert at.button(key="home_breadth_update").help == app_module("guide").JOB_HELP["market_breadth"]
-
-
-def test_ma_card_notes_say_the_dashed_line_is_fifty_percent(tmp_path):
-    """70 天夹具下有数据的两张均线卡片（20 日、60 日）注脚带「虚线 = 50%」；200 日卡片是「—」，
-    注脚是缺多少天的说明、不提虚线；52 周卡片的注脚不带（它没有那条虚线）。"""
-    import pandas as pd
-    _breadth_fixture(tmp_path, 70)
-    at = _home(tmp_path)
-    assert not at.exception, at.exception
-    g = app_module("guide")
-    for label in ("站上 20 日线", "站上 60 日线"):
-        assert g.HOME_ABOVE_MA_NOTE.format(n=60) in _card(at, label), label
-    # 只看注脚那一行：整张卡片的 html 里还有帮助圆点的说明，那里本来就写着「虚线是 50%」
-    note200 = _card_note(_card(at, "站上 200 日线"))
-    assert "还差约" in note200 and "虚线" not in note200, note200
-    assert "虚线" not in _card(at, "52 周新高 / 新低")
-    # 52 周卡片有数的那一支：注脚仍是「近 N 个交易日」，不带虚线
-    ms = _market_store(tmp_path)
-    day = _fixture_day()
-    ms.save_breadth(pd.DataFrame({"date": [day], "above20": [1], "n20": [2], "above60": [0], "n60": [0],
-                                  "above200": [0], "n200": [0], "new_high": [36], "new_low": [104],
-                                  "n_hl": [4922]}))
-    at2 = _home(tmp_path)
-    assert not at2.exception, at2.exception
-    hl = _card(at2, "52 周新高 / 新低")
-    assert g.HOME_RECENT_DAYS.format(n=1) in hl and "虚线" not in hl, hl

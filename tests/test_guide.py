@@ -772,12 +772,18 @@ def test_above_ma_help_is_a_template_for_each_window():
     text = guide.HOME_HELP["above_ma"]
     assert "{n}" in text and "近 {n} 日" in text
     assert "近 60 日" in text.format(n=60)
-    assert "虚线是 50%" in text and "0–100%" in text, "帮助里要说清小图的尺子与虚线"
-    assert guide.HOME_ABOVE_MA_NOTE.format(n=60) == "近 60 个交易日 · 虚线 = 50%"
+    assert "小图" not in text and "虚线" not in text, "图表自带坐标轴与说明，帮助里不再讲小图"
 
 
 def test_high_low_total_is_a_template():
     assert guide.HOME_HL_TOTAL.format(n=4922) == "共 4922 只"
+
+
+def test_trend_chart_copy_exists_and_is_plain():
+    assert guide.HOME_TREND_SPAN_LABEL == "显示最近"
+    note = guide.HOME_TREND_CHART_NOTE
+    assert "上半幅" in note and "下半幅" in note and "50%" in note and "**" not in note
+    assert not hasattr(guide, "HOME_RECENT_DAYS") and not hasattr(guide, "HOME_ABOVE_MA_NOTE"), "小图的注脚常量已删"
 
 
 def test_breadth_job_help_names_no_button_and_has_no_stray_space():

@@ -19,7 +19,7 @@ from quant.market import breadth, live, session, sources, trend, turnover
 from quant.market.session import Calendar, Decision, State, TradeDay
 from quant.market.store import MarketStore
 from quant.market.trend import ButtonState as B
-from quant.report import fmt, minicharts
+from quant.report import charts, fmt, minicharts
 from quant.runner import process, progress, view
 
 
@@ -326,7 +326,6 @@ def _first_run_hint() -> None:
 
 # ---------------------------------------------------------------- 趋势宽度四卡 + 按钮区
 TREND_WINDOWS = ((20, "above20", "n20"), (60, "above60", "n60"), (200, "above200", "n200"))
-TREND_DAYS_SHOWN = 60
 #: 四张趋势卡片提示框的展开方向（按列序）：右半边两张向左展开，免得越出视口右缘。
 TREND_HELP_ALIGN = ("start", "start", "end", "end")
 
@@ -339,8 +338,7 @@ def _trend_cards(ms: MarketStore) -> None:
     asof = pd.Timestamp(table["date"].iloc[-1]).date()      # 表里只有有快照的日子，末行就是真实的最后一天
     pill = theme.pill(guide.HOME_TREND_ASOF.format(day=asof), "idle")
     st.html(theme.section(guide.HOME_TREND_TITLE, pill))
-    tail = table.tail(TREND_DAYS_SHOWN)
-    last = tail.iloc[-1]
+    last = table.iloc[-1]
     have, cal, gaps = set(ms.snapshot_dates()), ms.load_calendar(), ms.permanent_gaps()
     cols = st.columns(4)
     for i, (col, (n, above, denom)) in enumerate(zip(cols, TREND_WINDOWS)):
@@ -350,19 +348,26 @@ def _trend_cards(ms: MarketStore) -> None:
             col.html(theme.stat_card(label, fmt.MISSING, note=_shortfall_note(n, asof, cal, have, gaps), **tip))
             continue
         pct = 100 * last[above] / last[denom]
-        series = [(r[above] / r[denom]) if r[denom] else None for _, r in tail.iterrows()]
-        col.html(theme.stat_card(label, f"{pct:.1f}%", sub=f"{int(last[above])}/{int(last[denom])}",
-                                 img=minicharts.trend_line(series),
-                                 note=guide.HOME_ABOVE_MA_NOTE.format(n=len(tail)), **tip))
+        col.html(theme.stat_card(label, f"{pct:.1f}%", sub=f"{int(last[above])}/{int(last[denom])}", **tip))
     hl_tip = dict(help=guide.HOME_HELP["high_low"], help_align=TREND_HELP_ALIGN[3])
     if last["n_hl"] == 0:
         note = _shortfall_note(breadth.HIGH_LOW_WINDOW, asof, cal, have, gaps)
         cols[3].html(theme.stat_card(guide.HOME_HIGH_LOW, fmt.MISSING, note=note, **hl_tip))
     else:
         cols[3].html(theme.stat_card(guide.HOME_HIGH_LOW, f"{int(last['new_high'])} / {int(last['new_low'])}",
-                                     sub=guide.HOME_HL_TOTAL.format(n=int(last["n_hl"])),
-                                     img=minicharts.highs_lows(tail["new_high"].tolist(), tail["new_low"].tolist()),
-                                     note=guide.HOME_RECENT_DAYS.format(n=len(tail)), **hl_tip))
+                                     sub=guide.HOME_HL_TOTAL.format(n=int(last["n_hl"])), **hl_tip))
+    _trend_chart(table)
+
+
+def _trend_chart(table: pd.DataFrame) -> None:
+    """四张卡片下方的正式图表（2026-10-06）：小图没有坐标轴，用户看不懂；改成带日期横轴、百分比纵轴、图例与悬停的
+    两行图。它在盘中 30 秒刷新的 fragment 之外（收盘数据一天一变），一张交互图不影响刷新节奏。切换用 st.radio
+    记在 session_state（键 home_trend_span），整页重跑也保留。"""
+    span = st.radio(guide.HOME_TREND_SPAN_LABEL, list(charts.BREADTH_SPANS), horizontal=True,
+                    key="home_trend_span", format_func=lambda k: charts.BREADTH_SPANS[k][0])
+    st.plotly_chart(charts.breadth_chart(table, charts.BREADTH_SPANS[span][1]), width="stretch",
+                    config={"displayModeBar": False, "displaylogo": False})
+    st.caption(guide.HOME_TREND_CHART_NOTE)
 
 
 def _shortfall_note(n: int, asof: date, cal: Calendar | None, have: set[date], gaps: set[date]) -> str:
