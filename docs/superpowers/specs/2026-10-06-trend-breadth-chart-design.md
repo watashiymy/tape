@@ -22,8 +22,9 @@
   单图写法（`go.Figure()`）三条线用默认的 `x/y`，两组柱 `yaxis="y2"`，布局：
   `xaxis=dict(type="category", categoryorder="category ascending", nticks=8, anchor="y2")`，
   `yaxis=dict(domain=[0.36, 1.0], range=[0, 1], tickformat=".0%", tickvals=[0, .25, .5, .75, 1])`，
-  `yaxis2=dict(domain=[0.0, 0.30], anchor="x", tickvals=[-top, 0, top], ticktext=[f"{top:,d}", "0", f"{top:,d}"])`
-  （`top = max(新高最大值, 新低最大值, 1)`；`tickformat` 打不出绝对值，只能 `tickvals/ticktext`），
+  `yaxis2=dict(domain=[0.0, 0.30], anchor="x", tickvals=[-lo_top, 0, hi_top], ticktext=[f"{lo_top:,d}", "0", f"{hi_top:,d}"])`
+  （`hi_top = max(新高最大值, 1)`、`lo_top = max(新低最大值, 1)`，**两侧各按自己的最大值**：纵轴范围是自动的、通常不对称，
+  共用一个最大值会让小的那一侧刻度落到范围外、整侧没有刻度——真机验收抓到；`tickformat` 打不出绝对值，只能 `tickvals/ticktext`），
   `barmode="relative"`、`hovermode="x unified"`、`hoversubplots="axis"`。评审实测：一个提示框里是日期、三个占比、新高 N 只、新低 N 只。
   - **上半幅**：三条折线。图例名是图表的一部分，放在 `charts.py` 的常量
     `BREADTH_LINES = ((20, "站上 20 日线", "solid"), (60, "站上 60 日线", "dash"), (200, "站上 200 日线", "dot"))`
@@ -83,7 +84,8 @@
     新高柱 `marker.color == palette.UP` 且 y ≥ 0，新低柱 `palette.DOWN` 且 y ≤ 0、`customdata` 是正数、`hovertemplate` 含 `customdata` 与「只」；
   - 分母为 0 的行折线 y 是 NaN；
   - `yaxis.range == (0, 1)`、`tickformat == ".0%"`；有一条 `y0 == y1 == 0.5`、`dash == "dot"` 的 shape；
-    `yaxis2` 的 `ticktext` 三项都是非负整数字符串；
+    `yaxis2` 的 `tickvals == [-新低最大值, 0, 新高最大值]`、`ticktext` 三项都是非负整数字符串（夹具：`["5", "0", "3"]`）；
+    `xaxis.anchor == "y2"`、`barmode == "relative"`、`legend.yanchor == "bottom"`、三条线 `hovertemplate == "%{y:.1%}"`；
   - 横轴 `type == "category"`、`nticks == 8`、x 是 `YYYY-MM-DD` 字符串、与表的行一一对应（无周末空档）；
   - `span=60` 只画最后 60 行，`span=None` 画全部，表不足 60 行画全部；
   - 图例 `orientation == "h"` 且在图上方；`hovermode == "x unified"`、`hoversubplots == "axis"`；
@@ -119,3 +121,16 @@
 - 不做缩放、不做日期范围拖选（切换三档够用）。
 - 不改指数分时小图、分布柱状图、比例条。
 - 不把图表放进盘中刷新的 fragment。
+
+## 7. 验收记录（2026-10-06，真浏览器，8502 端口自建实例）
+
+实现提交 `8b08d01`（图表函数）、`8b4a4b3`（首页接入）。1280 宽：
+
+- 四张卡片只剩数字（无小图、无「近 N 个交易日」注脚）；下方一张图表 820×420，图例五项在图上方（三条线实 / 虚 / 点），
+  横轴 8 个日期刻度（2026-07-03 … 2026-09-21），上半幅纵轴 0% / 25% / 50% / 75% / 100% 带 50% 虚线，下半幅红柱向上、绿柱向下。
+- 悬停 2026-08-25：**一个提示框**——「站上 20 日线 54.5% · 站上 60 日线 47.5% · 站上 200 日线 22.3% · 新高 19 只 · 新低 12 只」。
+- 切「全部」：310 个点（2025-06-23 … 2026-09-24）；切换是整页重跑，其余板块不动。
+- 1024 宽：图表宽 564、随容器、不横向溢出。
+- 说明行「上半幅：…；下半幅：…」在图下。
+- **发现并改**：下半幅纵轴刻度按两侧共用的最大值取，坐标范围却是自动的，新高一侧的刻度落在范围外、只显示了「1,167」与「0」
+  （7 月那天新低 1167 只）。改为两侧各按自己的最大值标刻度（见 §1 修订）。
