@@ -79,12 +79,15 @@ def test_trend_line_with_fewer_than_two_points_is_an_empty_frame():
 Run: `.venv/bin/python -m pytest tests/test_minicharts.py -q`
 Expected: 新 4 条里 3 条 FAIL（固定尺子、虚线、标记）；`fewer_than_two_points` 与既有 `is_grey_and_skips_nan` PASS。
 
-- [ ] **Step 3: 实现**——`trend_line` 整个换成（`_scale` 留给 `sparkline`，别删）：
+- [ ] **Step 3: 实现**——先在文件顶部 `BW, BH = 300, 6         # 比例条` 的下一行加常量：
 
 ```python
 MARK_W, MARK_H = 1.4, 3.2   # 趋势小图末端标记：画布横向随卡片拉伸 1.3–2.4 倍，这个比例拉伸后接近正方形（圆会变椭圆）
+```
 
+再把 `trend_line` 整个换成（`_scale` 留给 `sparkline`，别删）：
 
+```python
 def trend_line(values: Sequence[float | None]) -> str:
     """均线占比的近 60 日走势，**固定 0–100% 的尺子**（0 → 底、1 → 顶），不按序列自身的最小/最大缩放——
     否则站上 200 日线那张 13%–31% 的小幅波动会被拉得和 20 日线 19%–91% 一样剧烈（2026-10-06 用户反馈）。
@@ -119,8 +122,6 @@ def trend_line(values: Sequence[float | None]) -> str:
               f'height="{MARK_H}" fill="{palette.NEUTRAL}"/>')
     return to_data_uri(_frame(W, H, body))
 ```
-
-把 `MARK_W, MARK_H` 放在文件顶部 `BW, BH = 300, 6` 之后。
 
 - [ ] **Step 4: 跑** → `.venv/bin/python -m pytest tests/test_minicharts.py tests/test_dashboard_home.py -q` 全 PASS
 
@@ -176,13 +177,13 @@ def test_ma_card_notes_say_the_dashed_line_is_fifty_percent(tmp_path):
     assert g.HOME_RECENT_DAYS.format(n=1) in hl and "虚线" not in hl, hl
 ```
 
-（`_breadth_fixture` 写在同一个 `tmp_path` 的 `data/market` 下，第二段用一行表整体覆盖 `breadth.parquet`、再存一天快照即可；
-两次 `_home` 之间不需要清缓存——AppTest 每次都是新进程状态。若第二段因残留快照走了「—」分支，就改用新的 `tmp_path / "b"` 目录
-另建 `MarketStore` 并把 `copy_app` 指过去——先按上面的写法跑，不行再调。）
+（`_breadth_fixture` 写在同一个 `tmp_path` 的 `data/market` 下，第二段用一行表整体覆盖 `breadth.parquet`、再存一天快照即可：
+`_trend_cards` 每次直接 `ms.load_breadth()`、不经 `st.cache_data`，52 周「有数」那一支也不看快照与日历，所以残留的 70 份快照
+不会干扰——计划评审在临时副本里实跑确认过，第二次渲染的 52 周卡片是 `36 / 104`、注脚「近 1 个交易日」。）
 
 - [ ] **Step 2: 跑，确认失败**
 
-Run: `.venv/bin/python -m pytest tests/test_guide.py -q -k above_ma` → FAIL（`AttributeError: HOME_ABOVE_MA_NOTE`）
+Run: `.venv/bin/python -m pytest tests/test_guide.py -q -k above_ma` → FAIL（先卡在「帮助里要说清小图的尺子与虚线」那条断言）
 Run: `.venv/bin/python -m pytest tests/test_dashboard_home.py -q -k fifty_percent` → FAIL
 
 - [ ] **Step 3: 实现**
