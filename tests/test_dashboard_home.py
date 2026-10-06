@@ -709,7 +709,7 @@ def test_trend_block_has_numbers_only_cards_and_one_chart_with_a_span_switch(tmp
     assert [name for _, name, _ in charts.BREADTH_LINES] == [g.HOME_ABOVE_MA.format(n=n) for n, _, _ in charts.BREADTH_LINES], \
         "图例名与卡片标签不许漂"
     r = at.radio(key="home_trend_span")
-    assert r.options == [v[0] for v in charts.BREADTH_SPANS.values()] and r.value == "60"   # AppTest 读到的是显示名
+    assert r.options == [v[0] for v in charts.BREADTH_SPANS.values()] and r.value == "60"   # .options 是显示名，.value 是内部键
     el = at.get("plotly_chart")
     assert len(el) == 1, "四张卡片下方恰一张图表"
     assert len(json.loads(el[0].proto.spec)["data"][0]["x"]) == 60
@@ -826,7 +826,7 @@ def test_each_trend_card_explains_only_itself_and_the_right_half_opens_leftward(
         assert texts[label] in card, label
         assert not [o for other, o in texts.items() if other != label and o in card], label
         assert ("qd-help-end" in card) is end, label
-    assert "近 60 日" in _card(at, "站上 60 日线")
+    assert "近 60 日均价" in _card(at, "站上 60 日线")
     assert "qd-card-sub" not in _card(at, "52 周新高 / 新低"), "「—」时不出「共 N 只」"
 
 

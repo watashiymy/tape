@@ -389,6 +389,7 @@ def test_breadth_chart_puts_three_lines_on_y_and_two_bars_on_y2():
     assert all(t.xaxis in (None, "x") for t in fig.data), "五条 trace 共用同一条横轴"
     assert fig.layout.colorway == palette.CHART_SERIES
     assert all(t.line.color not in (palette.UP, palette.DOWN) for t in lines)
+    assert all(t.hovertemplate == "%{y:.1%}" for t in lines)
     hi, lo = bars
     assert hi.name == "新高" and hi.marker.color == palette.UP and min(hi.y) >= 0
     assert lo.name == "新低" and lo.marker.color == palette.DOWN and max(lo.y) <= 0
@@ -407,11 +408,15 @@ def test_breadth_chart_axes_fixed_percent_scale_with_fifty_percent_line_and_abs_
     assert fig.layout.yaxis.range == (0, 1) and fig.layout.yaxis.tickformat == ".0%"
     assert fig.layout.yaxis.domain[0] > fig.layout.yaxis2.domain[1], "上半幅在下半幅之上、不重叠"
     shapes = [s for s in fig.layout.shapes if s.y0 == 0.5 and s.y1 == 0.5]
-    assert len(shapes) == 1 and shapes[0].line.dash == "dot"
-    assert list(fig.layout.yaxis2.ticktext) == ["5", "0", "5"]      # top = max(新高 3, 新低 5)：刻度显示绝对值
+    assert len(shapes) == 1 and shapes[0].line.dash == "dot" and shapes[0].line.color == palette.NEUTRAL
+    assert list(fig.layout.yaxis2.tickvals) == [-5, 0, 3]           # 两侧各按自己的最大值：新低 5、新高 3
+    assert list(fig.layout.yaxis2.ticktext) == ["5", "0", "3"]      # 刻度显示绝对值
     assert fig.layout.xaxis.type == "category" and fig.layout.xaxis.nticks == 8
+    assert fig.layout.xaxis.anchor == "y2", "横轴挂在最下面的下半幅底部"
+    assert fig.layout.barmode == "relative"
     assert fig.layout.hovermode == "x unified" and fig.layout.hoversubplots == "axis"
-    assert fig.layout.legend.orientation == "h" and fig.layout.legend.y > 1
+    assert fig.layout.legend.orientation == "h" and fig.layout.legend.y > 1 and fig.layout.legend.yanchor == "bottom"
+    assert fig.layout.dragmode is False, "不缩放：隐藏工具栏后拖动缩放仍会生效，且每次重跑就复位"
 
 
 def test_breadth_chart_x_is_one_category_per_row_without_calendar_gaps():

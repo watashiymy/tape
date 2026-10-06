@@ -371,7 +371,9 @@ def breadth_chart(table: pd.DataFrame, span: int | None) -> go.Figure:
     **单图、一条横轴、两个纵轴区域，不用 make_subplots**：分行子图各有自己的横轴，`hovermode="x unified"` 会上下各弹
     一个提示框，看不到「同一天的三个占比加新高新低」（真浏览器实测）。横轴是交易日的类目轴（同 K 线图），不留周末空档。
     分母为 0 的日子记 NaN——线断开，不画成 0%。下半幅的刻度用 tickvals/ticktext 显示绝对值（tickformat 打不出绝对值），
+    两侧各按自己的最大值标一个刻度（新低可达上千、新高只有几百，共用一个最大值会让较小的一侧落在范围外、没有刻度）；
     新低柱 y 取负、悬停用 customdata 显示正数；悬停模板里不写 trace 名（统一悬停自带名字，写了就成「新低 : 新低 87 只」）。
+    不缩放（`dragmode=False`）：隐藏工具栏后拖动缩放仍会生效，且每次重跑就复位。
     """
     rows = table if span is None else table.tail(span)
     x = [pd.Timestamp(d).strftime("%Y-%m-%d") for d in rows["date"]]
@@ -382,17 +384,18 @@ def breadth_chart(table: pd.DataFrame, span: int | None) -> go.Figure:
         fig.add_trace(go.Scatter(x=x, y=ratio, name=name, mode="lines", line=dict(width=2, dash=dash),
                                  hovertemplate="%{y:.1%}"))
     fig.add_hline(y=0.5, line=dict(dash="dot", color=palette.NEUTRAL))
-    highs = [int(v) for v in rows["new_high"]]
+    highs = [int(v) for v in rows["new_high"]]       # int(v) 靠 breadth.compute 写的是 int64 列
     lows = [int(v) for v in rows["new_low"]]
     fig.add_trace(go.Bar(x=x, y=highs, name="新高", marker_color=palette.UP, hovertemplate="%{y:,d} 只", yaxis="y2"))
     fig.add_trace(go.Bar(x=x, y=[-v for v in lows], name="新低", marker_color=palette.DOWN, customdata=lows,
                          hovertemplate="%{customdata:,d} 只", yaxis="y2"))
-    top = max(max(highs, default=0), max(lows, default=0), 1)
+    hi_top = max(highs, default=0) or 1
+    lo_top = max(lows, default=0) or 1
     fig.update_layout(
         xaxis=dict(type="category", categoryorder="category ascending", nticks=8, anchor="y2"),
         yaxis=dict(domain=[0.36, 1.0], range=[0, 1], tickformat=".0%", tickvals=[0, 0.25, 0.5, 0.75, 1]),
-        yaxis2=dict(domain=[0.0, 0.30], anchor="x", tickvals=[-top, 0, top],
-                    ticktext=[f"{top:,d}", "0", f"{top:,d}"]),
-        barmode="relative", hovermode="x unified", hoversubplots="axis", height=420,
+        yaxis2=dict(domain=[0.0, 0.30], anchor="x", tickvals=[-lo_top, 0, hi_top],
+                    ticktext=[f"{lo_top:,d}", "0", f"{hi_top:,d}"]),
+        barmode="relative", hovermode="x unified", hoversubplots="axis", dragmode=False, height=420,
         margin=dict(t=40, b=30, l=50, r=20), legend=dict(orientation="h", y=1.02, yanchor="bottom"))
     return _apply_dark(fig)
