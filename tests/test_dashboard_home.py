@@ -843,3 +843,28 @@ def test_the_update_button_carries_the_job_help(tmp_path):
     _breadth_fixture(tmp_path, 22)              # 夹具日自己的快照还没有 → 「更新收盘数据」
     at = _home(tmp_path)
     assert at.button(key="home_breadth_update").help == app_module("guide").JOB_HELP["market_breadth"]
+
+
+def test_ma_card_notes_say_the_dashed_line_is_fifty_percent(tmp_path):
+    """三张均线卡片的注脚带「虚线 = 50%」；52 周卡片的注脚不带（它没有那条虚线）。"""
+    import pandas as pd
+    _breadth_fixture(tmp_path, 70)
+    at = _home(tmp_path)
+    assert not at.exception, at.exception
+    g = app_module("guide")
+    for label in ("站上 20 日线", "站上 60 日线"):
+        assert g.HOME_ABOVE_MA_NOTE.format(n=60) in _card(at, label), label
+    assert "虚线" not in _card(at, "52 周新高 / 新低")
+    # 52 周卡片有数的那一支：注脚仍是「近 N 个交易日」，不带虚线
+    ms = _market_store(tmp_path)
+    day = _fixture_day()
+    days = pd.date_range(day.replace(day=1), day + pd.Timedelta(days=40)).date
+    ms.save_calendar(days, {day})
+    ms.save_snapshot(day, pd.DataFrame({"code": ["sh.600000"], "close": [1.0], "preclose": [1.0],
+                                        "tradestatus": [1], "isST": [0]}))
+    ms.save_breadth(pd.DataFrame({"date": [day], "above20": [1], "n20": [2], "above60": [0], "n60": [0],
+                                  "above200": [0], "n200": [0], "new_high": [36], "new_low": [104],
+                                  "n_hl": [4922]}))
+    at2 = _home(tmp_path)
+    hl = _card(at2, "52 周新高 / 新低")
+    assert g.HOME_RECENT_DAYS.format(n=1) in hl and "虚线" not in hl, hl

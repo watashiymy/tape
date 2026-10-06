@@ -772,6 +772,8 @@ def test_above_ma_help_is_a_template_for_each_window():
     text = guide.HOME_HELP["above_ma"]
     assert "{n}" in text and "近 {n} 日" in text
     assert "近 60 日" in text.format(n=60)
+    assert "虚线是 50%" in text and "0–100%" in text, "帮助里要说清小图的尺子与虚线"
+    assert guide.HOME_ABOVE_MA_NOTE.format(n=60) == "近 60 个交易日 · 虚线 = 50%"
 
 
 def test_high_low_total_is_a_template():

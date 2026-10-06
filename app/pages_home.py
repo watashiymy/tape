@@ -353,7 +353,7 @@ def _trend_cards(ms: MarketStore) -> None:
         series = [(r[above] / r[denom]) if r[denom] else None for _, r in tail.iterrows()]
         col.html(theme.stat_card(label, f"{pct:.1f}%", sub=f"{int(last[above])}/{int(last[denom])}",
                                  img=minicharts.trend_line(series),
-                                 note=guide.HOME_RECENT_DAYS.format(n=len(tail)), **tip))
+                                 note=guide.HOME_ABOVE_MA_NOTE.format(n=len(tail)), **tip))
     hl_tip = dict(help=guide.HOME_HELP["high_low"], help_align=TREND_HELP_ALIGN[3])
     if last["n_hl"] == 0:
         note = _shortfall_note(breadth.HIGH_LOW_WINDOW, asof, cal, have, gaps)
