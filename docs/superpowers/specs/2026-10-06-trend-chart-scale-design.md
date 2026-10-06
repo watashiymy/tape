@@ -24,8 +24,12 @@
   - 画一条 **50% 虚线**：`y = H/2`，样式与 `sparkline` 的昨收线相同（`palette.NEUTRAL`、`stroke-width 0.8`、`stroke-dasharray "2 2"`），
     横跨整个画布；**先画虚线再画折线**（折线压在虚线上）。
   - 折线仍是单条 `palette.NEUTRAL` 灰线（零类别配色的规则不变）、`stroke-width 1.2`，`None` 处断开（现有行为）。
-  - **末端一个小点**：最后一个非 `None` 值处画 `<circle r="1.6">`，`fill=palette.NEUTRAL`。
-  - 不足两个有效点时：仍只出空画布（不画虚线，免得一张只有虚线的图像是数据）。
+  - **末端一个小标记**：最后一个非 `None` 值处画一个以该点为中心的小矩形
+    `<rect x="{cx−0.7}" y="{cy−1.6}" width="1.4" height="3.2" fill=palette.NEUTRAL>`。不用 `<circle>`：
+    画布 `preserveAspectRatio="none"`、宽度随卡片拉伸 1.3–2.4 倍，圆会被拉成横向的椭圆；1.4×3.2 的矩形拉伸后接近正方形。
+    标记画在**最后一个有效值**上，哪怕它前面是 `None`、没有线连到它（它就是「当前位置」）。
+  - **绘制顺序**：虚线 → 折线段 → 末端标记（标记在最上层）。
+  - 不足两个有效点时：仍只出空画布（不画虚线、不画标记，免得一张只有虚线的图像是数据）。
   - 超出 0–1 的值按 0/1 截断（防御：占比不该越界，但越界也不能画出画布外）。
 - 色值仍只来自 `palette`；SVG 里不写文字（`img` 拿不到字体，模块 docstring 的既有约束）。
 - `highs_lows`、`sparkline`、`histogram`、`ratio_bar` 不动。
@@ -33,31 +37,34 @@
 ## 2. 页面与文案
 
 - `app/guide.py`：
-  - 新增 `HOME_TREND_NOTE = "近 {n} 个交易日 · 虚线 = 50%"`，三张「站上 N 日线」卡片的注脚改用它；
-    `HOME_RECENT_DAYS = "近 {n} 个交易日"` 保留给「52 周新高 / 新低」卡片。
-  - `HOME_HELP["above_ma"]` 末尾加一句：「小图是近 60 个交易日的走势，固定按 0–100% 画，虚线是 50%。」
-    （帮助文案 10–200 字的既有测试要过；`{n}` 模板不变。）
-- `app/pages_home.py::_trend_cards`：三张均线卡片的 `note` 改为 `guide.HOME_TREND_NOTE.format(n=len(tail))`；其余不动。
+  - 新增 `HOME_ABOVE_MA_NOTE = HOME_RECENT_DAYS + " · 虚线 = 50%"`（与卡片标签 `HOME_ABOVE_MA` 配对，「近 {n} 个交易日」只有一份），
+    三张「站上 N 日线」卡片的注脚改用它；`HOME_RECENT_DAYS = "近 {n} 个交易日"` 保留给「52 周新高 / 新低」卡片。
+  - `HOME_HELP["above_ma"]` 末尾加一句：「小图固定按 0–100% 画，虚线是 50%。」——**不写天数**：注脚里的天数是实际行数
+    （历史不足 60 天时会是「近 22 个交易日」），帮助里写死 60 会前后矛盾。（帮助文案 10–200 字的既有测试要过；`{n}` 模板不变。）
+- `app/pages_home.py::_trend_cards`：三张均线卡片有数那一支的 `note` 改为 `guide.HOME_ABOVE_MA_NOTE.format(n=len(tail))`
+  （「—」那一支没有 `note`，不动）；52 周卡片两支都不动。
 
 ## 3. 测试
 
 - `tests/test_minicharts.py`：
   - 固定尺子：`trend_line([0.0, 1.0])` 的折线两个端点 y 分别是 `H − 2` 与 `2`；`trend_line([0.4, 0.6])` 的 y 落在画布中部而不是拉满
     （现在的实现会把它拉满——这条就是改动的验收）。
-  - 50% 虚线：`stroke-dasharray` 存在、`y1 == y2 == H/2`；折线元素在虚线之后出现。
-  - 末端小点：恰有一个 `<circle>`，圆心 x 是最后一个有效点的 x、y 对应其值；`[0.4, None, 0.5, 0.6]` 的点在第 4 位、`[0.4, 0.5, None]` 的点在第 2 位。
-  - 不足两个有效点：没有 `<polyline>`、没有 `<line`、没有 `<circle`。
+  - 50% 虚线：`stroke-dasharray` 存在、`x1 == 0`、`x2 == W`、`y1 == y2 == H/2`；`svg.index("<line ") < svg.index("<polyline")`。
+  - 末端标记：恰有一个 `<rect`，中心 x 是最后一个有效点的 x、中心 y 对应其值，且它出现在最后一个 `<polyline` 之后；
+    `[0.4, None, 0.5, 0.6]` 的标记在第 4 位、`[0.4, 0.5, None]` 在第 2 位、`[0.4, 0.5, None, 0.6]` 在第 4 位（孤立点也标）。
+  - 不足两个有效点：没有 `<polyline`、没有 `<line `、没有 `<rect`。
   - 越界截断：`trend_line([-0.5, 1.5])` 的 y 不越出 `[2, H − 2]`。
   - 既有 `test_trend_line_is_grey_and_skips_nan` 保留。
-- `tests/test_dashboard_home.py`：三张均线卡片的注脚含「虚线 = 50%」，52 周卡片的注脚不含；
-  `test_enough_history_shows_sixty_day_trend_lines_and_the_help` 里「近 60 个交易日」的断言照常成立。
+- `tests/test_dashboard_home.py`：用 70 天夹具，三张均线卡片各含 `HOME_ABOVE_MA_NOTE.format(n=60)` 的完整字样，
+  52 周卡片含 `HOME_RECENT_DAYS.format(n=60)` 且不含「虚线」；`test_enough_history_shows_sixty_day_trend_lines_and_the_help`
+  里「近 60 个交易日」的断言照常成立。
 - `tests/test_guide.py`：既有的 `above_ma` 模板测试照常；帮助文案长度 10–200 字的测试照常。
-- 变异自查：去掉虚线、恢复自动缩放、去掉小点、52 周卡片误用 `HOME_TREND_NOTE`——各至少一条测试红。
+- 变异自查：去掉虚线、恢复自动缩放、去掉末端标记、标记用 `<circle>`、52 周卡片误用 `HOME_ABOVE_MA_NOTE`——各至少一条测试红。
 
 ## 4. 验收（真浏览器）
 
-- 三张均线卡片：虚线在小图正中；9 月 24 日的线末端分别在虚线下（41.4%）、上（54.4%）、下方靠底（26.9%）；
-  200 日线那张明显比 20 日线那张平。
+- 三张均线卡片：虚线在小图正中；线末端的标记接近正方形（不是横向椭圆）；最近一天的线末端分别在虚线下（41.4%）、
+  上（54.4%）、下方靠底（26.9%）；200 日线那张明显比 20 日线那张平。
 - 注脚显示「近 60 个交易日 · 虚线 = 50%」；帮助圆点说明里有虚线那句。
 - 52 周新高 / 新低卡片不变。
 
