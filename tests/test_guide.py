@@ -501,7 +501,7 @@ def test_the_cli_section_points_at_the_readme_instead_of_listing_commands():
     body = guide.section("cli").body
     assert "等价" in body, "没说明命令行与按钮等价"
     assert "README" in body, "没说命令去哪看"
-    for script in ("run_market_scan.py", "run_daily_signal.py", "run_backtest.py"):
+    for script in ("run_market_scan.py", "run_daily_signal.py", "run_backtest.py", "run_dashboard.py"):
         assert script not in body, f"命令行一节不该再列脚本名 {script}"
 
 

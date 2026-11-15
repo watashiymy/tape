@@ -1,4 +1,4 @@
-"""Streamlit 本地面板 TAPE：streamlit run app/dashboard.py
+"""Streamlit 本地面板 TAPE。日常用 scripts/run_dashboard.py 起（PyCharm 点 ▶），等价于下文那条 streamlit run 命令。
 
 侧栏页表见下方 PAGES —— 组名、页序、图标、url_path 只有那一份定义，
 这里不再抄一遍（抄了就会像 v0.5.0 之前那样停在「八页三组」上）。
@@ -20,7 +20,8 @@
 
 面板能执行本机命令，所以启动时**必须**显式绑回环地址：
     streamlit run app/dashboard.py --server.address 127.0.0.1
-不加这个参数时 streamlit 监听 *:8501（所有网卡，v0.2.1 M3 实测），
+scripts/run_dashboard.py 把这个参数写死了、工作目录也钉到仓库根，日常用它起；手敲 streamlit run 时
+参数不能省：不加时 streamlit 监听 *:8501（所有网卡，v0.2.1 M3 实测），
 切勿再用 --server.address 0.0.0.0 主动暴露到局域网。"""
 from __future__ import annotations
 

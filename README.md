@@ -12,7 +12,7 @@
 git clone <仓库地址> quant_demo && cd quant_demo
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/python -m pytest                                    # 验环境
-.venv/bin/streamlit run app/dashboard.py --server.address 127.0.0.1
+.venv/bin/python scripts/run_dashboard.py                    # 起面板（PyCharm 里打开这个脚本点 ▶ 也行）
 ```
 
 面板打开就是「市场概览」——指数行情、涨跌分布、涨停温度计与趋势宽度；「任务控制台」是第二项，每日流水线、就绪状态与各任务的就地说明（卡片标题旁的小圆圈 `?`）都在那儿；各页页名那一行最右端的「帮助中心」进面板自带的手册（三个任务怎么配合、结果怎么读），从未跑过任务时首页还会给一条去「使用说明」的链接，不用回来翻这份 README。
@@ -164,13 +164,16 @@ find output -name "kline_*.html" -delete
   - 元信息**不塞进 CSV**：信号数为 0 时 CSV 只有表头，没有任何一行能承载"我扫了 3010 只"这个事实——而这正是要区分的核心。老产物（v0.2.4 之前，有 CSV 无 meta）面板显示"范围未知"并说明原因，不猜也不迁移。
 - 单票取数失败自动重试一次，仍失败记入失败清单继续扫，不会因一只票废掉全场；但**全部**失败（断网/限流）等于一只都没完成判定，同样判为无结论、非零退出、不落盘。
 
-### ④ 面板 TAPE：`streamlit run app/dashboard.py`
+### ④ 面板 TAPE：`scripts/run_dashboard.py`
 
 ```bash
-.venv/bin/streamlit run app/dashboard.py --server.address 127.0.0.1
+.venv/bin/python scripts/run_dashboard.py                        # 起面板，浏览器自动打开
+.venv/bin/python scripts/run_dashboard.py --server.port 8502     # streamlit 的选项原样透传（换端口等）
 ```
 
-（`--server.address 127.0.0.1` 不是可选项，原因见 §3 的安全提示。）
+PyCharm 里不用敲命令：打开 `scripts/run_dashboard.py`，点 `if __name__ == "__main__":` 那行旁边的绿色 ▶（项目解释器已经指向 `.venv`）。跑过一次后它留在右上角的运行配置下拉里，之后 Ctrl+R 直接起；停止按钮停掉的就是 streamlit 本身。新机器上第一次跑，streamlit 会在控制台问一次邮箱，直接回车跳过。
+
+（脚本把 `--server.address 127.0.0.1` 写死了、工作目录也钉到仓库根；手敲 `streamlit run` 时这个参数不是可选项，原因见 §3 的安全提示。）
 
 面板自 v0.2.2 起叫 **TAPE**（取自 "reading the tape" 看盘——报价纸带上滚动的价与量正是本系统唯一的输入），侧边栏与浏览器标签页都用这个名字。
 
@@ -289,10 +292,10 @@ find output -name "kline_*.html" -delete
 
 三个入口脚本都能在页面上启动、停止、重跑：侧边栏「任务控制台」页有完整的参数控件、进度、日志与结果；既有三页顶部另有一条精简控制条（状态 + 开始/停止）。
 
-> **安全提示**：面板会在**本机**执行脚本，等于一个本地命令执行入口。启动时**必须**加 `--server.address 127.0.0.1` 显式绑定回环地址，**切勿**用 `--server.address 0.0.0.0` 或任何内网地址。
+> **安全提示**：面板会在**本机**执行脚本，等于一个本地命令执行入口。`scripts/run_dashboard.py` 已把 `--server.address 127.0.0.1` 写死、工作目录钉到仓库根；手敲 `streamlit run` 启动时**必须**自己加这个参数显式绑定回环地址，**切勿**用 `--server.address 0.0.0.0` 或任何内网地址。
 
 ```bash
-.venv/bin/streamlit run app/dashboard.py --server.address 127.0.0.1
+.venv/bin/python scripts/run_dashboard.py
 ```
 
 **别指望 streamlit 的出厂默认是安全的**——这里原先写着"`streamlit run` 默认只监听本机，保持默认即可"，v0.2.1 实跑证明那是假话。以下是 **streamlit 的出厂行为**（不是本仓库现在的行为，原因见下）：
@@ -508,8 +511,9 @@ quant_demo/
 │   ├── run_backtest.py           # 入口①
 │   ├── run_daily_signal.py       # 入口②
 │   ├── run_market_scan.py        # 入口③ 全市场扫描（v0.1.1）
+│   ├── run_dashboard.py          # 入口④ 面板 TAPE 的启动脚本（PyCharm 点 ▶ 即可）
 │   └── probe_baostock.py         # 一次性探针，验证 baostock 字段行为，不属于正式代码
-├── app/                          # 入口④ Streamlit 面板 TAPE（v0.2.2 起按页拆分，见下）
+├── app/                          # 入口④ 的面板代码（启动脚本见 scripts/run_dashboard.py；v0.2.2 起按页拆分，见下）
 │   ├── dashboard.py              #   **只做装配**：st.navigation 的页表与分组（唯一定义处就是它里面的 PAGES）
 │   ├── ui.py                     #   共享件：页头、指标网格、数据表、控制条、路径 bind
 │   ├── theme.py                  #   视觉基座：字体、语义化 CSS、品牌块
