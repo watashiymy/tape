@@ -106,3 +106,24 @@ C 的 XML 没法在 PyCharm 外验证，且 A 跑过一次后 PyCharm 自动把�
 - 不做 `tape` 命令（方案 B）、不提交 PyCharm 运行配置（方案 C）。
 - 不动 `.streamlit/config.toml`、不改面板内任何文案。
 - 不给脚本加自己的选项，不处理「端口已被占用」（streamlit 自己会报）。
+
+## 6. 验收记录（2026-11-15，真浏览器，Streamlit 1.61.1）
+
+实现提交 `eb79cc6`（脚本与 6 条测试）、`c72e6c9`（README / dashboard 说明 / 手册测试守卫）；全量 2320 通过、6 条联网测试不选
+（这台机器上没有「1 skipped」：那条跳过只在从没记过一笔成交的新克隆上出现）。变异自查五条各红在点名的那条测试上；
+第五条（顶层 import streamlit）只跑了 AST 那一条——顶层 import 会让测试里的假函数失效，两条 main 测试会真的把服务起起来；
+第六条 `argv or sys.argv[1:]` 如预期抓不到。
+
+两个实例都从 `/tmp` 起（`sh -c "cd /tmp && …"`，写在 `.claude/launch.json`，不进仓库）：
+
+| | 新脚本 `run_dashboard.py --server.port 8503 --server.headless true` | 对照组 `streamlit run app/dashboard.py --server.address 127.0.0.1 --server.port 8504 --server.headless true`（不经脚本、没 chdir） |
+|---|---|---|
+| 启动日志 | 恰一行 `URL: http://127.0.0.1:8503`，无 `Local URL` / `Network URL` / `External URL` | 同样一行 `URL: http://127.0.0.1:8504`（地址是命令行给的，与 cwd 无关） |
+| `lsof -nP -iTCP:<port> -sTCP:LISTEN` | `127.0.0.1:8503 (LISTEN)` | `127.0.0.1:8504 (LISTEN)` |
+| 页面底色 `getComputedStyle(body)` | `rgb(18, 20, 26)` = config.toml 的 `#12141A` | `rgb(14, 17, 23)` = streamlit 出厂暗色 `#0E1117` |
+| 右上角 Deploy 按钮 | **无**（`toolbarMode = "viewer"` 生效） | **有**（`stAppDeployButton` 存在，工具栏文字 "Deploy"） |
+
+前两行两边一样：它们只证明地址参数生效。后两行两边不同：这才是「工作目录钉到仓库根、config.toml 从别的目录起也被读到」的证据。
+两个实例打开的都是「市场概览」，标题 `TAPE · A股日线信号`；核完两个都已停掉。
+
+**待用户在 PyCharm 里确认**：打开 `scripts/run_dashboard.py` 点 ▶，浏览器自动打开面板；停止按钮能停掉。
