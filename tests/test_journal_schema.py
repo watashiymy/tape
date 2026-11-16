@@ -13,6 +13,7 @@
 # 再逐条正反用例把它焊死。
 from datetime import date
 
+import pandas as pd
 import pytest
 
 from quant.backtest.costs import commission, stamp_tax
@@ -467,3 +468,56 @@ def test_apply_defaults_leaves_broken_rows_alone_instead_of_guessing():
     而校验那边已经把这行判成阻断了。"""
     d = schema.apply_defaults(_buy(shares=None), costs=CFG)
     assert d["amount"] is None and d["fee"] is None and d["tax"] is None
+
+
+# ---------------------------------------------------------------- 表格里清空的日期（2026-11-16 审查抓到）
+
+def test_a_cleared_date_cell_is_blank_not_a_date():
+    """可编辑表格里把日期那一格清空，交回来的是 `pd.NaT`。它是 datetime 的一个**实例**
+    （`isinstance(pd.NaT, datetime)` 为真），按"是日期就不算空"的老写法会被当成一个真日期，
+    一路走到"晚不晚于今天"的比较才炸成 TypeError——页面上是一屏 traceback，而不是设计好的
+    那句「缺少成交日期」。空就是空，不管它是哪种空。"""
+    assert schema.is_blank(pd.NaT) is True
+    assert schema.parse_date(pd.NaT) is None
+
+
+def test_a_row_whose_date_was_cleared_is_refused_in_words_not_with_a_crash():
+    issues = schema.validate_trade(_buy(date=pd.NaT), today=TODAY)
+    assert schema.MISSING in codes(issues), codes(issues)
+    assert schema.has_blocking(issues)
+    assert any("成交日期" in i.message for i in schema.blocking_issues(issues))
+
+
+# ---------------------------------------------------------------- 校验信息是给填表的人看的（2026-11-16）
+
+@pytest.mark.parametrize("row", [
+    dict(kind="buy", shares=None, price=None),
+    dict(kind="sell", shares=None, price=None),
+    dict(kind="adjust", shares=None),
+    dict(kind="dividend", amount=None),
+    dict(kind="buy", shares="abc", price="xyz"),
+    dict(kind="buy", shares=-100.0, price=71.5),
+    dict(kind="sell", shares=-100.0, price=71.5),
+])
+def test_validation_messages_name_things_the_way_the_page_does(row):
+    """空着表单点「记这一笔」，页面上第一句报错原先是「buy 必须填写 shares；buy 必须填写 price」
+    ——内部的键原样甩给了填表的人（用户点名过的「中文里不夹英文值」）。
+    信息里说的是页面上的字：买入、股数、成交价、到账金额。"""
+    base = dict(date=date(2026, 8, 27), symbol="000333", source="discretionary")
+    text = "；".join(i.message for i in schema.validate_trade({**base, **row}, today=TODAY))
+    assert text, "前提：这一行有问题可报"
+    for key in ("buy", "sell", "adjust", "dividend", "shares", "price", "amount"):
+        assert key not in text, f"校验信息里冒出了内部键 {key!r}: {text}"
+
+
+def test_missing_numbers_are_named_in_chinese():
+    text = "；".join(i.message for i in schema.validate_trade(
+        _buy(shares=None, price=None), today=TODAY))
+    assert "买入必须填写股数" in text and "买入必须填写成交价" in text, text
+    text = "；".join(i.message for i in schema.validate_trade(
+        dict(date=date(2026, 8, 27), symbol="000333", kind="dividend", amount=None), today=TODAY))
+    assert "现金分红必须填写到账金额" in text, text
+
+
+def test_the_kind_names_cover_every_record_type():
+    assert set(schema.KIND_NAMES) == set(schema.KINDS)

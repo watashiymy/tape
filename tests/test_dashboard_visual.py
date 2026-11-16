@@ -716,7 +716,7 @@ def test_truncated_metrics_json_still_says_delete_the_dir(tmp_path):
 
 
 def test_empty_output_still_guides_the_user(tmp_path):
-    """空 output/：四页都不许崩，且该给的提示都在（控制条也还在）。"""
+    """空 output/：四页都不许崩，且该给的提示都在（任务条也还在）。"""
     for page in PAGES:
         at = _page(tmp_path, page)
         assert not at.exception, f"{page}: {at.exception}"
@@ -817,7 +817,7 @@ def test_page_head_lead_is_plain_text(tmp_path, page):
 # ================================================================ 按钮规范（2026-11-16）
 
 #: 过去拼在按钮文字前面充当图标的那些字符。
-_GLYPHS = "▶⏹■↻↶＋−+"
+_GLYPHS = "▶⏹■↻↶＋−+✔✓↓⬇"
 
 
 def _leading_text(label: ast.expr) -> str | None:
@@ -838,7 +838,11 @@ def test_buttons_carry_icons_as_icons_not_as_leading_characters():
     seen = 0
     for p in APP_FILES:
         for call in ast.walk(ast.parse(p.read_text(encoding="utf-8"))):
-            if not (isinstance(call, ast.Call) and getattr(call.func, "attr", "") == "button"
+            # download_button 也算（2026-11-16：记账页的导出按钮曾把 ↓ 拼在文字前面）。
+            # 注意它只看得见**字面量**：那两个导出按钮的字是变量（journal_ui.export_payloads 给的），
+            # 这里扫不到——它们由 test_dashboard_journal 里钉住按钮文字的那一条管。
+            if not (isinstance(call, ast.Call)
+                    and getattr(call.func, "attr", "") in ("button", "download_button")
                     and call.args):
                 continue
             seen += 1

@@ -25,12 +25,13 @@ from pathlib import Path
 import pandas as pd
 import pytest
 import streamlit as st
+from streamlit.proto.WidgetStates_pb2 import WidgetState
 from streamlit.testing.v1 import AppTest
 
 from quant.backtest.costs import commission, stamp_tax
 from quant.config import load_settings
 from quant.journal import export, schema, store
-from tests.conftest import (click_row_button, copy_app, edit_table, goto_page,
+from tests.conftest import (app_module, click_row_button, copy_app, edit_table, goto_page,
                             make_bars)
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -404,6 +405,10 @@ def test_the_entry_page_keeps_the_form_in_a_card(tmp_path):
     inside = list(_walk(cards[0]))
     assert any(getattr(e, "key", None) == jui.SUBMIT_KEY for e in inside), \
         "「记这一笔」不在卡片里"
+    # 2026-11-16：卡片里只有一张表单、一个主按钮——送股与分红那张表单在卡片下面，不在里面
+    assert not any(getattr(e, "key", None) == jui.OTHER_SUBMIT_KEY for e in inside), \
+        "「其他记录」不该再挤在录入卡片里"
+    assert at.button(key=jui.OTHER_SUBMIT_KEY), "「其他记录」的入口不能丢"
     submit = at.button(key=jui.SUBMIT_KEY)
     assert (submit.label, submit.proto.icon) == ("记这一笔", ":material/add:"), \
         "按钮的图标走 icon=，不拼在文字前面（2026-11-16）"
@@ -1242,3 +1247,939 @@ def test_positions_page_stays_quiet_when_everything_is_tracked(tmp_path):
     assert not at.exception, at.exception
     assert not any("不在信号池" in w.value for w in at.main.warning), \
         [w.value for w in at.main.warning]
+
+
+# ================================================================ 记账页改版（2026-11-16）
+#
+# 录入区只摆每一笔都要填的那几样，费用 / 成交时刻 / 备注收进折叠区；收起来之后，
+# 「会写进去什么」必须在卡片明面上写一行（控制台改版时定下的同一条规矩：看不见的值不许悄悄生效）。
+# 历史表把人要看的列排在前面，类型与来源显示中文；筛选收起来之后，筛了什么同样写在明面上。
+
+def _summary(**over) -> str:
+    args = dict(kind="buy", day=D_BUY, shares=1000.0, price=71.5, fee=17.88, tax=0.0,
+                costs=COSTS)
+    args.update(over)
+    return jui.entry_summary(**args)
+
+
+def test_entry_summary_spells_out_what_a_buy_will_cost():
+    """手算：1000 × 71.50 = 71,500.00；佣金 17.88；买入无印花税；共付出 71,517.88。"""
+    text = _summary()
+    assert "买入 1,000 股 × 71.50 = 71,500.00 元" in text, text
+    assert "佣金 17.88" in text and "印花税 0.00" in text, text
+    assert "共付出 71,517.88 元" in text, text
+
+
+def test_entry_summary_of_a_sell_is_what_lands_in_the_account():
+    """卖出是到手多少：75,000 − 18.75 − 37.50 = 74,943.75。"""
+    text = _summary(kind="sell", day=D_SELL, price=75.0, fee=18.75, tax=37.5)
+    assert "卖出 1,000 股 × 75.00 = 75,000.00 元" in text, text
+    assert "到手 74,943.75 元" in text and "共付出" not in text, text
+
+
+def test_entry_summary_uses_the_fee_you_typed_not_the_model():
+    """费用输入框收进了折叠区：改成券商实际值之后，明面上这一行得跟着变，
+    否则写进去的是 5.00、屏幕上还写着 17.88。"""
+    text = _summary(fee=5.0)
+    assert "佣金 5.00" in text and "共付出 71,505.00 元" in text, text
+
+
+def test_entry_summary_falls_back_to_the_cost_model_when_the_fee_is_blank():
+    """费用留空时落盘走成本模型（schema.apply_defaults）——这一行说的必须是同一个数。"""
+    text = _summary(fee=None, tax=None)
+    assert f"佣金 {commission(71500.0, COSTS):.2f}" in text, text
+
+
+@pytest.mark.parametrize("shares, price", [(None, 71.5), (1000.0, None), (0.0, 71.5),
+                                           (1000.0, 0.0)])
+def test_entry_summary_is_empty_until_shares_and_price_are_both_there(shares, price):
+    """没填完就什么都不说：一行"买入 0 股 = 0.00 元"是编出来的数字。"""
+    assert _summary(shares=shares, price=price) == ""
+
+
+def test_entry_summary_keeps_the_third_decimal_of_a_low_priced_share():
+    """低价股的厘位有意义（3.245 不是 3.25）；整数价位不拖着三个零。"""
+    assert "× 3.245 =" in _summary(shares=10000.0, price=3.245, fee=None)
+    assert "× 71.50 =" in _summary()
+
+
+def test_entry_summary_only_speaks_for_buys_and_sells():
+    assert _summary(kind="dividend") == ""
+
+
+def test_entry_summary_never_rounds_what_you_typed(tmp_path):
+    """这一行是拿来核对的：写出来的股数、成交价必须就是输入的那个数，
+    而等号后面的金额是按**没舍入**的数算的——把 150.5 股写成 150 股、把 3.2456 写成 3.246，
+    等号两边就对不上了（审查时抓到的）。常见的整数股、两位小数价照旧不拖尾巴。"""
+    odd = _summary(shares=150.5, price=10.0, fee=None)
+    assert "买入 150.5 股 × 10.00 = 1,505.00 元" in odd, odd
+    fine = _summary(shares=100.0, price=3.2456, fee=None)
+    assert "× 3.2456 = 324.56 元" in fine, fine
+    assert "买入 1,000 股 × 71.50 =" in _summary()
+
+
+def test_entry_summary_shows_a_trade_whose_amount_rounds_to_nothing():
+    """1 股 × 0.001 元，成交金额舍入后是 0.00——可它照样会被记下来（佣金还有最低 5 元），
+    核对行不能因为金额是 0 就整行不出。"""
+    text = _summary(shares=1.0, price=0.001, fee=None)
+    assert "= 0.00 元" in text and f"佣金 {commission(0.0, COSTS):.2f}" in text, text
+
+
+def test_filter_summary_is_empty_when_nothing_is_set():
+    blank = {"start": None, "end": None, "symbols": (), "kinds": (), "sources": (),
+             "reason": "  "}
+    assert jui.filter_summary(blank) == ""
+    assert jui.filter_summary({}) == ""
+
+
+def test_filter_summary_names_every_condition_in_words():
+    """筛选收进了折叠区：筛了什么得在表格上方写出来，而且是给人看的字——
+    类型与来源用显示名，不是 sell / discretionary。"""
+    text = jui.filter_summary({
+        "start": date(2026, 8, 1), "end": date(2026, 8, 31), "symbols": ["600519", "000333"],
+        "kinds": ["sell"], "sources": ["discretionary", "ma_cross"], "reason": "跌破"})
+    assert "2026-08-01 至 2026-08-31" in text, text
+    assert "600519、000333" in text, text
+    assert "卖出" in text and "sell" not in text, text
+    assert "自主决策" in text and "discretionary" not in text and "ma_cross" not in text, text
+    assert "「跌破」" in text, text
+
+
+def test_filter_summary_reads_naturally_with_only_one_end_of_the_date_range():
+    assert "2026-08-01 起" in jui.filter_summary({"start": date(2026, 8, 1)})
+    assert "截至 2026-08-31" in jui.filter_summary({"end": date(2026, 8, 31)})
+
+
+def _shown(*rows) -> pd.DataFrame:
+    """编辑区喂进去的那张表：归一过的日志行 + 末列「删除」（同页面上 editor_frame 的产物）。"""
+    records = []
+    for i, row in enumerate(rows, 1):
+        record = schema.apply_defaults(row, costs=COSTS)
+        record["trade_id"] = f"T{i}"
+        records.append(record)
+    base = store.apply_edits(pd.DataFrame(records, columns=list(schema.COLUMNS)),
+                             pd.DataFrame(columns=["trade_id"]))
+    return jui.editor_frame(base)
+
+
+def test_pending_changes_counts_edits_and_ticked_deletions_separately():
+    shown = _shown(_buy(), _sell(), _buy(symbol="600519", shares=100.0, price=1600.0),
+                   _sell(symbol="600519", shares=100.0, price=1700.0))
+    edited = shown.copy()
+    edited.loc[0, "reason"] = "改了"
+    edited.loc[2, jui.DELETE_COLUMN] = True
+    edited.loc[3, "price"] = 10.0
+    edited.loc[3, jui.DELETE_COLUMN] = True
+    assert jui.pending_changes(shown, edited) == (1, 2), \
+        "又改又勾删除的那一行算删除——删了，改动就没有意义"
+
+
+def test_pending_changes_is_about_values_not_about_what_was_touched():
+    """把原来的值又敲了回去、勾上又取消：表里的值和文件里的一样，就没有东西要保存。
+    审查时抓到的：按"编辑器记了哪些格子被碰过"来算，这两种都会报「还没保存」，
+    而点下去得到的是一句「没有需要保存的改动」——同一屏两句话打架。"""
+    shown = _shown(_buy(), _sell())
+    edited = shown.copy()
+    edited.loc[0, "reason"] = shown.loc[0, "reason"]            # 原值敲回去
+    edited.loc[1, jui.DELETE_COLUMN] = False                    # 勾上又取消
+    assert jui.pending_changes(shown, edited) == (0, 0)
+
+
+def test_pending_changes_survives_the_types_an_editor_hands_back():
+    """编辑器交回来的值不一定和喂进去的同一个类型：日期可能是字符串 / date / Timestamp，
+    数字可能是整数或字符串，空格子可能是 None / NaN / 空串。类型不同不等于改过。"""
+    shown = _shown(_buy(), _sell())
+    edited = shown.astype(object).copy()
+    edited.loc[0, "date"] = str(D_BUY)                          # 同一天，写成字符串
+    edited.loc[0, "shares"] = 1000                              # 同一个数，整数
+    edited.loc[0, "stop_plan"] = None                           # 本来就空（NaN）
+    edited.loc[1, "note"] = None                                # 本来就空（""）
+    edited.loc[1, "date"] = D_SELL                              # 同一天，date 对象
+    assert jui.pending_changes(shown, edited) == (0, 0)
+    edited.loc[1, "date"] = D_SELL - timedelta(days=1)          # 真改了一天
+    assert jui.pending_changes(shown, edited) == (1, 0)
+
+
+def test_pending_changes_of_an_untouched_editor_is_zero():
+    shown = _shown(_buy(), _sell())
+    assert jui.pending_changes(shown, shown.copy()) == (0, 0)
+    assert jui.pending_changes(shown.iloc[0:0], shown.iloc[0:0]) == (0, 0)
+
+
+def test_pending_changes_measures_with_the_same_ruler_as_the_save():
+    """提醒与保存必须是同一把尺（复审抓到的不一致）：保存时文字**原样**落盘、不去空白，
+    空着的数字与 0 是两回事。初稿的提醒把"只敲了几个空格""空的改成 0"当成没改——
+    按钮安安静静，点下去却是「已保存：改了 1 行」，备份也跟着换了一版。"""
+    shown = _shown(_buy(), _sell())
+    spaces = shown.copy()
+    spaces.loc[0, "note"] = "   "                                  # 本来是空串
+    assert jui.pending_changes(shown, spaces) == (1, 0)
+    trailing = shown.copy()
+    trailing.loc[0, "reason"] = shown.loc[0, "reason"] + " "       # 末尾多一个空格
+    assert jui.pending_changes(shown, trailing) == (1, 0)
+    zero = shown.copy()
+    zero.loc[0, "stop_plan"] = 0.0                                 # 本来没填
+    assert jui.pending_changes(shown, zero) == (1, 0)
+    # 而"同一个空"的不同写法仍然不算改动
+    blank = shown.astype(object).copy()
+    blank.loc[0, "note"] = None
+    blank.loc[0, "stop_plan"] = float("nan")
+    assert jui.pending_changes(shown, blank) == (0, 0)
+
+
+def test_pending_changes_would_rather_say_nothing_than_guess():
+    """两张表对不上（行数不同、交回来的表没有「删除」列）——固定行数的编辑器不会这样，
+    真遇上了也只是不提醒：这句话是提示，不许因为它把整页打崩，更不许乱报一个数。"""
+    shown = _shown(_buy(), _sell())
+    assert jui.pending_changes(shown, shown.iloc[:1].copy()) == (0, 0)
+    assert jui.pending_changes(shown.iloc[:1], shown.copy()) == (0, 0)
+    assert jui.pending_changes(shown, shown.drop(columns=[jui.DELETE_COLUMN])) == (0, 0)
+
+
+def test_the_editor_leads_with_what_a_person_reads_and_ends_with_the_record_id():
+    """改之前第一列是机器编号、「删除」在最右边的屏幕外。现在：删除勾选框最前，
+    接着是日期 / 代码 / 名称 / 类型 / 股数 / 成交价 / 金额，记录号排最后——
+    它还在（改删靠它定位，「持仓与盈亏」页的平仓明细也指回它），只是不占第一眼。"""
+    order = list(jui.EDITOR_ORDER)
+    assert order[0] == jui.DELETE_COLUMN and order[-1] == "trade_id", order
+    assert order[1:8] == ["date", "symbol", "name", "kind", "shares", "price", "amount"], order
+    assert sorted(order) == sorted([*schema.COLUMNS, jui.DELETE_COLUMN]), \
+        "列序必须恰好覆盖全部字段：漏一列，那一列就从表里消失且不报错"
+    assert set(jui.editor_columns()) == set(order)
+
+
+@pytest.mark.parametrize("column, labels", [("kind", "KIND_LABELS"),
+                                            ("source", "SOURCE_LABELS")])
+def test_the_editor_shows_kind_and_source_in_chinese_but_stores_the_keys(column, labels):
+    """表里显示「买入 / 自主决策」，写回文件的仍是 buy / discretionary（文件格式不变）。
+    改之前这两列直接摆着内部键——面板别处从不出现的英文词。"""
+    options = jui.editor_columns()[column]["type_config"]["options"]
+    wanted = getattr(jui, labels)
+    keys = schema.KINDS if column == "kind" else schema.SOURCES
+    assert [o["value"] for o in options] == list(keys)
+    assert [o["label"] for o in options] == [wanted[k] for k in keys], options
+
+
+@pytest.mark.parametrize("column", [*schema.NUM_COLUMNS, "name", "symbol", "date"])
+def test_no_column_that_can_grow_is_pinned_to_a_fixed_width(column):
+    """数字右对齐，列宽钉死之后放不下时被截掉的是**左边**：真机上 1,234,500 股显示成
+    234500.00，一千五百万的金额少了最高位——一个看着完全正常的错数字。名称长的 ETF、
+    十个字符的日期同理。这些列的宽度一律交给表格按内容定。
+    （钉了宽度的只有勾选框与理由两列：理由是长文字，被截的是右边、看得出没显示完。）"""
+    assert jui.editor_columns()[column]["width"] is None, \
+        f"{column} 列被钉成了固定宽度: {jui.editor_columns()[column]['width']}"
+
+
+def test_export_buttons_say_it_in_words_with_an_icon(tmp_path):
+    """按钮图标走 icon=，不把 ↓ 拼在文字前面；CSV 那个不再把一句解释塞进按钮文字
+    （"Excel 可直接打开"挪到悬停提示里——按钮上的字长到折成两行）。
+    悬停提示必须说清**导出的是筛选后的这些行**：筛选收进折叠区之后更容易忘。"""
+    payloads = jui.export_payloads(pd.DataFrame(columns=list(schema.COLUMNS)), TODAY)
+    assert [(p["kind"], p["label"]) for p in payloads] == [("csv", "导出 CSV"),
+                                                          ("xlsx", "导出 Excel")]
+    root = _root(tmp_path)
+    _journal(root, _buy(), _sell())
+    at = _page(root)
+    buttons = {e.proto.id.split("-")[-1]: e.proto for e in at.get("download_button")}
+    for key, label in ((jui.CSV_KEY, "导出 CSV"), (jui.XLSX_KEY, "导出 Excel")):
+        proto = buttons[key]
+        assert (proto.label, proto.icon) == (label, ":material/download:"), (proto.label, proto.icon)
+        assert "筛选" in proto.help, f"{label} 的提示没说导出的是筛选后的行: {proto.help}"
+    assert "Excel" in buttons[jui.CSV_KEY].help, "CSV 能用 Excel 直接打开这件事还得说"
+
+
+def _toasts(at: AppTest) -> list[str]:
+    return [t.value for t in at.toast]
+
+
+def test_saving_with_nothing_changed_leaves_the_file_and_the_backup_alone(tmp_path):
+    """备份只留一版，每次保存都会把它换成"保存前的样子"。所以一次**什么都没改**的保存
+    不是无害的：删错一行并保存之后，手一抖再点一下「保存修改」，备份就被换成了删错之后
+    的那一版——唯一的撤销手段没了，而屏幕上只是又弹了一句"已保存"。
+    没有改动就不写盘：文件与备份都逐字节不动，并且如实说没有东西要保存。"""
+    root = _root(tmp_path)
+    path = _journal(root, _buy(), _sell())
+    two_rows = path.read_bytes()
+    at = _page(root)
+    at = edit_table(at, {1: {jui.DELETE_COLUMN: True}},
+                    dataframe=_log_table_index(at), click=jui.SAVE_KEY)
+    one_row = path.read_bytes()
+    assert store.backup_path(path).read_bytes() == two_rows, "前提：备份是删之前的那一版"
+
+    at = at.button(key=jui.SAVE_KEY).click().run()
+
+    assert not at.exception, at.exception
+    assert path.read_bytes() == one_row
+    assert store.backup_path(path).read_bytes() == two_rows, \
+        "一次空保存把唯一的备份换成了删错之后的那一版"
+    assert any("没有" in t and "改动" in t for t in _toasts(at)), _toasts(at)
+
+
+def test_the_save_message_counts_the_rows_that_really_changed(tmp_path):
+    """改之前它说「改动 2 行」——表里一共两行，只改了一行的理由。那个数是"表里有几行"，
+    不是"改了几行"；只删一行时更离谱：七行的表会说「改动 6 行、删除 1 行」。"""
+    root = _root(tmp_path)
+    _journal(root, _buy(), _sell())
+    at = _page(root)
+    at = edit_table(at, {0: {"reason": "改成别的理由"}},
+                    dataframe=_log_table_index(at), click=jui.SAVE_KEY)
+
+    assert not at.exception, at.exception
+    said = " ".join(_toasts(at))
+    assert "改了 1 行" in said and "删除" not in said, said
+
+
+def test_the_save_message_for_a_deletion_does_not_claim_edits(tmp_path):
+    root = _root(tmp_path)
+    _journal(root, _buy(), _sell(), _buy(symbol="600519", name="贵州茅台", shares=100.0,
+                                        price=1600.0, source="discretionary"))
+    at = _page(root)
+    at = edit_table(at, {1: {jui.DELETE_COLUMN: True}},
+                    dataframe=_log_table_index(at), click=jui.SAVE_KEY)
+
+    assert not at.exception, at.exception
+    said = " ".join(_toasts(at))
+    assert "删除 1 行" in said and "改了" not in said, said
+    assert "恢复上一版" in said, "刚删完是最需要知道'还能换回来'的时刻"
+
+
+def test_the_save_message_reports_both_when_both_happened(tmp_path):
+    root = _root(tmp_path)
+    _journal(root, _buy(), _sell(), _buy(symbol="600519", name="贵州茅台", shares=100.0,
+                                        price=1600.0, source="discretionary"))
+    at = _page(root)
+    at = edit_table(at, {0: {"note": "补一句备注"}, 2: {jui.DELETE_COLUMN: True}},
+                    dataframe=_log_table_index(at), click=jui.SAVE_KEY)
+
+    said = " ".join(_toasts(at))
+    assert "改了 1 行" in said and "删除 1 行" in said, said
+    saved = store.load_trades(_trades_path(root))
+    assert list(saved["note"]) == ["补一句备注", ""] and list(saved["trade_id"]) == ["T1", "T2"]
+
+
+# ---------------------------------------------------------------- 版式（AppTest）
+
+def _guide():
+    return app_module("guide")
+
+
+def _keys_inside(node) -> set:
+    return {getattr(e, "key", None) for e in _walk(node)} - {None}
+
+
+def _expander(at: AppTest, label: str):
+    found = [e for e in at.expander if e.label == label]
+    assert len(found) == 1, f"应恰好一个「{label}」折叠区: {[e.label for e in at.expander]}"
+    return found[0]
+
+
+def _check_line(at: AppTest) -> str:
+    """录入区「核对」那一行（没出就是空串）。"""
+    for body in (e.proto.body for e in at.get("html")):
+        # theme.inject() 那段 <style> 也走 st.html，里面就有这个类名——滤掉免得蒙对
+        if "qd-task-status" in body and not body.lstrip().startswith("<style>"):
+            return body
+    return ""
+
+
+def test_the_first_row_is_the_five_things_every_trade_needs(tmp_path):
+    """自动算好的费用与两个可空项收进「更多」：它们九成的时候不用碰，
+    摆在明面上却和必填的五样一个分量——第一次来的人分不清先填哪个。
+    折叠而不是不渲染：控件一直在页面上，费用照常自动算。"""
+    at = _fill_entry(_page(_root(tmp_path)))
+    more = _expander(at, _guide().JOURNAL_MORE)
+    assert more.proto.expanded is False, "「更多」默认应该收起"
+    tucked = {jui.FEE_KEY, jui.TAX_KEY, jui.TIME_KEY, jui.NOTE_KEY}
+    assert _keys_inside(more) == tucked, _keys_inside(more)
+    assert at.number_input(key=jui.FEE_KEY).value == 17.88, "收起来不等于不算"
+
+
+def test_what_will_be_written_is_spelled_out_on_the_card(tmp_path):
+    """费用收起来之后，会写进去的数必须在明面上：成交金额、费用、最后付出多少。
+    手算：1000 × 71.50 = 71,500.00；佣金 17.88；共付出 71,517.88。"""
+    at = _fill_entry(_page(_root(tmp_path)))
+    line = _check_line(at)
+    assert _guide().JOURNAL_CHECK_KEY in line, line
+    assert "买入 1,000 股 × 71.50 = 71,500.00 元" in line, line
+    assert "佣金 17.88" in line and "共付出 71,517.88 元" in line, line
+
+
+def test_the_check_line_stays_silent_until_shares_and_price_are_in(tmp_path):
+    """没填完时不许出一行"买入 0 股 = 0.00 元"。"""
+    at = _page(_root(tmp_path))
+    assert _check_line(at) == "", _check_line(at)
+
+
+def test_a_fee_typed_by_hand_shows_in_the_check_line_and_lands_in_the_file(tmp_path):
+    """在「更多」里把佣金改成券商实际值：明面上那一行跟着变，写进文件的也是它。
+    屏幕上写着 17.88、文件里记的是 5.00，正是"看不见的值悄悄生效"。"""
+    root = _root(tmp_path)
+    at = _fill_entry(_page(root))
+    at.number_input(key=jui.FEE_KEY).set_value(5.0)
+    at = at.run()
+    line = _check_line(at)
+    assert "佣金 5.00" in line and "共付出 71,505.00 元" in line, line
+
+    at = at.button(key=jui.SUBMIT_KEY).click().run()
+    assert not at.exception, at.exception
+    assert store.load_trades(_trades_path(root)).iloc[0]["fee"] == 5.0
+
+
+def test_the_history_filters_wait_in_a_collapsed_expander(tmp_path):
+    """七笔记录上面常驻六个筛选框，是这一页最吵的一排。收进折叠区，控件照旧都在。"""
+    root = _root(tmp_path)
+    _journal(root, _buy(), _sell())
+    at = _page(root)
+    box = _expander(at, _guide().JOURNAL_FILTER)
+    assert box.proto.expanded is False
+    assert _keys_inside(box) == {
+        jui.FILTER_START_KEY, jui.FILTER_END_KEY, jui.FILTER_SYMBOL_KEY,
+        jui.FILTER_KIND_KEY, jui.FILTER_SOURCE_KEY, jui.FILTER_REASON_KEY}, _keys_inside(box)
+    # 没筛的时候，表格上方不说"筛出几条"，也没有「清除筛选」
+    assert not any("筛出" in c.value for c in at.main.caption)
+    assert not [b for b in at.button if b.key == jui.FILTER_CLEAR_KEY]
+
+
+def test_an_active_filter_is_spelled_out_above_the_table_and_can_be_cleared(tmp_path):
+    """筛选收起来之后，筛了什么必须写在表格上方——导出只导筛出来的这些行，
+    看不见条件的话人会以为导出的是全部。旁边一个「清除筛选」一下复位全部条件。"""
+    root = _root(tmp_path)
+    _journal(root, _buy(), _sell())
+    at = _page(root)
+    # 六个条件全设上（都选得中 T2 那笔卖出）：「清除筛选」漏掉哪一个，表就回不到两行
+    at.date_input(key=jui.FILTER_START_KEY).set_value(D_SELL)
+    at.date_input(key=jui.FILTER_END_KEY).set_value(D_SELL)
+    at.multiselect(key=jui.FILTER_SYMBOL_KEY).set_value(["000333"])
+    at.multiselect(key=jui.FILTER_KIND_KEY).set_value(["sell"])
+    at.multiselect(key=jui.FILTER_SOURCE_KEY).set_value(["ma_cross"])
+    at.text_input(key=jui.FILTER_REASON_KEY).set_value("跌破")
+    at = at.run()
+
+    said = [c.value for c in at.main.caption if "筛出" in c.value]
+    assert len(said) == 1, [c.value for c in at.main.caption]
+    assert "筛出 1 / 2 条" in said[0] and "卖出" in said[0] and "「跌破」" in said[0], said
+    assert "导出也只含这些" in said[0], said
+    clear = at.button(key=jui.FILTER_CLEAR_KEY)
+    assert (clear.label, clear.proto.type) == (_guide().JOURNAL_FILTER_CLEAR, "tertiary")
+
+    at = clear.click().run()
+    assert not at.exception, at.exception
+    assert at.date_input(key=jui.FILTER_START_KEY).value is None
+    assert at.date_input(key=jui.FILTER_END_KEY).value is None
+    for key in (jui.FILTER_SYMBOL_KEY, jui.FILTER_KIND_KEY, jui.FILTER_SOURCE_KEY):
+        assert at.multiselect(key=key).value == [], key
+    assert not at.text_input(key=jui.FILTER_REASON_KEY).value
+    shown = [f for f in _frames(at) if "trade_id" in getattr(f, "columns", [])]
+    assert list(shown[0]["trade_id"]) == ["T1", "T2"], shown[0]
+    assert not any("筛出" in c.value for c in at.main.caption)
+
+
+def test_filtering_everything_away_says_so_and_keeps_the_way_out(tmp_path):
+    root = _root(tmp_path)
+    _journal(root, _buy(), _sell())
+    at = _page(root)
+    at.text_input(key=jui.FILTER_REASON_KEY).set_value("根本没有这个词")
+    at = at.run()
+    assert not at.exception, at.exception
+    assert _guide().JOURNAL_FILTER_NONE in _texts(at)
+    assert at.button(key=jui.FILTER_CLEAR_KEY), "筛没了更需要「清除筛选」"
+    assert not [e for e in at.get("dataframe") if e.proto.id], "筛没了就不画一张空的编辑表"
+
+
+def test_an_empty_journal_shows_the_way_in_and_nothing_to_operate_on(tmp_path):
+    """一笔都没记过：筛选、表格、导出都没有东西可作用——只留那句指路的话和撤销手段
+    （「恢复上一版」照留，见上面那条：正要大批量录入的时刻更需要知道改错了还有救）。"""
+    at = _page(_root(tmp_path))
+    assert not at.exception, at.exception
+    guide = _guide()
+    assert guide.JOURNAL_EMPTY in _texts(at)
+    assert guide.JOURNAL_LOG_TITLE.format(n=0) in _texts(at)
+    assert not [e for e in at.expander if e.label == guide.JOURNAL_FILTER], "没有记录时不出筛选"
+    assert not at.get("download_button"), "没有记录时不出导出"
+    # 屏幕上没有导出按钮，那句常驻的话里就不该还叫人"用导出"（审查时抓到的）
+    assert not any("导出" in c.value for c in at.main.caption), [c.value for c in at.main.caption]
+    assert any("恢复上一版" in c.value for c in at.main.caption), "撤销手段在哪还得说"
+    assert not [e for e in at.get("dataframe") if e.proto.id]
+    assert at.button(key=jui.RESTORE_KEY).disabled
+
+
+def test_unsaved_edits_are_called_out_next_to_the_save_button(tmp_path):
+    """表里改了却没点保存，切到别的页再回来就没了。有没保存的改动时：
+    按钮变成主按钮，旁边写明改了几行、勾了几行要删。"""
+    root = _root(tmp_path)
+    path = _journal(root, _buy(), _sell())
+    before = path.read_bytes()
+    at = _page(root)
+    quiet = at.button(key=jui.SAVE_KEY)
+    assert (quiet.label, quiet.proto.icon, quiet.proto.type) == \
+        ("保存修改", ":material/save:", "secondary"), "没有改动时它只是一个安静的按钮"
+    assert not any("还没保存" in c.value for c in at.main.caption)
+
+    at = edit_table(at, {0: {"reason": "改一下"}, 1: {jui.DELETE_COLUMN: True}},
+                    dataframe=_log_table_index(at))
+    assert not at.exception, at.exception
+    said = [c.value for c in at.main.caption if "还没保存" in c.value]
+    assert len(said) == 1 and "改了 1 行" in said[0] and "勾了 1 行要删除" in said[0], \
+        [c.value for c in at.main.caption]
+    assert at.button(key=jui.SAVE_KEY).proto.type == "primary"
+    assert path.read_bytes() == before, "只是提醒，没点保存就不许动文件"
+
+
+def test_the_history_table_is_reordered_for_reading_but_carries_every_field(tmp_path):
+    """列序只管显示：交回来的表仍带全部字段（保存靠 trade_id 定位、导出要全部列）。"""
+    root = _root(tmp_path)
+    _journal(root, _buy(), _sell())
+    at = _page(root)
+    editor = at.get("dataframe")[_log_table_index(at)]
+    assert list(editor.proto.column_order) == list(jui.EDITOR_ORDER), editor.proto.column_order
+    assert set(editor.value.columns) == {*schema.COLUMNS, jui.DELETE_COLUMN}
+    # 上面看的是**喂进去**的表；交回来的那张是不是也全须全尾，要保存一轮才知道——
+    # 少一列的话 store.save_trades 会拒写，没碰过的格子也必须原样回到文件里。
+    before = store.load_trades(_trades_path(root))
+    at = edit_table(at, {0: {"note": "补一句"}}, dataframe=_log_table_index(at),
+                    click=jui.SAVE_KEY)
+    assert not at.error, [e.value for e in at.error]
+    after = store.load_trades(_trades_path(root))
+    assert list(after.columns) == list(schema.COLUMNS)
+    untouched = [c for c in schema.COLUMNS if c != "note"]
+    pd.testing.assert_frame_equal(after[untouched], before[untouched])
+    assert list(after["note"]) == ["补一句", ""]
+
+
+def test_blank_cells_show_a_dash_not_the_word_none(tmp_path):
+    """没填的格子（计划止损、成交时刻）出厂显示灰字 "None"——一个英文词，还像真填了什么。
+    面板别处的缺值都是 —。"""
+    root = _root(tmp_path)
+    _journal(root, _buy())
+    at = _page(root)
+    editor = at.get("dataframe")[_log_table_index(at)]
+    assert editor.proto.placeholder == "—", repr(editor.proto.placeholder)
+
+
+def test_the_tools_under_the_table_explain_themselves_on_hover(tmp_path):
+    """表格下面改之前是三段常驻的灰字。现在只留一句撤销手段在哪，
+    其余的话挂在各自的按钮上（悬停才出）。"""
+    root = _root(tmp_path)
+    _journal(root, _buy(), _sell())
+    at = _page(root)
+    guide = _guide()
+    assert at.button(key=jui.SAVE_KEY).proto.help == guide.JOURNAL_EDIT_HINT
+    captions = [c.value for c in at.main.caption]
+    assert guide.JOURNAL_BACKUP_NOTE in captions, captions
+    assert guide.JOURNAL_EDIT_HINT not in captions and \
+        not any(v in captions for v in guide.JOURNAL_EXPORT_HELP.values()), captions
+    hint = guide.TABLE_HINTS["journal"]
+    assert captions.count(hint) == 1 and "不会" in hint and "重算" in hint, \
+        "改股数或成交价时金额不会跟着变——这一句得留在表格上方"
+
+
+# ---------------------------------------------------------------- 记完之后清表单（2026-11-16 真机抓到）
+#
+# 记完一笔，输入框里上一笔的代码、股数、成交价还留在浏览器里。原先的清法是把控件的值从
+# session_state 里删掉：后台确实空了，可浏览器不知道——它手里那份旧值还在，下一次任何操作
+# （哪怕只是点一下「卖出」）都会把它们原样送回来。AppTest 没有浏览器，这件事只能看协议：
+# 明确写回空值时控件的 set_value 为真，浏览器照着清；只删键时它为假，浏览器留着旧值。
+
+def test_recording_a_trade_tells_the_browser_to_empty_the_form(tmp_path):
+    root = _root(tmp_path)
+    at = _fill_entry(_page(root))
+    at.number_input(key=jui.STOP_KEY).set_value(68.0)
+    at.text_input(key=jui.NOTE_KEY).set_value("备注一句")
+    at.text_input(key=jui.TIME_KEY).set_value("14:35")
+    at = at.run()
+    at = at.button(key=jui.SUBMIT_KEY).click().run()
+
+    assert not at.exception, at.exception
+    assert len(store.load_trades(_trades_path(root))) == 1, "前提：这一笔记下了"
+    for key in (jui.SYMBOL_KEY, jui.REASON_KEY, jui.NOTE_KEY, jui.TIME_KEY):
+        box = at.text_input(key=key)
+        assert not box.value and box.proto.set_value, f"{key} 没有被明确清空"
+    for key in (jui.SHARES_KEY, jui.PRICE_KEY, jui.STOP_KEY):
+        box = at.number_input(key=key)
+        assert box.value is None and box.proto.set_value, f"{key} 没有被明确清空"
+    # 股数与成交价空了，费用跟着回到 0——留着上一笔的佣金是最难发现的一种错
+    assert at.number_input(key=jui.FEE_KEY).value == 0.0
+    assert _check_line(at) == "", "表单空了，核对那一行也该消失"
+
+
+def test_the_form_keeps_direction_source_and_date_after_recording(tmp_path):
+    """一晚上连着记的往往是同方向、同来源的几笔，补记旧交易时刚选好的日期也别动：
+    这三样不清（v0.5.0 的决定，照旧）。"""
+    root = _root(tmp_path)
+    at = _fill_entry(_page(root), kind="sell", day=D_SELL)
+    at.selectbox(key=jui.SOURCE_KEY).set_value("ma_cross")
+    at = at.run()
+    at = at.button(key=jui.SUBMIT_KEY).click().run()
+
+    assert not at.exception, at.exception
+    assert at.radio(key=jui.KIND_KEY).value == "sell"
+    assert at.selectbox(key=jui.SOURCE_KEY).value == "ma_cross"
+    assert at.date_input(key=jui.DATE_KEY).value == D_SELL
+
+
+def test_a_refused_trade_leaves_the_form_as_typed(tmp_path):
+    """没记下来（缺股数）时一个字都不许清：人要照着提示把缺的那格补上，不是重填一遍。"""
+    root = _root(tmp_path)
+    at = _page(root)
+    at.text_input(key=jui.SYMBOL_KEY).set_value("000333")
+    at.text_input(key=jui.REASON_KEY).set_value("先写了理由")
+    at = at.run()
+    at.number_input(key=jui.PRICE_KEY).set_value(71.5)
+    at = at.run()
+    at = at.button(key=jui.SUBMIT_KEY).click().run()
+
+    assert not _trades_path(root).exists()
+    assert at.text_input(key=jui.SYMBOL_KEY).value == "000333"
+    assert at.text_input(key=jui.REASON_KEY).value == "先写了理由"
+    assert at.number_input(key=jui.PRICE_KEY).value == 71.5
+
+
+def _record_a_dividend(at: AppTest, amount: float = 320.0) -> AppTest:
+    at.radio(key=jui.OTHER_KIND_KEY).set_value("dividend")
+    at.date_input(key=jui.OTHER_DATE_KEY).set_value(D_SELL)
+    at.text_input(key=jui.OTHER_SYMBOL_KEY).set_value("000333")
+    at.text_input(key=jui.OTHER_REASON_KEY).set_value("2025年度分红")
+    at = at.run()
+    at.number_input(key=jui.OTHER_AMOUNT_KEY).set_value(amount)
+    at = at.run()
+    return at.button(key=jui.OTHER_SUBMIT_KEY).click().run()
+
+
+def test_recording_a_dividend_empties_that_form_so_a_second_click_adds_nothing(tmp_path):
+    """「其他记录」那张表单以前记完**根本不清**（要清的键里只有买卖那张的）：到账金额还在
+    框里，手一抖再点一次，就是第二笔一模一样的分红——记录号不同，没有任何报错拦得住。"""
+    root = _root(tmp_path)
+    _journal(root, _buy())
+    at = _record_a_dividend(_page(root))
+
+    assert not at.exception, at.exception
+    assert list(store.load_trades(_trades_path(root))["kind"]) == ["buy", "dividend"]
+    amount = at.number_input(key=jui.OTHER_AMOUNT_KEY)
+    assert amount.value is None and amount.proto.set_value, "到账金额没有被明确清空"
+    for key in (jui.OTHER_SYMBOL_KEY, jui.OTHER_REASON_KEY):
+        box = at.text_input(key=key)
+        assert not box.value and box.proto.set_value, f"{key} 没有被明确清空"
+
+    at = at.button(key=jui.OTHER_SUBMIT_KEY).click().run()
+    assert list(store.load_trades(_trades_path(root))["kind"]) == ["buy", "dividend"], \
+        "再点一次不该多出第二笔分红"
+
+
+def test_recording_a_dividend_does_not_wipe_a_half_typed_trade(tmp_path):
+    """两张表单各清各的：上面那张买卖表单填到一半，去下面记了一笔分红，回来不该是空的。"""
+    root = _root(tmp_path)
+    _journal(root, _buy())
+    at = _fill_entry(_page(root), symbol="600519", shares=100.0, price=1500.0)
+    at = _record_a_dividend(at)
+
+    assert not at.exception, at.exception
+    assert at.text_input(key=jui.SYMBOL_KEY).value == "600519"
+    assert at.number_input(key=jui.SHARES_KEY).value == 100.0
+    assert at.number_input(key=jui.PRICE_KEY).value == 1500.0
+
+
+def test_recording_a_share_adjustment_empties_its_share_count_too(tmp_path):
+    """送股那一档填的是股数变化：记完同样要清，否则再点一次就是第二笔一模一样的送股。"""
+    root = _root(tmp_path)
+    _journal(root, _buy())
+    at = _page(root)
+    at.radio(key=jui.OTHER_KIND_KEY).set_value("adjust")
+    at.date_input(key=jui.OTHER_DATE_KEY).set_value(D_SELL)
+    at.text_input(key=jui.OTHER_SYMBOL_KEY).set_value("000333")
+    at = at.run()
+    at.number_input(key=jui.OTHER_SHARES_KEY).set_value(100.0)
+    at = at.run()
+    at = at.button(key=jui.OTHER_SUBMIT_KEY).click().run()
+
+    assert not at.exception, at.exception
+    assert list(store.load_trades(_trades_path(root))["kind"]) == ["buy", "adjust"]
+    shares = at.number_input(key=jui.OTHER_SHARES_KEY)
+    assert shares.value is None and shares.proto.set_value, "股数变化没有被明确清空"
+
+
+# ---------------------------------------------------------------- 编辑区的改动跟着谁走（2026-11-16 审查抓到）
+#
+# data_editor 记的是"第几行的哪一格改成了什么"。带 key 的固定行数编辑器，身份只看表的**结构**
+# （列、行数、索引），不看里面的值（streamlit 1.61 的文档原话：Edits are matched by row position）。
+# 于是两个行数相同的筛选结果是**同一个控件**：在「买入」那两行里勾了第一行删除、没保存，
+# 切到「卖出」（也是两行），那个勾就落在了另一笔交易上——真实浏览器里复现过。
+# AppTest 不会把编辑器的状态带到下一轮，这类问题它天然看不见；下面这个替身照浏览器的规矩来：
+# 记着没保存的改动，**按当时那个控件 id** 每一轮都原样送回去——id 没变就会被套到新表上，变了就作废。
+
+class _Browser:
+    def __init__(self, at: AppTest):
+        self.at = at
+        self.editor_id = ""
+        self.edits: dict[int, dict] = {}
+
+    def _editor(self):
+        found = [e for e in self.at.get("dataframe") if e.proto.id]
+        return found[0] if found else None
+
+    def edit(self, edits: dict[int, dict]) -> AppTest:
+        self.editor_id = self._editor().proto.id
+        self.edits = edits
+        return self.rerun()
+
+    def rerun(self, click: str | None = None) -> AppTest:
+        states = self.at._tree.get_widget_states()
+        if self.edits:
+            state: WidgetState = states.widgets.add()
+            state.id = self.editor_id          # 旧 id：控件换了的话，后台根本不认这份状态
+            state.string_value = json.dumps({
+                "edited_rows": {str(row): cells for row, cells in self.edits.items()},
+                "added_rows": [], "deleted_rows": []})
+        if click is not None:
+            pressed: WidgetState = states.widgets.add()
+            pressed.id = self.at.button(key=click).id
+            pressed.trigger_value = True
+        self.at = self.at._run(widget_state=states)
+        editor = self._editor()
+        if editor is None or editor.proto.id != self.editor_id:
+            self.edits = {}                    # 控件换了：浏览器手里那份改动也就没了
+        return self.at
+
+
+def _four_trades(root: Path) -> Path:
+    return _journal(
+        root, _buy(reason="买一"), _sell(reason="卖一"),
+        _buy(symbol="600519", name="贵州茅台", shares=100.0, price=1600.0, reason="买二"),
+        _sell(symbol="600519", shares=100.0, price=1700.0, reason="卖二"))
+
+
+def _pending_notes(at: AppTest) -> list[str]:
+    return [c.value for c in at.main.caption if "还没保存" in c.value]
+
+
+def test_an_unsaved_tick_does_not_ride_the_row_position_onto_another_trade(tmp_path):
+    """筛「买入」（T1、T3）→ 勾第一行删除、不保存 → 改筛「卖出」（T2、T4，也是两行）。
+    那个勾绝不能落到 T2 头上：页面不许说还有没保存的改动，点保存也不许删掉任何一笔。"""
+    root = _root(tmp_path)
+    path = _four_trades(root)
+    before = path.read_bytes()
+    browser = _Browser(_page(root))
+    browser.at.multiselect(key=jui.FILTER_KIND_KEY).set_value(["buy"])
+    browser.rerun()
+    at = browser.edit({0: {jui.DELETE_COLUMN: True}})
+    assert any("勾了 1 行要删除" in note for note in _pending_notes(at)), "前提：勾上了"
+
+    browser.at.multiselect(key=jui.FILTER_KIND_KEY).set_value(["sell"])
+    at = browser.rerun()
+    shown = [f for f in _frames(at) if "trade_id" in getattr(f, "columns", [])][0]
+    assert list(shown["trade_id"]) == ["T2", "T4"], "前提：换成了卖出那两行"
+    assert _pending_notes(at) == [], "换了一批记录，上一批里没保存的勾不该跟过来"
+
+    at = browser.rerun(click=jui.SAVE_KEY)
+    assert not at.exception, at.exception
+    assert path.read_bytes() == before, \
+        f"在买入里勾的删除，删掉的却是别的记录: {list(store.load_trades(path)['trade_id'])}"
+
+
+def test_an_unsaved_edit_does_not_ride_the_row_position_onto_another_trade(tmp_path):
+    """同一件事的另一半：没保存的备注也不许换一批记录之后写到别人头上。"""
+    root = _root(tmp_path)
+    path = _four_trades(root)
+    before = path.read_bytes()
+    browser = _Browser(_page(root))
+    browser.at.multiselect(key=jui.FILTER_KIND_KEY).set_value(["buy"])
+    browser.rerun()
+    browser.edit({0: {"note": "只想给 T1 加的备注"}})
+    browser.at.multiselect(key=jui.FILTER_KIND_KEY).set_value(["sell"])
+    at = browser.rerun(click=jui.SAVE_KEY)
+    assert not at.exception, at.exception
+    assert path.read_bytes() == before, list(store.load_trades(path)["note"])
+
+
+def test_unsaved_edits_stay_put_while_the_same_rows_are_on_screen(tmp_path):
+    """反过来不能矫枉过正：表里还是那几行时（在页面上别处点了点什么），没保存的改动得留着。"""
+    root = _root(tmp_path)
+    path = _four_trades(root)
+    browser = _Browser(_page(root))
+    browser.edit({0: {"note": "先写着"}})
+    browser.at.text_input(key=jui.SYMBOL_KEY).set_value("600519")      # 页面上别处的操作
+    at = browser.rerun()
+    assert any("改了 1 行" in note for note in _pending_notes(at)), _pending_notes(at)
+    at = browser.rerun(click=jui.SAVE_KEY)
+    assert list(store.load_trades(path)["note"]) == ["先写着", "", "", ""]
+
+
+def test_a_saved_edit_does_not_come_back_as_unsaved(tmp_path):
+    """只改不删的保存（行数没变）之后，编辑区必须是干净的：不许又冒出一句「还没保存」，
+    也不许之后换一批记录时把这次的改动再套一遍。
+
+    两批记录**行数相同**（买入两笔、卖出两笔）是这条测试的要害：行数不同的话，
+    连带 key 的编辑器也会复位，测不出"改动跟着行号走"（复审指出初稿正是这样空跑的）。"""
+    root = _root(tmp_path)
+    path = _four_trades(root)
+    browser = _Browser(_page(root))
+    browser.at.multiselect(key=jui.FILTER_KIND_KEY).set_value(["buy"])
+    browser.rerun()
+    browser.edit({0: {"reason": "改成别的理由"}})
+    at = browser.rerun(click=jui.SAVE_KEY)
+    assert list(store.load_trades(path)["reason"])[0] == "改成别的理由"
+    saved = path.read_bytes()
+
+    browser.at.text_input(key=jui.SYMBOL_KEY).set_value("600519")      # 之后在页面上随便动一下
+    at = browser.rerun()
+    assert _pending_notes(at) == [], "明明保存过了"
+    assert at.button(key=jui.SAVE_KEY).proto.type == "secondary"
+    browser.at.multiselect(key=jui.FILTER_KIND_KEY).set_value(["sell"])   # 换成另外两笔
+    at = browser.rerun()
+    assert _pending_notes(at) == [], "换了一批记录，保存过的那次改动不该跟过来"
+    at = browser.rerun(click=jui.SAVE_KEY)
+    assert path.read_bytes() == saved, \
+        f"保存过的那次改动又被套到了别的记录上: {list(store.load_trades(path)['reason'])}"
+
+
+def test_typing_the_old_value_back_is_not_an_unsaved_change(tmp_path):
+    """把原来的理由原样敲回去：没有东西要保存，就不该亮着「还没保存」和主按钮——
+    否则点下去得到的是「没有需要保存的改动」，同一屏两句话打架。"""
+    root = _root(tmp_path)
+    path = _journal(root, _buy(), _sell())
+    before = path.read_bytes()
+    browser = _Browser(_page(root))
+    at = browser.edit({0: {"reason": "20日线金叉"}})                  # 文件里本来就是这句
+    assert _pending_notes(at) == [], _pending_notes(at)
+    assert at.button(key=jui.SAVE_KEY).proto.type == "secondary"
+    at = browser.rerun(click=jui.SAVE_KEY)
+    assert path.read_bytes() == before
+    assert _pending_notes(at) == []
+
+
+def test_restoring_the_previous_version_leaves_no_edit_behind(tmp_path):
+    """恢复上一版换的是整张表：换之前没保存的改动不许留在编辑区里等着被再保存一次。"""
+    root = _root(tmp_path)
+    path = _journal(root, _buy(), _sell())
+    browser = _Browser(_page(root))
+    browser.edit({0: {"reason": "第一次改"}})
+    browser.rerun(click=jui.SAVE_KEY)                                  # 造出备份（上一版 = 没改之前）
+    original = store.backup_path(path).read_bytes()
+    browser.edit({1: {"note": "还没保存的备注"}})
+    browser.at.checkbox(key=jui.RESTORE_CONFIRM_KEY).check()
+    browser.rerun()
+    at = browser.rerun(click=jui.RESTORE_KEY)
+    assert path.read_bytes() == original, "前提：换回了上一版"
+    at = browser.rerun()
+    assert _pending_notes(at) == [], "换回上一版之后还挂着换之前的改动"
+    at = browser.rerun(click=jui.SAVE_KEY)
+    assert path.read_bytes() == original
+
+
+# ---------------------------------------------------------------- 复审之后补的几条（2026-11-16）
+
+def test_whitespace_typed_into_a_blank_cell_is_announced_before_it_is_saved(tmp_path):
+    """页面上的提醒与保存的结论必须一致：在空着的备注里敲了三个空格，保存会把它写进文件
+    （并换掉备份）——那保存之前就得亮着「还没保存」，不能安安静静的。"""
+    root = _root(tmp_path)
+    path = _journal(root, _buy(), _sell())
+    browser = _Browser(_page(root))
+    at = browser.edit({0: {"note": "   "}})
+    assert any("改了 1 行" in note for note in _pending_notes(at)), _pending_notes(at)
+    assert at.button(key=jui.SAVE_KEY).proto.type == "primary"
+    at = browser.rerun(click=jui.SAVE_KEY)
+    assert any("改了 1 行" in t for t in _toasts(at)), _toasts(at)
+    assert list(store.load_trades(path)["note"]) == ["   ", ""]
+
+
+def test_pressing_delete_on_the_delete_tick_does_not_take_the_table_down(tmp_path):
+    """选中「删除」那一格（或一片包含它的格子）按 Delete 键，表格送回来的是"这一格清空"。
+    勾选列若是硬邦邦的 bool，清空这一下就是 TypeError：表格连同它下面的保存、恢复、导出
+    整个消失一轮。这一列 2026-11-16 起排在最前面，比以前好碰得多。清空 = 没勾。"""
+    root = _root(tmp_path)
+    path = _journal(root, _buy(), _sell())
+    before = path.read_bytes()
+    browser = _Browser(_page(root))
+    at = browser.edit({0: {jui.DELETE_COLUMN: None}})
+    assert not at.exception, at.exception
+    assert [e for e in at.get("dataframe") if e.proto.id], "表格不见了"
+    assert _pending_notes(at) == [], "清空的勾不是待删除"
+    at = browser.rerun(click=jui.SAVE_KEY)
+    assert not at.exception, at.exception
+    assert path.read_bytes() == before
+
+
+def test_clearing_a_date_and_saving_is_refused_in_words(tmp_path):
+    """表里把日期清空再点保存：必须是那句设计好的拒绝（缺少成交日期、文件不动），
+    不是一屏 traceback。"""
+    root = _root(tmp_path)
+    path = _journal(root, _buy(), _sell())
+    before = path.read_bytes()
+    browser = _Browser(_page(root))
+    at = browser.edit({0: {"date": None}})
+    assert not at.exception, at.exception
+    assert any("改了 1 行" in note for note in _pending_notes(at)), "清空日期是一处改动"
+    at = browser.rerun(click=jui.SAVE_KEY)
+    assert not at.exception, f"清空日期后保存不该崩页: {at.exception}"
+    assert path.read_bytes() == before, "缺日期的行竟然落盘了"
+    assert "成交日期" in "".join(str(e.value) for e in at.error), [e.value for e in at.error]
+
+
+def test_a_refused_trade_does_not_cost_the_table_its_unsaved_edits(tmp_path):
+    """表里勾了一行删除、还没保存，这时去上面点了「记这一笔」（表单没填完，被拒）。
+    点完之后那一轮：勾还在、提醒还在。初稿里提交完立刻整页重跑——重跑发生在表格**画出来之前**，
+    后台就把表格这一轮的状态当成"控件不在了"丢掉，提醒少报一轮，而浏览器里那个勾明明还勾着。"""
+    root = _root(tmp_path)
+    path = _journal(root, _buy(), _sell())
+    before = path.read_bytes()
+    browser = _Browser(_page(root))
+    browser.edit({1: {jui.DELETE_COLUMN: True}})
+    at = browser.rerun(click=jui.SUBMIT_KEY)             # 表单是空的：这一笔会被拒
+    assert path.read_bytes() == before, "前提：没记下来"
+    assert "".join(str(e.value) for e in at.error), "前提：被拒了，有那句为什么"
+    assert any("勾了 1 行要删除" in note for note in _pending_notes(at)), \
+        f"点了一下「记这一笔」，表里没保存的勾就不提了: {_pending_notes(at)}"
+
+
+def test_recording_does_not_drop_the_history_filter_for_a_round(tmp_path):
+    """筛着「卖出」时去点「记这一笔」（被拒也一样）：点完之后表里还得是筛过的那几行。
+    旧毛病——提交后在筛选框画出来之前就整页重跑，后台把筛选条件丢了一轮：
+    表格变回全部记录，筛选框里却还写着「卖出」。"""
+    root = _root(tmp_path)
+    _journal(root, _buy(), _sell())
+    browser = _Browser(_page(root))
+    browser.at.multiselect(key=jui.FILTER_KIND_KEY).set_value(["sell"])
+    browser.rerun()
+    at = browser.rerun(click=jui.SUBMIT_KEY)             # 空表单：被拒
+    shown = [f for f in _frames(at) if "trade_id" in getattr(f, "columns", [])][0]
+    assert list(shown["trade_id"]) == ["T2"], f"筛选条件丢了一轮: {list(shown['trade_id'])}"
+    assert at.multiselect(key=jui.FILTER_KIND_KEY).value == ["sell"]
+
+
+def test_entry_summary_writes_the_price_out_in_full(tmp_path):
+    """核对行不舍入：3.24567 就写 3.24567（初稿到第四位小数就四舍五入了，与"照输入的原样写"不符）。"""
+    text = _summary(shares=100000.0, price=3.24567, fee=None)
+    assert "× 3.24567 = 324,567.00 元" in text, text
+
+
+def test_kind_labels_come_from_the_schema_names():
+    """记录类型的中文名只有一份（schema.KIND_NAMES）：页面上的标签与校验信息里的叫法取自同一处，
+    不会一个叫「股数调整」一个叫别的。"""
+    assert jui.KIND_LABELS == dict(schema.KIND_NAMES)
+
+
+def test_every_expander_on_the_entry_page_has_a_key():
+    """折叠区必须带 key（真机上看到的）：页面顶上一冒出报错那一条，下面的元素整体往后挪一位，
+    不带 key 的折叠区会被当成新的、**自己合上**——正填着「更多」里的佣金、正开着「筛选」，
+    点一下「记这一笔」被拒，面板就在眼前关掉了。带 key 的折叠区认的是 key，不认位置。
+    AppTest 看不到开合，只能在源码层钉住：这一页的每个 st.expander 都得有 key。"""
+    import ast
+
+    tree = ast.parse((ROOT / "app" / "pages_journal_entry.py").read_text(encoding="utf-8"))
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+             and getattr(n.func, "attr", "") == "expander"]
+    assert len(calls) == 4, f"这一页应有四个折叠区（说明 / 更多 / 其他记录 / 筛选），实际 {len(calls)}"
+    for call in calls:
+        keys = [kw for kw in call.keywords if kw.arg == "key"]
+        assert keys, f"L{call.lineno} 的折叠区没有 key"
+    assert len({ast.unparse(kw.value) for c in calls for kw in c.keywords if kw.arg == "key"}) == 4, \
+        "四个折叠区的 key 不许重复"
+
+
+def test_the_first_refusal_a_newcomer_sees_is_in_plain_chinese(tmp_path):
+    """什么都没填就点「记这一笔」——第一次来的人最可能做的第一件事。那句拒绝里不许有 buy / shares。"""
+    at = _page(_root(tmp_path))
+    at = at.button(key=jui.SUBMIT_KEY).click().run()
+    said = "".join(str(e.value) for e in at.error)
+    assert "没有" in said and "股数" in said and "成交价" in said, said
+    for key in ("buy", "shares", "price"):
+        assert key not in said, f"报错里冒出了内部键 {key!r}: {said}"

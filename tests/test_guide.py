@@ -632,6 +632,73 @@ def test_empty_states_cover_exactly_the_three_products():
     assert set(guide.EMPTY_STATES) == set(EMPTY_KINDS)
 
 
+@pytest.mark.parametrize("kind, job", [("backtest", "backtest"), ("signal", "daily_signal"),
+                                       ("scan", "market_scan")])
+def test_empty_states_quote_the_button_that_is_really_on_the_page(kind, job):
+    """2026-11-16 起三页顶部任务条上的按钮与控制台同名（开始回测 / 开始跟踪 / 开始扫描）。
+    空态还叫人找「开始」的话，页面上已经没有这个按钮了。"""
+    text = guide.EMPTY_STATES[kind]
+    assert f"「{guide.CONSOLE_START[job]}」" in text, text
+    assert "「开始」" not in text, f"{kind} 的空态还在引一个不存在的按钮: {text}"
+
+
+def test_the_scan_empty_state_says_the_button_is_at_the_top_of_the_page():
+    """扫描区块在「信号」页的页尾，它的按钮却在页顶那条任务条上——说"上方"，
+    人会在这句话旁边找。"""
+    assert "页顶" in guide.EMPTY_STATES["scan"], guide.EMPTY_STATES["scan"]
+
+
+# ================================================================ 各页顶部的任务条（2026-11-16）
+
+def test_every_bar_button_has_its_hover_help():
+    """任务条上三个按钮的悬停说明，键与控制台的三张卡片一致。"""
+    assert set(guide.BAR_START_HELP) == set(guide.CONSOLE_START)
+
+
+@pytest.mark.parametrize("name", sorted(guide.BAR_START_HELP))
+def test_bar_help_says_default_settings_and_where_to_change_them(name):
+    """原先常驻在条下面的那两行灰字说的就是这两件事：按默认参数跑、想改去控制台。
+    现在挂在按钮上——话不能丢。"""
+    text = guide.BAR_START_HELP[name]
+    assert "默认" in text and "「任务控制台」" in text, text
+
+
+def test_bar_help_carries_the_measured_durations():
+    """时长只许来自 FACTS（与 README 的实测表格逐字对账）。"""
+    scan = guide.BAR_START_HELP["market_scan"]
+    assert guide.FACTS["scan_pool"] in scan and guide.FACTS["scan_minutes"] in scan
+    assert guide.FACTS["scan_cold"] in scan, "第一次要久得多——只说前半截会让人守着等十八分钟"
+    assert guide.FACTS["backtest_seconds"] in guide.BAR_START_HELP["backtest"]
+
+
+# ================================================================ 记账页（2026-11-16 改版）
+
+def test_journal_table_hint_keeps_the_one_thing_people_get_wrong():
+    """表格上方只留一句。怎么改、怎么删之外，必须留着最容易想当然的那件事：
+    改了股数或成交价，金额与费用不会跟着重算。"""
+    hint = guide.TABLE_HINTS["journal"]
+    assert "「保存修改」" in hint and "「删除」" in hint, hint
+    assert "不会" in hint and "重算" in hint, hint
+    assert "记录号" not in hint, "「改动按记录号定位」是实现上的保证，使用者用不上这句话"
+
+
+def test_journal_export_help_covers_both_buttons_and_says_what_gets_exported():
+    assert set(guide.JOURNAL_EXPORT_HELP) == {"csv", "xlsx"}
+    for text in guide.JOURNAL_EXPORT_HELP.values():
+        assert "筛选" in text, f"没说导出的是筛选后的行: {text}"
+
+
+def test_journal_backup_note_names_the_button_not_the_file():
+    note = guide.JOURNAL_BACKUP_NOTE
+    assert "「恢复上一版」" in note and ".bak" not in note, note
+    assert len(note) < 70, f"这一句是常驻的，要短: {len(note)} 字"
+
+
+def test_journal_filtered_line_says_export_follows_the_filter():
+    text = guide.JOURNAL_FILTERED.format(shown=1, total=7, summary="类型 卖出")
+    assert "1 / 7" in text and "类型 卖出" in text and "导出" in text, text
+
+
 # ================================================================ 控制台改版（2026-11-16）
 #
 # 卡片上常驻的字只有这几样：一句「做什么 / 什么时候跑」、按钮上的字、首次引导。
@@ -706,6 +773,13 @@ def test_copy_quotes_buttons_by_their_words_not_by_glyphs():
             assert glyph not in text, f"{name} 里还在用字符 {glyph} 指代按钮"
 
 
+def test_no_copy_still_quotes_a_button_called_just_start():
+    """面板上已经没有哪个按钮只写着「开始」两个字了（开始扫描 / 开始跟踪 / 开始回测 / 开始准备）。
+    带着引号写「开始」，就是在引一个页面上找不到的按钮——泛指的时候说"开始按钮"。"""
+    for name, text in _user_copy().items():
+        assert "「开始」" not in text, f"{name} 还在引一个叫「开始」的按钮"
+
+
 def test_scan_lead_admits_the_first_run_takes_much_longer():
     """「全量约 18 分钟」是行情已在本地时的实测；第一次要按 0.5–2 小时准备。
     常驻在卡片上的那一句只说前半截，第一次用的人就会守着进度条等它十八分钟。"""
@@ -755,7 +829,7 @@ def _user_copy() -> dict[str, str]:
     # 常量不只是 str：HOME_HELP / HOME_THERMO_LABELS / HOME_STATE_TEXT 是字典，HOME_COUNT_LABELS
     # 是元组——只收 str 的话它们整个漏过实现细节扫描。字典按值、元组按项摊平。
     for name in dir(guide):
-        if not name.startswith(("JOURNAL_", "POOL_", "CONSOLE_", "PIPELINE_", "HOME_")):
+        if not name.startswith(("JOURNAL_", "POOL_", "CONSOLE_", "PIPELINE_", "HOME_", "BAR_")):
             continue
         value = getattr(guide, name)
         if isinstance(value, str):

@@ -294,6 +294,26 @@ CSS = f"""@import url("{FONT_IMPORT}");
   margin-right: 0.55rem;
 }}
 
+/* 各页顶部的任务条（2026-11-16，「信号」「回测报告」「个股K线」三页）：一个任务一行——
+   任务名 + 状态 + 一句「最新结果」，按钮在右边那一栏。外框同任务卡片，是原生容器给的。
+   任务名用衬线、比卡片标题小一号：这一条是这页的配角，正文是下面的数据。
+   三样东西都是行内元素，窄屏时那句话自己折到下一行，不用媒体查询。 */
+.qd-strip {{
+  font-family: var(--qd-sans);
+  font-size: 0.84rem;
+  line-height: 1.7;
+  color: var(--qd-text);
+}}
+.qd-strip-title {{
+  font-family: var(--qd-serif);
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}}
+.qd-strip-status {{
+  margin-left: 0.8rem;
+}}
+
 /* 首次引导那一条（控制台页顶，跑过任何任务后就不再出现）。左缘一道琥珀：
    它指向的是一个可以点的按钮。 */
 .qd-callout {{
@@ -568,6 +588,19 @@ def task_meta(lead: str, status_key: str = "", status: str = "") -> str:
         key = f'<span class="qd-task-status-key">{_esc(status_key)}</span>' if status_key else ""
         out += f'<div class="qd-task-status">{key}{_esc(status)}</div>'
     return out
+
+
+def job_strip(title: str, pill_html: str = "", status: str = "") -> str:
+    """各页顶部任务条里的一行：任务名 + 状态 pill + 一句「最新结果」（2026-11-16）。
+
+    与任务卡片标题同一个顺序（名字、状态），后面多跟一句话——卡片上它在标题下另起一行，
+    这里挤在同一行：任务条是这页的配角，占一行就够。`status` 为空时那半句**整个不出**
+    （读不出最新结果时由调用方另行告警，不许在这里补一句猜的）。
+    `pill_html` 是本模块 pill() 的输出（已转义的可信 HTML）。
+    """
+    right = f'<span class="qd-section-pill">{pill_html}</span>' if pill_html else ""
+    tail = f'<span class="qd-strip-status">{_esc(status)}</span>' if status else ""
+    return f'<div class="qd-strip"><span class="qd-strip-title">{_esc(title)}</span>{right}{tail}</div>'
 
 
 def callout(text: str) -> str:

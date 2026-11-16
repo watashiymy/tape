@@ -166,3 +166,27 @@ def test_backtest_status_names_the_latest_run_and_counts_them():
 def test_backtest_status_says_never_only_when_there_is_no_result_at_all():
     s = steps.backtest_status([])
     assert s.ready is False and steps.UNKNOWN in s.text, s.text
+
+
+# ---------------------------------------------------------------- "没有结果"那半句的措辞（2026-11-16）
+# 这句话 2026-11-16 起也出现在「信号」「回测报告」「个股K线」三页顶部的任务条上，紧挨着任务的
+# 运行状态。原先写的是「还没跑过」——第一次扫描正在跑、或者第一次就失败了的时候，屏幕上是
+# 「运行中　还没跑过」「失败　还没跑过」，两句话当面打架。这几个函数看的本来就是**磁盘上的结果**，
+# 不是"面板起没起过它"，所以如实说「还没有结果」。
+
+def test_the_no_result_wording_does_not_claim_the_job_never_ran(tmp_path):
+    texts = [steps.scan_status(tmp_path / "scan", DAY).text,
+             steps.signal_status(tmp_path / "signals", DAY).text,
+             steps.backtest_status([]).text]
+    for text in texts:
+        assert text.startswith(steps.UNKNOWN), text
+        # 整句话（含破折号后面那半句）都不许断言"没发生过"：这句话会紧挨着「运行中」「失败」出现
+        for claim in ("没跑过", "没扫过", "没人盯", "没做过"):
+            assert claim not in text, f"任务也许正在跑、也许跑失败了——只能说没有结果: {text}"
+        assert "才" in text, f"后半句说的应是'跑完一次才有什么': {text}"
+    assert steps.UNKNOWN == "还没有结果"
+
+
+def test_the_backtest_no_result_sentence_does_not_say_the_same_thing_twice():
+    text = steps.backtest_status([]).text
+    assert text.count("没有") == 1 and "结果" in text, text

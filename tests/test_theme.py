@@ -766,3 +766,33 @@ def test_page_head_keeps_title_and_pill_on_one_line_and_lets_the_lead_wrap():
     assert "white-space: nowrap" in rules[".qd-title"] and "flex-shrink: 0" in rules[".qd-title"]
     assert "white-space: nowrap" in rules[".qd-head-right"] and "flex-shrink: 0" in rules[".qd-head-right"]
     assert "min-width: 0" in rules[".qd-sub"]
+
+
+# ---------------------------------------------------------------- 各页顶部的任务条（2026-11-16）
+# 「信号」「回测报告」「个股K线」三页顶上那条：一个任务一行——任务名、状态、一句「最新结果」，
+# 右端一个按钮。边框同样是原生容器给的，我们只包行里那串字。
+
+def test_job_strip_is_title_then_pill_then_the_latest_result():
+    html = theme.job_strip("信号跟踪", theme.pill("成功", "success"), "最新一份是 2026-09-11")
+    assert html.startswith('<div class="qd-strip"><span class="qd-strip-title">信号跟踪</span>'), html
+    assert html.index("qd-strip-title") < html.index("qd-pill-success") < html.index("qd-strip-status")
+    assert '<span class="qd-strip-status">最新一份是 2026-09-11</span>' in html
+    assert html.endswith("</div>")
+
+
+def test_job_strip_leaves_out_what_it_was_not_given():
+    """没有状态句就不留一个空壳：读不出最新结果时那半行整个不出，不许补一句猜的。"""
+    assert theme.job_strip("回测") == \
+        '<div class="qd-strip"><span class="qd-strip-title">回测</span></div>'
+    assert "qd-strip-status" not in theme.job_strip("回测", theme.pill("空闲", "idle"))
+
+
+def test_job_strip_escapes_title_and_status():
+    html = theme.job_strip("<b>x</b>", "", "<script>1</script>")
+    assert "<b>" not in html and "<script>" not in html
+    assert "&lt;b&gt;" in html and "&lt;script&gt;" in html
+
+
+@pytest.mark.parametrize("cls", ["qd-strip", "qd-strip-title", "qd-strip-status"])
+def test_job_strip_classes_have_css_rules(cls):
+    assert re.search(rf"^\.{cls} \{{", theme.CSS, re.M), f"{cls} 没有对应的 CSS 规则"

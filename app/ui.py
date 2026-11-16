@@ -1,4 +1,4 @@
-"""面板的共享工具（v0.2.2 §4 拆分）：页头、指标网格、数据表、控制条与路径。
+"""面板的共享工具（v0.2.2 §4 拆分）：页头、指标网格、数据表、任务条与路径。
 
 **为什么这些不留在 dashboard.py**：设计 §4 要求 dashboard.py 只做导航装配
 （六页 × st.Page + 侧栏），页面函数拆到 app/pages_*.py。而页面函数要用页头、
@@ -18,6 +18,7 @@ dashboard.py 与 pages_*.py 都只依赖它，单向、无环。
 from __future__ import annotations
 
 import json
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -29,7 +30,7 @@ from quant.data import symbols
 from quant.journal import store
 from quant.report import fmt
 from quant.strategy import strategy_label
-from quant.runner import jobs, process, view
+from quant.runner import jobs, process, steps, view
 from quant.signal import scan_meta
 
 # 生产里的默认值（app/ui.py 的上一级就是仓库根）。测试会用 bind() 覆盖。
@@ -133,8 +134,6 @@ _REQUIRED_FILES = ("metrics.json", "report.html", "trades.csv")
 
 SCAN_COLOR_COLUMNS = ("pct_chg",)   # 扫描表里唯一有方向的列（红涨绿跌）
 
-CONSOLE_HINT = "这里按默认参数运行；要改参数请去「任务控制台」。"
-
 
 def page_head(page: str, *, help_center: bool = True) -> None:
     """通用页头（§2.4）：页名衬线大字 + 一句话说明 + 右侧全局任务状态 pill。
@@ -147,7 +146,7 @@ def page_head(page: str, *, help_center: bool = True) -> None:
     两栏顶端对齐：页头自带下外边距、窄屏时说明折两行，居中会把链接压到页名下方 11–21 px；
     顶端对齐与页名齐平（实测 1024/1280 两种宽度）。
 
-    这里**不**报 st.error：状态文件损坏时下面的控制条/卡片会报，页头再喊一遍只是噪声；
+    这里**不**报 st.error：状态文件损坏时下面的任务条/卡片会报，页头再喊一遍只是噪声；
     但 pill 必须如实说"未知"，不能退回"空闲"（那是猜的，而且正是 fail-safe 要挡的误导）。
     """
     try:
@@ -338,7 +337,7 @@ def resolve(path_str: str) -> Path:
 
 
 # ---------------------------------------------------------------- 任务启停（v0.2.0 §4.1）
-# 三个落点集中在这里：控制条（本模块）与控制台卡片（app/pages_console.py）共用。
+# 三个落点集中在这里：任务条（本模块）与控制台卡片（app/pages_console.py）共用。
 
 def start_job(job_name: str, params: dict) -> None:
     """开始/重跑唯一的落点：argv 一律由 build_argv 现造（列表 + shell=False）。
@@ -373,53 +372,186 @@ def rerun_job(job_name: str, state: process.RunState) -> None:
     start_job(job_name, params)
 
 
-def control_bar(*job_names: str) -> None:
-    """既有三页顶部的精简控制条（设计 §4.2）：当前状态 + 开始/停止 + 去控制台看详情。
+def step_status(job_name: str) -> steps.StepStatus | None:
+    """某个任务「最新结果」那句话：最近一份结果是哪天的、什么范围。返回 None 表示没有这一句。
 
-    只放这三样：进度条、实时日志、结果全在控制台页，这条越薄越好。
-    必须排在各页只读逻辑的**最前面**：三页在无产物时都会 st.info 之后早退，
-    控制条排在早退后面，恰好在"最需要点开始"的那一刻看不见。
-    每页只给这一页看得见产物的任务（回测页不出扫描按钮：误点一下就是 0.5-2 小时）。
+    控制台卡片标题下那一行与各页顶部的任务条共用这一处（2026-11-16 从 pages_console 搬来）：
+    同一份结果在两页上各说一套，是最容易悄悄对不上的地方。
+    一律**现算**、不许由页面在外面算好传进来：卡片与任务条都是 fragment，运行中每 2 秒
+    只重跑自己，传进来的值会停在开跑那一刻——扫描跑完了还写着「最近一次是上周」。
+
+    `steps.scan_status` 会读扫描的范围记录，那份文件损坏时是响亮抛 RuntimeError
+    （数据层的设计，不改）——调用方必须接住，否则异常会让它后面的整页都不再渲染。
+    """
+    if job_name == "market_scan":
+        return steps.scan_status(OUTPUT / "scan", date.today())
+    if job_name == "daily_signal":
+        return steps.signal_status(OUTPUT / "signals", date.today())
+    if job_name == "backtest":
+        # 回测不在每日那条链上、没有"就绪"可言，但这一句三个任务都有：最近一次是哪个策略、
+        # 什么时候跑的，一共攒了几次。按磁盘上的结果说，不按"面板起没起过它"说。
+        return steps.backtest_status([fmt.run_label(p.name) for p in list_runs()])
+    return None
+
+
+def running_row(state: process.RunState, prog, *, stop_key: str,
+                stop_first: bool = False) -> str:
+    """正在跑的任务那一行：进度（数得出来就画进度条，否则转圈 + 阶段）+ 停止按钮。
+    返回细节那句话（已用多久、预计剩余、信号条数），由调用方决定后面再跟什么。
+
+    控制台卡片与各页顶部的任务条共用（2026-11-16）：两处各画一份，迟早只改一边。
+    **停止按钮在这一行、不在开始按钮的位置上**：任务恰好跑完的那一刻，光标底下的按钮
+    不许从「停止」换成「开始」——点下去就是又一趟十几分钟的扫描。
+    `stop_first=True` 把停止放在这一行的**最左边**（任务条用）：那里的「开始」都靠右，
+    上下也不许对齐。控制台卡片里它在右边，卡片的主按钮在标题行，本来就不同行。
+    """
+    head, detail = view.progress_lines(prog, view.elapsed_seconds(state), status=state.status)
+    ratio = view.progress_ratio(prog)
+    if stop_first:
+        stop, bar = st.columns([1, 5], vertical_alignment="center")
+    else:
+        bar, stop = st.columns([5, 1], vertical_alignment="center")
+    with bar:
+        if ratio is not None:              # 必须是 if 语句：裸三元会被 streamlit magic 包进 st.write
+            st.progress(ratio, text=head)
+        else:
+            st.status(head, state="running")     # 不确定态：转圈 + 阶段
+    if stop.button(guide.CONSOLE_STOP, key=stop_key, icon=":material/stop:", width="stretch"):
+        stop_job(state)                    # SIGTERM 进程组 → 10s → SIGKILL，然后整页重跑
+    return detail
+
+
+#: 「眼下谁在跑」读不出来时（状态文件损坏），任务条 / 控制台卡片交回这个值，不交回 None。
+#: None 的意思是"全空闲"，两者不能混：混了，外层就会把"不知道"当成"跑完了"。
+BUSY_UNKNOWN = "\x00unknown"
+
+
+def busy_changed(busy: str | None, was_busy: str) -> bool:
+    """定时重画的那一轮里「谁在跑」变了没有——变了才值得整页重跑（摘掉轮询、解禁按钮、换新结果）。
+
+    **读不出来不算变了**（2026-11-16 审查抓到的死循环）：`process.any_running` 按文件名顺序读，
+    读到第一个在跑的就返回，后面那个坏掉的状态文件它根本没碰。于是整页那一轮以为"有任务在跑"、
+    挂上定时重画；任务条 / 卡片自己去读坏文件时报错——若把这也算成"变了"而请求整页重跑，
+    下一轮还是一样：报错 → 重跑 → 报错，页面原地打转。不知道就是不知道：报错留在页面上，
+    等人把文件修好；这期间定时重画照旧，修好之后它自己会发现。
+    """
+    return busy != BUSY_UNKNOWN and (busy or "") != was_busy
+
+
+def control_bar(*job_names: str) -> None:
+    """「信号」「回测报告」「个股K线」三页顶部的任务条：这一页的数据是哪天的、要不要更新。
+
+    **2026-11-16 改版**。改之前每个任务一行「名字 + 状态 + 开始 + 停止」，下面常驻两行灰字、
+    一条去控制台的链接和一道分隔线。真机上看到的毛病：
+    - 状态只说上一次运行「成功」，不说**结果是哪天的**——实测「信号」页写着成功，
+      最新信号却停在两个月前；
+    - 两个任务的按钮都叫「开始」，第二个一点就是半小时到两小时的全市场扫描；
+    - 「停止」常驻却九成九的时候点不了，提示与链接没有任务在跑时也天天亮着；
+    - 点了「开始」之后这一页不会自己动，得去控制台才知道跑完没有。
+
+    现在一个带边框的容器里一个任务一行：任务名、状态、一句「最新结果」（与控制台卡片
+    同一句话，step_status），右端一个与控制台同名的按钮（开始跟踪 / 开始扫描 / 开始回测），
+    说明挂在按钮的悬停提示上。**运行中才多出一行**进度与「停止」；去控制台的链接只在
+    有任务在跑、或上次没跑成时出现（view.bar_follow_up）。有任务在跑时每 2 秒只重画这一条，
+    跑完整页重跑一次——下面的表自己换成新结果。
+
+    **进度那一行排在所有任务行之后、「停止」在它的最左边**：它出现、消失，哪个「开始」都
+    不挪位置，上下也对不齐。信号跟踪十几秒就跑完，它下面那一行的按钮却是半小时到两小时的
+    全市场扫描——任务恰好跑完的那一刻，光标底下的按钮不许从「停止」换成某个「开始」
+    （与控制台卡片同一条规矩，有测试钉着）。
+
+    仍是薄的：实时日志、参数、结果表都在控制台页。
+    必须排在各页只读逻辑的**最前面**：三页在没有结果时都会 st.info 之后早退，
+    排在早退后面，恰好在"最需要点开始"的那一刻看不见。
+    每页只给这一页看得见结果的任务（回测页不出扫描按钮：误点一下就是 0.5–2 小时）。
     """
     try:
         busy = process.any_running(RUNS_DIR)
-        states = {name: process.read_state(name, RUNS_DIR) for name in job_names}
     except RuntimeError as e:
         # 与控制台页同口径：互斥状态不可知就一个"开始"都不给（fail-safe），
         # 否则真有扫描在跑也照样能点，两个 baostock 会话互踢下线。
         # 只读内容照常渲染——一个坏了的 runs/*.json 不该把回测报告一起藏起来。
         st.error(str(e))
-        st.divider()
         return
-    notices: list[str] = []
-    for name in job_names:
-        job = jobs.JOBS[name]
-        state = states[name]
-        running = state is not None and state.status == process.RUNNING
-        disabled, notice = view.start_button_state(busy, name)
-        head, start_col, stop_col = st.columns([6, 1, 1], vertical_alignment="center")
-        head.html(theme.section(job.label, theme.pill(*view.status_pill(state))))
-        # 图标走 icon=（与控制台、侧栏同一套 Material 图标），不把 ▶ ⏹ 拼在文字前面（2026-11-16）。
-        if start_col.button("开始", key=f"bar_start_{name}", icon=":material/play_arrow:",
-                            disabled=disabled):
-            start_job(name, {})           # 精简条无参数控件：一律默认参数
-        if stop_col.button("停止", key=f"bar_stop_{name}", icon=":material/stop:",
-                           disabled=not running):
-            stop_job(state)
-        if notice:
-            notices.append(notice)        # 点名是谁在跑，否则灰按钮无从解释
-    # 互斥是全局的，两条控制条拿到的是同一句提示——去重后只说一次，别刷屏
-    for text in dict.fromkeys(notices):
-        st.caption(text)
-    st.caption(CONSOLE_HINT)
-    # 灰字换成真链接（v0.5.0）：点完「开始」之后这一页 15 分钟不会自己动一下，
-    # 而"该去哪看进度"过去只是一句话。一步到位。
-    # market_breadth 的控件不在控制台（app/pages_console.py 的 _ELSEWHERE），
-    # 它在跑时指错地方等于把用户送到一个看不到这个任务的页面——改指市场概览。
-    target = "home" if busy == "market_breadth" else "console"
-    label = "去「市场概览」看进度" if busy == "market_breadth" else "去「任务控制台」看进度与日志"
-    st.page_link(page_ref(target), label=label, icon=":material/play_circle:")
-    st.divider()
+    (_bar_live if busy else _bar_idle)(job_names, busy or "")
+
+
+def _bar(job_names: tuple[str, ...]) -> str | None:
+    """把任务条画一遍，返回眼下谁在跑（None = 全空闲，BUSY_UNKNOWN = 读不出来）。"""
+    try:
+        states = {name: process.read_state(name, RUNS_DIR) for name in job_names}
+        busy = process.any_running(RUNS_DIR)
+    except RuntimeError as e:
+        # 同 control_bar：不可知就不给按钮。control_bar 那道关没拦住是可能的——
+        # any_running 读到第一个在跑的就返回，不保证读过这一条上每个任务的状态文件。
+        st.error(str(e))
+        return BUSY_UNKNOWN
+    with st.container(border=True):
+        for name in job_names:
+            _bar_row(name, states[name], busy)
+        # —— 以下几行都是"适用时才出现"的，一律排在任务行之后：它们来了又走，任务行不挪位置。
+        for name in job_names:
+            state = states[name]
+            if state is not None and state.status == process.RUNNING:
+                _bar_running(name, state)
+        if busy is not None and busy not in job_names:
+            # 别的页起的任务占着互斥：点名是谁在跑，否则灰按钮无从解释。只说一次——
+            # 互斥是全局的，这一条上的每一行拿到的都是同一句。跑的若是这一条自己的任务，
+            # 上面已经摊着它的进度，不必再说一遍。
+            st.caption(view.start_button_state(busy, job_names[0])[1])
+        follow = view.bar_follow_up(busy, [s.status if s is not None else None
+                                           for s in states.values()])
+        if follow is not None:
+            target, label = follow
+            st.page_link(page_ref(target), label=label, icon=":material/play_circle:")
+    return busy
+
+
+def _bar_row(name: str, state: process.RunState | None, busy: str | None) -> None:
+    """任务条里一个任务的那一行：任务名 + 状态 + 一句「最新结果」，右端一个「开始」。"""
+    disabled, _notice = view.start_button_state(busy, name)
+    status_text = ""
+    try:
+        if (status := step_status(name)) is not None:
+            status_text = status.text
+    except RuntimeError as e:
+        st.warning(str(e))                 # 读不出来就不写那半句——不许顺手补一句"还没有结果"
+    # 3:1 而不是 4:1：1024 宽、侧边栏展开时右栏只有一百出头像素，四个字的按钮会折成两行
+    # （真机看到的「开始跟 / 踪」）。左边那句话是行内文字，窄了自己折行。
+    text, action = st.columns([3, 1], vertical_alignment="center")
+    text.html(theme.job_strip(jobs.JOBS[name].label, theme.pill(*view.status_pill(state)),
+                              status_text))
+    with action.container(horizontal=True, horizontal_alignment="right"):
+        # 普通按钮而不是主按钮（琥珀色）：这三页是来**看**结果的，起任务是顺手的事；
+        # 主按钮留给控制台。
+        start = st.button(guide.CONSOLE_START[name], key=f"bar_start_{name}",
+                          icon=":material/play_arrow:", disabled=disabled,
+                          help=guide.BAR_START_HELP[name])
+    if start:
+        # 在按钮那一栏**外面**起：启动失败的那句话要占整行，不能挤在右边那一窄栏里。
+        start_job(name, {})                # 任务条没有参数控件：一律默认参数
+
+
+def _bar_running(name: str, state: process.RunState) -> None:
+    """正在跑的那个任务的进度与「停止」（与控制台卡片同一套文案，ui.running_row）。"""
+    detail = running_row(state, jobs.JOBS[name].parser(process.read_log(state)),
+                         stop_key=f"bar_stop_{name}", stop_first=True)
+    # "关掉浏览器也不会中断"只在动作现场说（同控制台卡片）。
+    st.caption("。".join(x for x in (detail, guide.CONSOLE_BACKGROUND_NOTE) if x))
+
+
+@st.fragment(run_every=AUTO_REFRESH_S)
+def _bar_live(job_names: tuple[str, ...], was_busy: str) -> None:
+    """有任务在跑：每 2 秒只重画这一条（整页重跑会把下面的表与滚动位置一起抖掉）。"""
+    if busy_changed(_bar(job_names), was_busy):
+        st.rerun()   # 跑完了/被停了 → 整页重跑：摘掉轮询、解禁按钮，下面的表换成新结果
+
+
+@st.fragment
+def _bar_idle(job_names: tuple[str, ...], was_busy: str) -> None:
+    """全空闲：**不设** run_every，否则这三页会每 2 秒无谓地重画一次。
+    仍包成 fragment：点「开始」起任务失败时只重画这一条，报错就落在按钮旁边。"""
+    _bar(job_names)
 
 
 #: 「回测报告」页那张总览表的列。**「标的数」不能省**：output/ 里有两次同一天、

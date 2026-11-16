@@ -37,7 +37,8 @@ from quant.strategy import REGISTRY, strategy_label
 # ---------------------------------------------------------------- 中文标签
 # 四种记录类型都要有标签：漏一个，那一档在筛选框里就是个裸 'adjust'。
 # 长句解释（各自的含义与为什么必须有）在 app/guide.py 与 README 里，这里只放短标签。
-KIND_LABELS = {"buy": "买入", "sell": "卖出", "adjust": "股数调整", "dividend": "现金分红"}
+# 取自 schema.KIND_NAMES（2026-11-16）：校验信息里也要用这几个名字，只留一份。
+KIND_LABELS = dict(schema.KIND_NAMES)
 # 策略侧的来源标签派生自注册表（v0.4.0 M1）：新策略自动获得日志侧显示名，
 # 不再有"加了策略忘了这里"的静默缺口；两个非策略项手写（它们不在注册表里）。
 SOURCE_LABELS = {**{key: f"{strategy_label(key)}信号" for key in REGISTRY},
@@ -91,12 +92,13 @@ FILTER_KIND_KEY = "journal_filter_kinds"
 FILTER_SOURCE_KEY = "journal_filter_sources"
 FILTER_REASON_KEY = "journal_filter_reason"
 
-EDITOR_KEY = "journal_editor"
+# 历史表（st.data_editor）**刻意不给 key**，见 pages_journal_entry._editor。
 SAVE_KEY = "journal_save"
 RESTORE_KEY = "journal_restore"                  # 「恢复上一版」按钮
 RESTORE_CONFIRM_KEY = "journal_restore_confirm"  # 它前面那个确认框
 CSV_KEY = "journal_export_csv"
 XLSX_KEY = "journal_export_xlsx"
+FILTER_CLEAR_KEY = "journal_filter_clear"        # 筛选生效时表格上方那个「清除筛选」
 
 #: 费用自动算的"依据签名"。见 sync_auto_costs。
 COST_SIG_KEY = "journal_cost_signature"
@@ -107,6 +109,9 @@ FLASH_KEY = "journal_flash"
 #: 一键记账的落点：预填内容 + "该跳到日志页了"这个标志。
 PREFILL_KEY = "journal_prefill"
 JUMP_KEY = "journal_jump"
+#: 记完一笔之后"该清哪张表单"（"trade" / "other"）。落盘那一轮写下，
+#: 下一轮渲染、控件创建之前由 apply_pending_clear 兑现。
+CLEAR_KEY = "journal_clear_form"
 
 # 「信号」与扫描表里那一列（设计 §5.1 的一键记账）。
 RECORD_COLUMN = "记账"
@@ -130,13 +135,22 @@ PRICE_COLUMN = "最新价"
 FLOAT_PNL_COLUMN = "浮动盈亏"
 ISSUE_COLUMN = "数据一致性"
 
-#: 日志表的中文表头。缺一列只是表头多个裸 'stop_plan'，但那正是"配好了"的错觉。
+#: 历史记录表的中文表头。缺一列只是表头多个裸 'stop_plan'，但那正是"配好了"的错觉。
 LOG_LABELS = {
     "trade_id": "记录号", "date": "日期", "time": "时刻", "symbol": "代码",
     "name": "名称", "kind": "类型", "shares": "股数", "price": "成交价",
     "amount": "金额", "fee": "佣金", "tax": "印花税", "source": "来源",
     "stop_plan": "计划止损", "reason": "理由", "note": "备注",
 }
+
+#: 历史表的列序（2026-11-16）。**只管显示**：文件与导出的列序仍是 schema.COLUMNS，一个字不动。
+#: 改之前照搬文件的列序——第一列是机器编号，占着最宽的位置；理由在屏幕外；
+#: 「删除」排在最右边，要删一笔得先把表横着拖到头。现在按"人怎么读一笔交易"排：
+#: 删除勾选框、哪天、哪只、买还是卖、多少股、什么价、多少钱、为什么——费用、时刻、备注靠后，
+#: 记录号排最后（它还在：改删靠它定位，「持仓与盈亏」页的平仓明细也指回它）。
+#: 必须恰好覆盖全部字段（有测试钉住）：漏写一列，那一列会从表里消失且不报错。
+EDITOR_ORDER = (DELETE_COLUMN, "date", "symbol", "name", "kind", "shares", "price", "amount",
+                "source", "reason", "stop_plan", "fee", "tax", "time", "note", "trade_id")
 
 #: 一致性标记的短标签（长句在 pnl 的 Inconsistency.message 里，会单独显眼地列出来）。
 ISSUE_LABELS = {
@@ -355,6 +369,51 @@ def sync_auto_costs(*, kind: str, day: date | None, shares, price,
     st.session_state[TAX_KEY] = float(auto["tax"] or 0.0)
 
 
+def _exact(value: float, *, least: int) -> str:
+    """把输入的数照原样写出来：千分位、至少 `least` 位小数、多出来的零不拖着，
+    **不舍到常见的两三位**。
+
+    核对行是拿来和手里的交割单对的：输入 3.245，写出来就得是 3.245；输入 71.5，写成 71.50。
+    最多写到六位小数（A 股里价格最细到厘，三位；六位之外的只可能是浮点尾数，不是谁敲进去的）。
+    """
+    whole, _, frac = f"{value:,.6f}".partition(".")
+    frac = frac.rstrip("0").ljust(least, "0")
+    return f"{whole}.{frac}" if frac else whole
+
+
+def entry_summary(*, kind: str, day: date | None, shares, price, fee, tax,
+                  costs: Costs) -> str:
+    """「记这一笔」上方那行核对：成交金额、费用、最后是付出还是到手多少。没填完返回空串。
+
+    2026-11-16 起佣金与印花税的输入框收进了「更多」折叠区（它们是自动算好的，九成的时候
+    不用碰）。收起来之后，**会写进文件的数必须在明面上写一行**——控制台改版时定下的同一条
+    规矩：看不见的值不许悄悄生效。顺带补上以前一直没有的东西：股数 × 成交价等于多少钱。
+    1000 股打成 10000 股，在这一行上是 7 万变 71 万，一眼看得出来。
+
+    数字一律取自 `schema.apply_defaults`——与 `submit` 落盘走的是同一个函数、同一组入参，
+    所以这里写的就是会记下来的：费用框里改过就是改过的值，留空就是成本模型算的值。
+    股数与成交价**照输入的原样写**（不舍入），等号后面的金额才对得上。
+    股数或成交价没填（或不是正数）时什么都不说：一行"买入 0 股 = 0.00 元"是编出来的数字。
+    只有买卖才有"股数 × 成交价"这回事——送股与分红在 apply_defaults 里推不出成交金额，
+    同样落进"什么都不说"那一支，这里不必另判类型。
+    """
+    record = schema.apply_defaults({"kind": kind, "date": day, "shares": shares,
+                                    "price": price, "fee": fee, "tax": tax}, costs=costs)
+    n, unit, amount = (schema.to_number(record[k]) for k in ("shares", "price", "amount"))
+    # 金额舍入之后可以是 0.00（1 股 × 0.001 元），那一笔照样会被记下来——所以判的是 None，不是真假值。
+    if n is None or unit is None or amount is None or n <= 0 or unit <= 0:
+        return ""
+    fee_v = schema.to_number(record["fee"]) or 0.0
+    tax_v = schema.to_number(record["tax"]) or 0.0
+    # 买入是往外掏钱（费用加在上面），卖出是收钱（费用从里面扣）
+    total, verb = ((amount + fee_v + tax_v, "共付出") if kind == "buy"
+                   else (amount - fee_v - tax_v, "到手"))
+    return (f"{KIND_LABELS.get(kind, kind)} {_exact(n, least=0)} 股 × {_exact(unit, least=2)} = "
+            f"{fmt.fmt_amount(amount, decimals=2)} 元；"
+            f"佣金 {fmt.fmt_amount(fee_v, decimals=2)}、印花税 {fmt.fmt_amount(tax_v, decimals=2)}，"
+            f"{verb} {fmt.fmt_amount(total, decimals=2)} 元")
+
+
 def submit(row: Mapping, *, path: str | Path, costs: Costs,
            names: Mapping[str, str] | None = None,
            price_range_: tuple[float, float] | None = None,
@@ -386,18 +445,24 @@ def submit(row: Mapping, *, path: str | Path, costs: Costs,
                 f"{record['symbol']}（记录号 {trade_id}）")
     for issue in schema.warnings(issues):
         flash("warn", f"{trade_id} 已记下，但请复核：{issue.message}")
-    clear_entry_form()
+    clear_entry_form(record["kind"])
     return True
 
 
-#: 记完一笔要清掉的录入区控件（v0.5.0）。**刻意不清 `kind` 与 `source`**：
-#: 一晚上连着记的往往是同方向、同来源的几笔，清了反而每次都要重选。
-_ENTRY_KEYS_TO_CLEAR = (SYMBOL_KEY, SHARES_KEY, PRICE_KEY, FEE_KEY, TAX_KEY,
-                        STOP_KEY, REASON_KEY, NOTE_KEY, TIME_KEY, COST_SIG_KEY)
+#: 记完一笔要清回空值的控件，按表单分两组。**刻意不清方向、来源与日期**（v0.5.0）：
+#: 一晚上连着记的往往是同方向、同来源的几笔，清了反而每次都要重选；补记旧交易时
+#: 刚选好的那天清掉也只会添乱。佣金与印花税不在表里——股数与成交价一空，
+#: sync_auto_costs 的依据签名就变了，它会把这两项重算回 0（留着上一笔的费用是最难发现的一种错）。
+_TRADE_FORM_BLANK = {SYMBOL_KEY: "", SHARES_KEY: None, PRICE_KEY: None, STOP_KEY: None,
+                     REASON_KEY: "", NOTE_KEY: "", TIME_KEY: ""}
+#: 「其他记录」那张表单（送股 / 分红）。v0.5.0 漏了它：记完根本不清，到账金额还在框里，
+#: 手一抖再点一次就是第二笔一模一样的分红。
+_OTHER_FORM_BLANK = {OTHER_SYMBOL_KEY: "", OTHER_SHARES_KEY: None,
+                     OTHER_AMOUNT_KEY: None, OTHER_REASON_KEY: ""}
 
 
-def clear_entry_form() -> None:
-    """落盘成功后清掉录入区。
+def clear_entry_form(kind: str = "buy") -> None:
+    """落盘成功后**登记**"该清表单了"；真正的清空在下一轮渲染开头（apply_pending_clear）。
 
     不清的代价有两个，后一个更贵：
 
@@ -408,11 +473,30 @@ def clear_entry_form() -> None:
        于是那一行看着完全自洽——正是本模块注释里点名的"最难发现的一种错"，
        而它会静默污染 FIFO 配对与之后所有盈亏。
 
-    日期不清（回到"今天"由控件的 value 决定，而补记旧交易时用户刚选好的那天
-    清掉反而添乱）；kind / source 也不清，见 `_ENTRY_KEYS_TO_CLEAR`。
+    **为什么不能在这里直接清**（2026-11-16 真机抓到的）。v0.5.0 的做法是当场把这些控件
+    的值从 session_state 里**删掉**。后台确实空了，可浏览器不知道：它手里那份旧值还在，
+    而每次操作浏览器都会把全部控件的值重新送回来——记完之后只要再点一下「卖出」，
+    上一笔的代码、股数、成交价就原样回到后台，等于没清。要让浏览器跟着清，
+    必须**明确写回空值**；而控件已经渲染过的这一轮里改它们的值会被 Streamlit 拒绝。
+    所以这里只记一笔账，下一轮在控件创建之前兑现（同 apply_prefill 的做法）。
+
+    `kind` 决定清哪张：买卖清上面那张，送股 / 分红清「其他记录」那张——各清各的，
+    上面填到一半、去下面记了一笔分红，回来不该是空的。
     """
-    for key in _ENTRY_KEYS_TO_CLEAR:
-        st.session_state.pop(key, None)
+    st.session_state[CLEAR_KEY] = "other" if kind in OTHER_KINDS else "trade"
+
+
+def apply_pending_clear() -> None:
+    """兑现上一轮登记的清表单。**必须在录入区任何控件创建之前调用**（同 apply_prefill）。
+
+    逐个**写回空值**而不是删键：经 session_state 写的值会带着"照这个显示"的标记送给
+    浏览器，删键不会——见 clear_entry_form。
+    """
+    which = st.session_state.pop(CLEAR_KEY, None)
+    if which == "trade":
+        st.session_state.update(_TRADE_FORM_BLANK)
+    elif which == "other":
+        st.session_state.update(_OTHER_FORM_BLANK)
 
 
 def restore_backup(*, path: str | Path) -> None:
@@ -431,46 +515,140 @@ def restore_backup(*, path: str | Path) -> None:
     except (OSError, ValueError, RuntimeError) as e:
         flash("error", f"恢复失败（{type(e).__name__}: {e}），记录未被修改。")
         return
-    # 编辑区的改动按行号存着，整表换了之后留着会落到别人身上（同 save_edits）。
-    st.session_state.pop(EDITOR_KEY, None)
+    # 编辑区里没保存的改动不用在这里清：历史表没有 key，表里的内容一换它就是一个新控件，
+    # 旧改动自然作废（见 pages_journal_entry._editor）。
     flash("ok", f"已恢复上一版（{n} 条记录）。刚才那版成了备份，再点一次可以换回。")
 
 
 # ================================================================ 编辑与删除（§5.2）
 
 def editor_frame(filtered: pd.DataFrame) -> pd.DataFrame:
-    """编辑区的表：筛选结果 + 末列一个「删除」勾选框。"""
+    """编辑区的表：筛选结果 + 一列「删除」勾选框（显示时排在最前，见 EDITOR_ORDER）。
+
+    勾选列用**可空**的布尔类型，不用硬邦邦的 bool：选中这一格（或一片包含它的格子）按
+    Delete 键，表格送回来的是"这一格清空"，往 bool 列里塞一个空值是 TypeError——表格连同
+    它下面的保存、恢复、导出整个消失一轮（2026-11-16 复审抓到；这一列挪到最前之后更容易碰到）。
+    清空 = 没勾，下游一律 `fillna(False)`。
+    """
     out = filtered.copy()
-    out[DELETE_COLUMN] = False
+    out[DELETE_COLUMN] = pd.array([False] * len(out), dtype="boolean")
     return out
 
 
 def editor_columns() -> dict:
-    """编辑区的列配置。
+    """编辑区的列配置（列序见 EDITOR_ORDER）。
 
     `trade_id` **禁止编辑**：它是改删的唯一定位依据（设计 §2.3），改得动就等于
     换了一笔交易的身份。类型与来源走下拉框而不是自由文本：手打一个 "sel"
     会让那一行从此被 pnl 当成"读不懂"跳过。
+
+    下拉框**显示中文、存的仍是键**（2026-11-16，`format_func`）：改之前这两列直接摆着
+    buy / sell / discretionary——面板别处从不出现的英文词，而且正是用户点名过的那类
+    （「中文里不夹英文值」）。文件里存什么不变，所以导出、盈亏计算一行都不用动。
+    删除勾选框与"这是哪一笔"的三列钉在左边：表横着拖去看备注时，还认得出每一行是谁。
+
+    **数字、名称、代码、日期这些列不许钉死宽度**（2026-11-16 审查后）。初稿为了让理由一列
+    不用拖就看得见，把数字列与名称都设成了窄档：数字右对齐、放不下时被截掉的是**左边**——
+    1,234,500 股显示成 234500.00，一千五百万的金额少了最高位，名字长的 ETF 只剩半截。
+    一个被截掉最高位的数看着完全正常，正是这个项目一路在防的那种错。宽度交给表格按内容自己定。
+    钉了宽度的只有两列：勾选框（就一个框），和理由（长文字，给中档：文字被截的是右边，
+    一眼看得出没显示完，点进格子能看全——不给的话一句长理由会把后面的列全挤出屏幕）。
     """
     columns: dict = {
-        "trade_id": st.column_config.TextColumn(LOG_LABELS["trade_id"], disabled=True,
-                                                help="系统生成的记录编号，改删都靠它定位。"),
-        "date": st.column_config.DateColumn(LOG_LABELS["date"], format="YYYY-MM-DD"),
-        "kind": st.column_config.SelectboxColumn(LOG_LABELS["kind"],
-                                                 options=list(schema.KINDS)),
-        "source": st.column_config.SelectboxColumn(LOG_LABELS["source"],
-                                                   options=list(schema.SOURCES)),
         DELETE_COLUMN: st.column_config.CheckboxColumn(
-            DELETE_COLUMN, help="勾上并按「保存修改」才真的删除（两步是刻意的："
-                                "这份文件不可再生）。"),
+            DELETE_COLUMN, width="small", pinned=True,
+            help="勾上并按「保存修改」才真的删除（两步是刻意的：这份记录不可再生）。"),
+        "date": st.column_config.DateColumn(LOG_LABELS["date"], format="YYYY-MM-DD", pinned=True),
+        "symbol": st.column_config.TextColumn(LOG_LABELS["symbol"], pinned=True),
+        "name": st.column_config.TextColumn(LOG_LABELS["name"], pinned=True),
+        "kind": st.column_config.SelectboxColumn(
+            LOG_LABELS["kind"], options=list(schema.KINDS),
+            format_func=lambda key: KIND_LABELS.get(key, key)),
+        "source": st.column_config.SelectboxColumn(
+            LOG_LABELS["source"], options=list(schema.SOURCES),
+            format_func=lambda key: SOURCE_LABELS.get(key, key)),
+        "reason": st.column_config.TextColumn(LOG_LABELS["reason"], width="medium"),
+        "time": st.column_config.TextColumn(LOG_LABELS["time"]),
+        "note": st.column_config.TextColumn(LOG_LABELS["note"]),
+        "trade_id": st.column_config.TextColumn(
+            LOG_LABELS["trade_id"], disabled=True,
+            help="系统生成的记录编号，改删都靠它定位；"
+                 "「持仓与盈亏」页的平仓明细也用它指回这里的某一笔。"),
     }
-    for name in ("time", "symbol", "name", "reason", "note"):
-        columns[name] = st.column_config.TextColumn(LOG_LABELS[name])
     for name in ("shares", "price", "amount", "fee", "tax", "stop_plan"):
         # format 一律 %.2f 之外还给 price/stop_plan 三位：低价股的分位有意义。
         digits = "%.3f" if name in ("price", "stop_plan") else "%.2f"
         columns[name] = st.column_config.NumberColumn(LOG_LABELS[name], format=digits)
     return columns
+
+
+def _as_saved_text(value) -> str:
+    """文字格子落盘时的样子：空值写成空串，其余**原样**（不去空白）——同 store 落盘前的归一。"""
+    try:
+        if value is None or bool(pd.isna(value)):
+            return ""
+    except (TypeError, ValueError):      # 不是标量（理论上不会）：当普通文字比
+        pass
+    return str(value)
+
+
+def _same_cell(column: str, shown, edited) -> bool:
+    """编辑区某一格交回来的值，和喂进去的是不是**同一个值**。
+
+    按列的类型比，不按 Python 类型比：编辑器交回来的日期可能是字符串 / date / Timestamp，
+    数字可能是整数，空格子可能是 None / NaN / 空串——类型不同不等于改过。
+
+    **尺子必须与保存用的那一把一致**（2026-11-16 复审抓到的不一致）：保存时文字原样落盘、
+    不去空白，所以"在空着的备注里敲了三个空格"是一处真改动——初稿这里按"去掉空白之后
+    一不一样"比，按钮安安静静，点下去却是「已保存：改了 1 行」，备份也跟着换了一版。
+    数字同理：空着与 0 是两回事（免佣的 0 元佣金是个真数）。
+    """
+    if column in schema.NUM_COLUMNS:
+        return schema.to_number(shown) == schema.to_number(edited)
+    if column == schema.DATE_COLUMN:
+        return schema.parse_date(shown) == schema.parse_date(edited)
+    return _as_saved_text(shown) == _as_saved_text(edited)
+
+
+def pending_changes(shown: pd.DataFrame, edited: pd.DataFrame) -> tuple[int, int]:
+    """历史表里还没保存的改动：(改了几行, 勾了几行删除)。
+
+    `shown` 是喂给编辑器的那张表（editor_frame 的产物），`edited` 是它交回来的那张。
+    页面据此在「保存修改」旁边写一句"还有几处没保存"——表里改了却忘了点保存，
+    切到别的页再回来就没了，而改之前屏幕上没有任何东西提醒过这件事。
+
+    **比的是值，不是"哪些格子被碰过"**（2026-11-16 审查后改）。初稿读的是编辑器自己记的
+    那份 edited_rows：把原值敲回去、勾上又取消，都会被算成改动，于是页面一边亮着
+    「还没保存」，点下去又说「没有需要保存的改动」。现在两张表逐格对一遍，值一样就是没改。
+
+    又改又勾了删除的那一行**只算删除**（删了，改动就没有意义，同 store.apply_edits）。
+    两张表行数对不上时（固定行数的编辑器不会这样）一律 (0, 0)：宁可不提醒，不乱报。
+
+    每一轮渲染都会算一遍，所以先走一条近路：两张表整张相同（绝大多数时候——没人在改）
+    就直接交差，只有真不一样时才逐格去对（实测逐格对一千行要两百多毫秒）。
+    """
+    if len(shown) != len(edited) or DELETE_COLUMN not in edited.columns:
+        return 0, 0
+    if shown.equals(edited):
+        return 0, 0
+    flags = edited[DELETE_COLUMN].fillna(False).astype(bool).tolist()
+    columns = [c for c in schema.COLUMNS if c in shown.columns and c in edited.columns]
+    changed = 0
+    for pos, flagged in enumerate(flags):
+        if flagged:
+            continue
+        if any(not _same_cell(c, shown[c].iat[pos], edited[c].iat[pos]) for c in columns):
+            changed += 1
+    return changed, sum(flags)
+
+
+def pending_note(edited: int, deleted: int) -> str:
+    """「保存修改」旁边那句提醒；没有待保存的改动时返回空串（那一句不渲染）。"""
+    parts = ([f"改了 {edited} 行"] if edited else []) + \
+            ([f"勾了 {deleted} 行要删除"] if deleted else [])
+    if not parts:
+        return ""
+    return "、".join(parts) + "，**还没保存**——点「保存修改」才写入。"
 
 
 def split_editor_result(edited: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
@@ -505,7 +683,7 @@ def save_edits(edited: pd.DataFrame, *, path: str | Path, today: date) -> bool:
     """把编辑区的改动与删除写回日志。返回"写进去了没有"。
 
     先校验再落盘：编辑器里把股数清空是一秒钟的事，而落盘之后 FIFO 会静默少算一笔。
-    拒写时**不清编辑区的状态**——用户那几格改动还留在屏幕上，才改得回来。
+    拒写时文件没变，表里的内容也就没变，用户那几格改动还留在屏幕上，才改得回来。
     """
     keep, deleted = split_editor_result(edited)
     if broken := blocking_rows(keep, today=today):
@@ -519,17 +697,45 @@ def save_edits(edited: pd.DataFrame, *, path: str | Path, today: date) -> bool:
             # 拿旧快照整表重写 = 把那一笔冲掉且不报错。重读是安全的——
             # apply_edits 一律按 trade_id 定位、认不出的主键直接拒绝，
             # 落在新表上与落在旧表上语义完全一致（这正是"绝不按行号"的红利）。
-            merged = store.apply_edits(store.load_trades(path), keep, delete_ids=deleted)
+            current = store.load_trades(path)
+            merged = store.apply_edits(current, keep, delete_ids=deleted)
+            changed = _changed_rows(current, merged, deleted)
+            if not changed and not deleted:
+                # **什么都没改就不写盘**（2026-11-16）。备份只留一版，而每次写盘都会把它
+                # 换成"写之前的样子"——所以一次空保存不是无害的：删错一行并保存之后，
+                # 手一抖再点一下「保存修改」，备份就成了删错之后的那一版，唯一的撤销手段
+                # 没了，屏幕上却只是又弹了一句"已保存"。
+                flash("ok", "没有需要保存的改动。")
+                return False
             store.save_trades(merged, path)
     except (OSError, ValueError, RuntimeError) as e:
         flash("error", f"保存失败（{type(e).__name__}: {e}），日志文件未被修改。")
         return False
-    # 成功了才清编辑区：data_editor 的改动按**行号**存在 session_state 里，
-    # 删掉一行之后行号全变了，留着旧改动会在下一轮落到别人身上。
-    st.session_state.pop(EDITOR_KEY, None)
-    flash("ok", f"已保存：改动 {len(keep)} 行"
-                + (f"、删除 {len(deleted)} 行" if deleted else ""))
+    # 编辑区不用在这里清：历史表没有 key，落盘之后表里的内容变了，下一轮它就是一个新控件，
+    # 这一轮的改动自然作废（见 pages_journal_entry._editor）。v0.5.0 的做法是把编辑器的状态
+    # 从 session_state 里删掉——那只清得了后台，清不了浏览器手里那一份。
+    done = [f"改了 {changed} 行"] if changed else []
+    done += [f"删除 {len(deleted)} 行"] if deleted else []
+    # 说的是**真正变了**的行数。改之前写的是 len(keep)——那是"表里有几行"：七行的表
+    # 只删一行，它会说「改动 6 行、删除 1 行」。刚改完删完是最需要知道还能反悔的时刻，顺带说一句。
+    flash("ok", f"已保存：{'、'.join(done)}。改错了可以点「恢复上一版」换回。")
     return True
+
+
+def _changed_rows(before: pd.DataFrame, after: pd.DataFrame, deleted: Sequence[str]) -> int:
+    """这次保存里**真正变了**几行（删掉的不算在内）。
+
+    `before` 是锁里刚读的整本日志，`after` 是 `store.apply_edits` 合并后的表：两者都过了
+    同一道归一（dtype 与空值约定一致），而 apply_edits 不增行、不换序——所以把要删的行
+    从 `before` 里摘掉之后，两张表逐格对得上。空值对空值算相同（NaN != NaN 是浮点的规矩，
+    不是"用户改过这一格"）。万一形状对不上（理论上不会），退回"表里有几行"，不让保存因此失败。
+    """
+    kept = before[~before["trade_id"].isin(list(deleted))].reset_index(drop=True)
+    merged = after.reset_index(drop=True)
+    if kept.shape != merged.shape:
+        return len(merged)
+    same = (kept == merged) | (kept.isna() & merged.isna())
+    return int((~same.all(axis=1)).sum())
 
 
 # ================================================================ 筛选与导出（§5.2 / §5.5）
@@ -559,22 +765,71 @@ def current_filter() -> dict:
     }
 
 
+def filter_summary(flt: Mapping) -> str:
+    """当前筛选条件写成一行给人看的字；一个条件都没设就返回空串。
+
+    2026-11-16 起六个筛选框收进了「筛选」折叠区（七笔记录上面常驻六个输入框，是这一页
+    最吵的一排）。收起来之后筛了什么必须写在表格上方——**导出只导筛出来的这些行**，
+    看不见条件的话，人会以为导出的是全部记录。类型与来源用显示名（卖出 / 自主决策），
+    不是文件里存的键。`flt` 就是 `current_filter()` 的返回值。
+    """
+    parts: list[str] = []
+    start, end = flt.get("start"), flt.get("end")
+    if start and end:
+        parts.append(f"{start} 至 {end}")
+    elif start:
+        parts.append(f"{start} 起")
+    elif end:
+        parts.append(f"截至 {end}")
+    if symbols := [str(v) for v in flt.get("symbols") or ()]:
+        parts.append("标的 " + "、".join(symbols))
+    if kinds := list(flt.get("kinds") or ()):
+        parts.append("类型 " + "、".join(KIND_LABELS.get(k, k) for k in kinds))
+    if sources := list(flt.get("sources") or ()):
+        parts.append("来源 " + "、".join(SOURCE_LABELS.get(v, v) for v in sources))
+    if reason := str(flt.get("reason") or "").strip():
+        parts.append(f"理由含「{reason}」")
+    return "；".join(parts)
+
+
+def clear_filters() -> None:
+    """「清除筛选」按钮的 on_click：六个条件全部复位。
+
+    必须走回调：筛选框那时已经渲染过，脚本主体里改它们的 session_state 会被 Streamlit 拒绝，
+    回调跑在下一轮渲染之前，不受这个限制（同 restore_backup 复位确认框）。
+    逐个**写回空值**而不是删键：删键之后控件拿什么当初值由前端说了算，写回去才是确定的。
+    """
+    st.session_state[FILTER_START_KEY] = None
+    st.session_state[FILTER_END_KEY] = None
+    st.session_state[FILTER_SYMBOL_KEY] = []
+    st.session_state[FILTER_KIND_KEY] = []
+    st.session_state[FILTER_SOURCE_KEY] = []
+    st.session_state[FILTER_REASON_KEY] = ""
+
+
+#: 两个导出按钮共用的图标（走 icon=，不把 ↓ 拼在文字前面）。
+EXPORT_ICON = ":material/download:"
+
+
 def export_payloads(filtered: pd.DataFrame, today: date) -> list[dict]:
     """两个下载按钮的全部参数。**数据源只有一个**：当前筛选结果。
 
     Excel 那份可能因为缺 openpyxl 而拿不到——此时**只**摘掉 Excel 按钮并如实说明，
     CSV 照常可用（它不依赖任何额外依赖）。
+    按钮上只有「导出 CSV」「导出 Excel」几个字（2026-11-16）：改之前 CSV 那个把半句解释
+    塞进了按钮文字，窄一点就折成两行。解释在悬停提示里，文案由页面按 `kind` 从 guide 里取
+    （本模块不 import guide）。
     """
-    out = [{"label": "↓ 导出 CSV（Excel 可直接打开）", "key": CSV_KEY,
+    out = [{"kind": "csv", "label": "导出 CSV", "key": CSV_KEY, "icon": EXPORT_ICON,
             "data": export.to_csv_bytes(filtered), "mime": export.CSV_MIME,
             "file_name": export.export_name(today, "csv"), "error": ""}]
     try:
         payload = export.to_excel_bytes(filtered)
     except RuntimeError as e:
-        return out + [{"label": "", "key": XLSX_KEY, "data": b"", "mime": "",
-                       "file_name": "", "error": str(e)}]
-    return out + [{"label": "↓ 导出 Excel", "key": XLSX_KEY, "data": payload,
-                   "mime": export.EXCEL_MIME,
+        return out + [{"kind": "xlsx", "label": "", "key": XLSX_KEY, "icon": EXPORT_ICON,
+                       "data": b"", "mime": "", "file_name": "", "error": str(e)}]
+    return out + [{"kind": "xlsx", "label": "导出 Excel", "key": XLSX_KEY, "icon": EXPORT_ICON,
+                   "data": payload, "mime": export.EXCEL_MIME,
                    "file_name": export.export_name(today, "xlsx"), "error": ""}]
 
 

@@ -1,7 +1,7 @@
 """「任务控制台」页（v0.2.0 §4.1）：在本机起三个入口脚本并看进度、日志与结果。
 
 进程管理与日志解析全在 src/quant/runner/（可单测），本模块只负责渲染；
-启停三个落点在 app/ui.py（控制条与本页卡片共用同一套闸门）。
+启停三个落点在 app/ui.py（各页顶部的任务条与本页卡片共用同一套闸门）。
 
 **版式（2026-11-16 改版）**：每个任务一张**整幅宽**的卡片，自上而下就是流程的顺序——
 全市场扫描 → 人工那一步 → 信号跟踪，「研究工具」区另放回测。卡片上常驻的只有四样：
@@ -163,17 +163,10 @@ def _run_panel(job: jobs.Job, state: process.RunState, log: str,
             summary="，".join(x for x in (head, detail) if x)))
         return
     if state.status == process.RUNNING:
-        # 停止按钮在这里（进度条旁），**不占**标题行主按钮的位置：任务恰好跑完的那一刻，
-        # 光标底下的按钮不许从「停止」换成「开始」——点下去就是又一趟十几分钟的扫描。
-        bar, stop = st.columns([5, 1], vertical_alignment="center")
-        with bar:
-            if ratio is not None:
-                st.progress(ratio, text=head)
-            else:
-                st.status(head, state="running")     # 不确定态：转圈 + 阶段
-        if stop.button(guide.CONSOLE_STOP, key=f"stop_{job.name}", icon=":material/stop:",
-                       width="stretch"):
-            ui.stop_job(state)                # SIGTERM 进程组 → 10s → SIGKILL，然后整页重跑
+        # 进度 + 停止那一行与各页顶部的任务条共用（ui.running_row）。停止按钮在进度条旁，
+        # **不占**标题行主按钮的位置：任务恰好跑完的那一刻，光标底下的按钮不许从「停止」
+        # 换成「开始」——点下去就是又一趟十几分钟的扫描。
+        detail = ui.running_row(state, prog, stop_key=f"stop_{job.name}")
         # "关掉浏览器也不会中断"只在动作现场说：没有任务在跑时这句话没有任何可做的事。
         st.caption("。".join(x for x in (detail, guide.CONSOLE_BACKGROUND_NOTE) if x))
     else:
@@ -196,7 +189,8 @@ def _run_panel(job: jobs.Job, state: process.RunState, log: str,
 
 
 def _render_card(job_name: str) -> str | None:
-    """一张任务卡片。返回当前"谁在跑"（None=全空闲），外层据此决定要不要继续轮询。
+    """一张任务卡片。返回当前"谁在跑"（None=全空闲，ui.BUSY_UNKNOWN=读不出来），
+    外层据此决定要不要整页重跑。
 
     边框是原生的 st.container(border=True)：颜色与圆角走 config.toml，不写一行 CSS。
     """
@@ -212,9 +206,11 @@ def _card_body(job: jobs.Job) -> str | None:
     except RuntimeError as e:
         # 状态文件损坏必须响亮失败：静默当"空闲"会放开互斥，两个 baostock 会话互踢。
         # 此时一个按钮都不给（fail-safe）——互斥状态不可知，正是最不该让人点开始的时候。
+        # 交回「不知道」而不是 None：None 是"全空闲"，外层会据此以为任务跑完了、请求整页重跑，
+        # 而重跑之后还是读到同一个坏文件——页面原地打转（见 ui.busy_changed）。
         _card_title(job)
         st.error(str(e))
-        return None
+        return ui.BUSY_UNKNOWN
     running = state is not None and state.status == process.RUNNING
     disabled, notice = view.start_button_state(busy, name)
 
@@ -239,10 +235,10 @@ def _card_body(job: jobs.Job) -> str | None:
     # 口径照抄 ui.scan_scope_pill：如实说，但别把页面打没。
     status_text = ""
     try:
-        if (status := _step_status(name)) is not None:
+        if (status := ui.step_status(name)) is not None:
             status_text = status.text
     except RuntimeError as e:
-        st.warning(str(e))                   # 状态读不出来就不写那一行——不许顺手补一句"还没跑过"
+        st.warning(str(e))                   # 状态读不出来就不写那一行——不许顺手补一句"还没有结果"
     st.html(theme.task_meta(guide.CONSOLE_LEAD[name], guide.CONSOLE_STATUS_KEY, status_text))
     # 点名是谁在跑，否则灰按钮无从解释。正在跑的那张自己就摊着进度，不必对自己再说一遍。
     if notice and not running:
@@ -304,8 +300,7 @@ def _card_body(job: jobs.Job) -> str | None:
 @st.fragment(run_every=ui.AUTO_REFRESH_S)
 def _card_live(job_name: str, was_busy: str) -> None:
     """有任务在跑：每 2 秒只重跑这张卡片（整页重跑会把参数控件与滚动位置一起抖没）。"""
-    busy = _render_card(job_name)
-    if (busy or "") != was_busy:
+    if ui.busy_changed(_render_card(job_name), was_busy):
         st.rerun()   # 跑完了/被停了 → 整页重跑，摘掉轮询并解禁另外两个开始按钮
 
 
@@ -345,24 +340,6 @@ def _check_roster() -> None:
         raise RuntimeError(
             f"控制台排班与 jobs.JOBS 对不上：漏了 {sorted(set(jobs.JOBS) - placed)}，"
             f"多了 {sorted(placed - set(jobs.JOBS))}")
-
-
-def _step_status(job_name: str):
-    """卡片标题下「最新结果」那一行说什么。返回 None 表示这张卡片不出这一行。
-
-    在卡片内部现算而不是由 page_console 传进来：卡片是 fragment，运行中每 2 秒
-    只重跑自己，传进来的值会停在开跑那一刻——扫描跑完了状态行还写着
-    「最近一次是上周」。
-    """
-    if job_name == "market_scan":
-        return steps.scan_status(ui.OUTPUT / "scan", date.today())
-    if job_name == "daily_signal":
-        return steps.signal_status(ui.OUTPUT / "signals", date.today())
-    if job_name == "backtest":
-        # 回测不在链上、没有"就绪"可言，但「最新结果」这一行三张卡片都有：
-        # 最近一次是哪个策略、什么时候跑的，一共攒了几次。按磁盘上的结果说，不按"面板起没起过它"说。
-        return steps.backtest_status([fmt.run_label(p.name) for p in ui.list_runs()])
-    return None
 
 
 def _first_run_callout() -> None:

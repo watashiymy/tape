@@ -23,7 +23,7 @@ from quant.report import charts, fmt, palette
 
 def page_backtest() -> None:
     ui.page_head("回测报告")
-    ui.control_bar("backtest")   # §4.2 控制条；下面的只读逻辑一行未动
+    ui.control_bar("backtest")   # 页顶的任务条：最近一次回测是哪次 + 一个「开始回测」
     runs = ui.list_runs()
     if not runs:
         st.info(guide.EMPTY_STATES["backtest"])
@@ -73,7 +73,7 @@ def page_backtest() -> None:
 
 def page_kline() -> None:
     ui.page_head("个股K线")
-    ui.control_bar("backtest")   # K 线也读回测产物（标的清单 + trades.csv）
+    ui.control_bar("backtest")   # K 线也读回测结果（标的清单 + 成交记录），所以是同一条任务条
     runs = ui.list_runs()
     if not runs:
         st.info(guide.EMPTY_STATES["backtest"])   # 与回测报告页同一句：读的是同一批产物
@@ -92,7 +92,9 @@ def page_kline() -> None:
     # 名称让人看得出这是哪家公司（§2.4）。查不到就只显示代码——扫描 CSV 是唯一的
     # 离线名称来源，而它只记录出信号的标的，所以缺名是常态。
     names = ui.symbol_names()
-    pick, period, span_col = st.columns([3, 2, 2], vertical_alignment="bottom")
+    # 两组单选各四档，「显示最近」的字更宽：原先 3:2:2 时它在 1440 宽下折成两行（真机看到的）。
+    # 实测一行放下「周期」要约 300 px、「显示最近」约 345 px，标的下拉框让出这点宽度。
+    pick, period, span_col = st.columns([2.5, 2.05, 2.45], vertical_alignment="bottom")
     with pick:
         sym = st.selectbox("选择标的", symbols,
                            format_func=lambda s: fmt.symbol_label(s, names.get(s)))

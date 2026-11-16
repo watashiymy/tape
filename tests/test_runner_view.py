@@ -462,3 +462,47 @@ def test_rerun_hint_uses_the_same_wording_as_the_params_summary():
 def test_rerun_hint_survives_a_state_file_whose_argv_is_not_a_list():
     """状态文件是手工改得动的 JSON：argv 被改成 null 时这句话不许把卡片打没。"""
     assert "改坏" in view.rerun_hint("market_scan", None)
+
+
+# ---------------------------------------------------------------- 各页顶部任务条的那个链接（2026-11-16）
+def test_bar_follow_up_is_quiet_when_nothing_needs_a_look():
+    """没有任务在跑、上一次也没出岔子：任务条下面不挂任何链接。
+
+    改之前「去『任务控制台』看进度与日志」常驻在三页顶上——没有进度可看的时候，
+    那是一条指向"没什么可看"的链接，天天亮着等于没有。"""
+    assert view.bar_follow_up(None, [None, SUCCESS]) is None
+    assert view.bar_follow_up(None, []) is None
+
+
+def test_bar_follow_up_points_at_the_console_while_a_job_runs():
+    target, label = view.bar_follow_up("market_scan", [RUNNING, None])
+    assert target == "console" and "任务控制台" in label and "日志" in label
+
+
+def test_bar_follow_up_does_not_send_you_away_for_progress_that_is_right_here():
+    """这一页自己的任务在跑：进度就摊在任务条上，去控制台看的只剩实时日志——
+    链接上再写"看进度"，等于说这里的进度不算数。别的页起的任务才是"去看进度与日志"。"""
+    _target, own = view.bar_follow_up("market_scan", [None, RUNNING])
+    assert "日志" in own and "进度" not in own, own
+    _target, other = view.bar_follow_up("backtest", [None, SUCCESS])
+    assert "进度" in other and "日志" in other, other
+
+
+def test_bar_follow_up_points_at_home_for_the_job_that_lives_there():
+    """收盘数据那个任务的控件在「市场概览」，不在控制台：它在跑时指去控制台，
+    等于把人送到一个看不到这个任务的页面。"""
+    target, label = view.bar_follow_up("market_breadth", [None])
+    assert target == "home" and "市场概览" in label
+
+
+@pytest.mark.parametrize("status", [FAILED, STOPPED])
+def test_bar_follow_up_offers_the_last_log_after_a_run_that_did_not_finish(status):
+    """没跑成 / 被停掉：为什么，写在控制台那张卡片摊开的日志里——这时才值得给一条链接。"""
+    target, label = view.bar_follow_up(None, [SUCCESS, status])
+    assert target == "console" and "上次" in label and "日志" in label
+
+
+def test_bar_follow_up_prefers_the_running_job_over_an_old_failure():
+    """正在跑的那个更要紧：链接只有一条，不能指着上次的失败、却不提眼下正在跑的。"""
+    _target, label = view.bar_follow_up("backtest", [FAILED])
+    assert "上次" not in label and "进度" in label

@@ -225,7 +225,7 @@ def test_only_the_safety_section_is_ever_a_warning(tmp_path, page):
 
 @pytest.mark.parametrize("page", [p.title for p in guide.GUIDE_PAGES])
 def test_no_guide_page_has_start_buttons(tmp_path, page):
-    """手册**每一页**都是纯文档：不放控制条（这些页没有任何产物可看，
+    """手册**每一页**都是纯文档：不放任务条（这些页没有任何产物可看，
     也不该让人在读说明时误点一次 18 分钟的全量扫描）。
 
     v0.5.0 拆页后必须逐页查：只查落地页的话，新拆出来的三页可以随便加按钮。
@@ -329,12 +329,16 @@ def test_each_card_title_carries_its_own_job_help(tmp_path, corrupt):
 
 
 def test_control_bar_pages_have_no_help_dot_or_popover(tmp_path):
-    """精简控制条要越薄越好（§4.2）：任务说明只挂在控制台的完整卡片上。"""
+    """任务条要越薄越好（§4.2）：任务的完整说明只挂在控制台的卡片上，这里只有按钮自己的悬停提示。
+    2026-11-16 起任务条那几行是 qd-strip（不再是区标题 qd-section）——两种都看，
+    只看旧的那一种的话，这条测试对任务条就是空跑。"""
     for page in ("回测报告", "个股K线", "信号"):
         at = _page(tmp_path, page)
-        assert at.get("popover") == [], f"{page} 的控制条不该有弹出框"
-        sections = [h for h in _htmls(at) if 'class="qd-section"' in h]
-        assert not [s for s in sections if "qd-help-dot" in s], f"{page} 的控制条不该有帮助圆点"
+        assert at.get("popover") == [], f"{page} 的任务条不该有弹出框"
+        strips = [h for h in _htmls(at) if 'class="qd-strip"' in h]
+        assert strips, f"{page} 页没找到任务条那几行，这条测试在空跑"
+        blocks = strips + [h for h in _htmls(at) if 'class="qd-section"' in h]
+        assert not [b for b in blocks if "qd-help-dot" in b], f"{page} 的任务条不该有帮助圆点"
 
 
 # ================================================================ 就地帮助：参数 tooltip

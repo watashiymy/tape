@@ -1,9 +1,22 @@
 """「记账」页（v0.3.1 §1，原「交易日志」页的录入 + 历史 + 导出那一半）。
 
 v0.3.0 的「交易日志」把五块（录入/历史/持仓/盈亏/导出）堆在一屏，拆成两个子页：
-本页管**写**（录入表单 + 历史日志表 + 导出），「持仓与盈亏」页管**读**（算出来的
-持仓与盈亏）。页面函数从 app/pages_journal.py 原样搬来，**逻辑不改只挪**；
-排版按设计 §1：录入表单占一个卡片区，历史表全宽。
+本页管**写**（录入表单 + 历史记录表 + 导出），「持仓与盈亏」页管**读**（算出来的
+持仓与盈亏）。录入表单占一个卡片区，历史表全宽。
+
+**版式（2026-11-16 改版）**。改之前真机上看到的毛病：
+- 录入区十二个输入框同等权重，分不出哪几样是每一笔都要填的；记之前看不到股数 × 成交价
+  是多少钱、费用合计多少；
+- 历史表照搬文件的列序：第一列是机器编号，类型与来源显示 buy / sell / discretionary，
+  「删除」勾选框在最右边的屏幕外；
+- 表格上方常驻六个筛选框（一共才七笔记录），表格下面三段灰字加五个控件堆在一起，
+  保存、撤销、导出分不出层次。
+
+现在录入区第一行只摆每一笔都要填的五样，紧跟一行**核对**（成交金额、费用、最后付出 / 到手
+多少——就是会写进去的数）；第二行是"为什么做这一笔"；自动算好的费用与两个可空项收进
+「更多」。历史表按人读一笔交易的顺序排列、显示中文；筛选收进折叠区，筛了什么写在表格
+上方；表格下面一行保存（有没保存的改动时会提醒）、一行撤销与导出，解释都在悬停提示里。
+设计与真机验收：docs/superpowers/specs/2026-11-16-status-bar-journal-design.md。
 
 这一页与面板其余页面有一个根本差别：**它会写一份不可再生的文件**。其余页面最坏的
 后果是显示错了，重跑一次就好；这里最坏的后果是用户真实的交易记录被改错或删错。
@@ -13,7 +26,7 @@ v0.3.0 的「交易日志」把五块（录入/历史/持仓/盈亏/导出）堆
    编排逻辑（控件 key、预填、校验编排、表格）在 app/journal_ui.py，那份能脱离
    Streamlit 运行时单测。
 2. **卖超警告的持仓上下文按整本日志算**（_held 用整本日志的 PnlReport），
-   不受筛选影响——筛选只作用于日志表与导出。
+   不受筛选影响——筛选只作用于历史表与导出。
 3. **警告显眼、持续可见**（设计 §3）：写盘/校验的结论走 journal_ui.flash，
    警告与错误留在页面上，不是记完就沉没的 toast。
 """
@@ -30,19 +43,31 @@ import theme
 import ui
 from quant.config import load_settings
 from quant.journal import export, pnl, schema, store
+from quant.report import fmt
 
 # 读 settings.yaml 能出的错**沿用 pool 里那一份**（文件不在、YAML 语法坏、缺键、
 # 值非法……）：那是同一个文件的同一批坏法，两处各存一份迟早只改一边，
 # 而漏掉的那种（第一次就是 yaml.YAMLError）会让整页崩在一屏 traceback 上。
 # 本页只用它降级**录入区**：成本模型拿不到就不给记账（详见下面），
-# 其余部分（日志表与导出）都不依赖配置。
+# 其余部分（历史记录表与导出）都不依赖配置。
 CONFIG_ERRORS = pool.CONFIG_ERRORS
+
+# 这一页四个折叠区的 key。**必须给**：页面顶上一冒出报错那一条（journal_ui.show_flash），
+# 下面所有元素整体往后挪一位，不带 key 的折叠区会被浏览器当成一个新的、自己合上——
+# 正填着「更多」里的佣金、正开着「筛选」，点一下「记这一笔」被拒，面板就在眼前关掉了
+# （2026-11-16 真机看到；用一个小页面对照过：带 key 的留着、不带的合上）。带 key 的认 key，不认位置。
+BOX_HELP_KEY = "journal_box_help"
+BOX_MORE_KEY = "journal_box_more"
+BOX_OTHER_KEY = "journal_box_other"
+BOX_FILTER_KEY = "journal_box_filter"
 
 
 def page_journal_entry() -> None:
     ui.page_head("记账")
     journal_ui.show_flash()          # 上一轮写盘/校验留下的结论
-    with st.expander("这一页记什么、四种记录类型的含义", expanded=False):
+    # 上一轮记下了一笔：把那张表单清回空值。必须排在任何录入控件创建之前。
+    journal_ui.apply_pending_clear()
+    with st.expander("这一页记什么、四种记录类型的含义", expanded=False, key=BOX_HELP_KEY):
         st.markdown(guide.JOURNAL_KINDS)
 
     try:
@@ -57,8 +82,20 @@ def page_journal_entry() -> None:
     # 录入表单收进一个卡片区（设计 §1 的排版）：与全宽的历史表拉开层次，
     # "填的"与"看的"一眼分得开。历史表留在卡片外，照旧全宽。
     with st.container(border=True):
-        _entry_section(report)
-    _log_section(trades)
+        entry, acted = _entry_section(report)
+    # 送股与分红在卡片**外面**（2026-11-16）：卡片里只有一张表单、一个主按钮。
+    # 成本模型读不到时录入区整个不给（entry 是 None），这两种也一样——它们同样要写费用。
+    if entry is not None:
+        acted = _other_records(*entry) or acted
+    acted = _log_section(trades) or acted
+    if acted:
+        # 记了一笔 / 保存了修改之后要整页重跑：成功要让表格跟着变，失败也要让提示显示出来。
+        # 但**等整页画完再重跑**（2026-11-16 复审后改）。原先是按钮按下的当场就 st.rerun()，
+        # 那时它下面的筛选框、历史表还没画——Streamlit 把一次中途重跑当成"这一轮跑完了"，
+        # 这一轮没画出来的控件，后台就认为它们不在了、把它们的状态丢掉：筛着「卖出」时点一下
+        # 「记这一笔」，表格会变回全部记录一轮（筛选框里却还写着卖出），表里没保存的改动也跟着
+        # 少报一轮。画完再重跑，每个控件都在场，状态一个不丢。
+        st.rerun()
 
 
 # ---------------------------------------------------------------- 录入（§5.1）
@@ -74,8 +111,12 @@ def _source_label(prefill: dict) -> str:
     return journal_ui.SOURCE_LABELS.get(src, src)
 
 
-def _entry_section(report: pnl.PnlReport) -> None:
-    st.html(theme.section("记一笔"))
+def _entry_section(report: pnl.PnlReport) -> tuple[tuple | None, bool]:
+    """录入卡片。返回两样：(成本模型, 名称表, 今天)——给卡片外的「其他记录」用，
+    成本模型读不到时是 None（那时整个录入区都不给）；以及这一轮有没有按下「记这一笔」
+    （按下了，页面画完之后要整页重跑，见 page_journal_entry）。"""
+    # 卡片自己有边框，标题不再带发丝线（同控制台的任务卡片）。
+    st.html(theme.task_head("记一笔"))
     prefill = journal_ui.apply_prefill()      # 必须在任何控件创建之前
     if prefill:
         st.caption(
@@ -90,11 +131,12 @@ def _entry_section(report: pnl.PnlReport) -> None:
         # 而 0 元费用会让此后每一笔盈亏都偏高一点，永远不报错。
         st.error(f"读不到成本模型 `{ui.CONFIG_PATH}`（{type(e).__name__}: {e}）。"
                  "费用没法自动算，本页**暂不提供录入**（避免把 0 元费用写进日志）；"
-                 "下面的日志与导出不依赖它，照常可用。")
-        return
+                 "下面的历史记录与导出不依赖它，照常可用。")
+        return None, False
 
     names = ui.symbol_names()
     today = date.today()
+    # —— 第一行：每一笔都要填的五样，别的都不在这一行。
     head = st.columns([1.4, 1, 1, 1, 1], vertical_alignment="bottom")
     kind = head[0].radio("方向", TRADE_OPTIONS, format_func=journal_ui.KIND_LABELS.get,
                          key=journal_ui.KIND_KEY, horizontal=True)
@@ -113,44 +155,56 @@ def _entry_section(report: pnl.PnlReport) -> None:
 
     name = journal_ui.hinted_name(symbol, names)
     span = journal_ui.price_range(symbol, day, ui.CACHE_DIR)
-    st.caption(_entry_hint(symbol, name, day, span))
-
     # 费用必须在两个输入框创建**之前**算好（Streamlit 只允许在实例化前改它们的
     # session_state）。依据一变就重算，没变就一个字不动——见 sync_auto_costs。
     journal_ui.sync_auto_costs(kind=kind, day=day, shares=shares, price=price,
                                costs=costs)
-    tail = st.columns([1, 1, 1.4, 1], vertical_alignment="bottom")
-    fee = tail[0].number_input("佣金", min_value=0.0, step=0.01, format="%.2f",
-                              key=journal_ui.FEE_KEY,
-                              help="默认按系统的成本模型算（与回测同口径），"
-                                   "改成券商实际值即可。")
-    tax = tail[1].number_input("印花税", min_value=0.0, step=0.01, format="%.2f",
-                              key=journal_ui.TAX_KEY,
-                              help="A 股只在卖出时收，按**成交日**的税率算。")
-    source = tail[2].selectbox("来源", list(schema.SOURCES),
-                               format_func=journal_ui.SOURCE_LABELS.get,
-                               index=list(schema.SOURCES).index(
-                                   journal_ui.DEFAULT_SOURCE),
-                               key=journal_ui.SOURCE_KEY, help=guide.JOURNAL_SOURCE_HELP)
-    stop_plan = tail[3].number_input("计划止损价", value=None, min_value=0.0, step=0.01,
-                                     format="%.3f", key=journal_ui.STOP_KEY,
-                                     help=guide.JOURNAL_STOP_HELP)
-    reason = st.text_input("理由（为什么做这一笔）", key=journal_ui.REASON_KEY,
-                          placeholder="例如：20日线金叉且放量 1.8 倍")
-    extra = st.columns([1, 3], vertical_alignment="bottom")
-    trade_time = extra[0].text_input("成交时刻（可空）", key=journal_ui.TIME_KEY,
-                                     placeholder="14:35")
-    note = extra[1].text_input("备注（可空）", key=journal_ui.NOTE_KEY)
+    # —— 核对：名称与当日价格区间一行，会写进去的钱一行（没填完时第二行不出）。
+    # 费用取自 session_state 而不是下面那两个输入框的返回值：这一行在它们上面，
+    # 而值此刻已经定了——要么是刚自动算的，要么是使用者上一轮在「更多」里改的。
+    st.html(theme.task_meta(
+        _entry_hint(symbol, name, day, span), guide.JOURNAL_CHECK_KEY,
+        journal_ui.entry_summary(kind=kind, day=day, shares=shares, price=price,
+                                 fee=st.session_state.get(journal_ui.FEE_KEY),
+                                 tax=st.session_state.get(journal_ui.TAX_KEY), costs=costs)))
 
-    if st.button("记这一笔", key=journal_ui.SUBMIT_KEY, type="primary", icon=":material/add:"):
+    # —— 第二行：为什么做这一笔。这是日志之所以是日志的三样，都可空但都摆在明面上。
+    why = st.columns([2.4, 1.2, 1], vertical_alignment="bottom")
+    reason = why[0].text_input("理由（为什么做这一笔）", key=journal_ui.REASON_KEY,
+                               placeholder="例如：20日线金叉且放量 1.8 倍")
+    source = why[1].selectbox("来源", list(schema.SOURCES),
+                              format_func=journal_ui.SOURCE_LABELS.get,
+                              index=list(schema.SOURCES).index(
+                                  journal_ui.DEFAULT_SOURCE),
+                              key=journal_ui.SOURCE_KEY, help=guide.JOURNAL_SOURCE_HELP)
+    stop_plan = why[2].number_input("计划止损价", value=None, min_value=0.0, step=0.01,
+                                    format="%.3f", key=journal_ui.STOP_KEY,
+                                    help=guide.JOURNAL_STOP_HELP)
+    # —— 更多：自动算好的费用与两个可空项。折叠而不是"点了才渲染"：控件一直在页面上，
+    # 费用照常自动算、改过的值不会因为收起而丢；改没改，上面「核对」那一行都看得见。
+    with st.expander(guide.JOURNAL_MORE, type="compact", key=BOX_MORE_KEY):
+        more = st.columns([1, 1, 1, 2.4], vertical_alignment="bottom")
+        fee = more[0].number_input("佣金", min_value=0.0, step=0.01, format="%.2f",
+                                   key=journal_ui.FEE_KEY,
+                                   help="默认按系统的成本模型算（与回测同口径），"
+                                        "改成券商实际值即可。")
+        tax = more[1].number_input("印花税", min_value=0.0, step=0.01, format="%.2f",
+                                   key=journal_ui.TAX_KEY,
+                                   help="A 股只在卖出时收，按**成交日**的税率算。")
+        trade_time = more[2].text_input("成交时刻", key=journal_ui.TIME_KEY,
+                                        placeholder="14:35")
+        note = more[3].text_input("备注", key=journal_ui.NOTE_KEY)
+
+    clicked = st.button("记这一笔", key=journal_ui.SUBMIT_KEY, type="primary",
+                        icon=":material/add:")
+    if clicked:
         journal_ui.submit(
             dict(date=day, time=trade_time, symbol=symbol, name=name, kind=kind,
                  shares=shares, price=price, fee=fee, tax=tax, source=source,
                  stop_plan=stop_plan, reason=reason, note=note),
             path=ui.JOURNAL_PATH, costs=costs, names=names, price_range_=span,
             position_shares=_held(report, symbol), today=today)
-        st.rerun()      # 成功要让下面的表格跟着变，失败也要让提示显示出来
-    _other_records(costs, names, today)
+    return (costs, names, today), clicked
 
 
 #: 主路径只有买入/卖出（设计 §2.2）。列表现造：传模块级 list 给控件时，
@@ -159,7 +213,7 @@ TRADE_OPTIONS = list(journal_ui.TRADE_KINDS)
 
 
 def _entry_hint(symbol: str, name: str, day, span) -> str:
-    """代码下面那行灰字：名称与当日价格区间。
+    """第一行输入框下面那行灰字：名称与当日价格区间。
 
     **拿不到就明说拿不到**，不编。价格区间是本功能最实用的一条校验
     （71.5 打成 715 当场看得出来），但它依赖本地缓存里恰好有那一天——
@@ -167,7 +221,8 @@ def _entry_hint(symbol: str, name: str, day, span) -> str:
     """
     if not symbol:
         return "填入 6 位代码后，这里会带出名称与该日的价格区间（都取自本地数据，离线可用）。"
-    parts = [f"**{symbol}**", name or "查不到名称（可能是新股或退市股，照常记录即可）"]
+    # 纯文字：这一行经 theme.task_meta 整体转义后渲染，写 ** 会原样显示成两个星号。
+    parts = [symbol, name or "查不到名称（可能是新股或退市股，照常记录即可）"]
     if span is None:
         parts.append(f"本地还没有 {day} 的行情数据，无法核对价格区间")
     else:
@@ -187,13 +242,14 @@ def _held(report: pnl.PnlReport, symbol: str) -> float | None:
     return None
 
 
-def _other_records(costs, names, today: date) -> None:
-    """送股/转增/拆股与现金分红（设计 §2.2）。
+def _other_records(costs, names, today: date) -> bool:
+    """送股/转增/拆股与现金分红（设计 §2.2）。返回这一轮有没有按下它的「记这一笔」。
 
     收在折叠区里：买卖是日常，这两种一年几次。但**必须有入口**——没有它们，
     持仓数会与券商对不上，此后每一笔卖出的 FIFO 配对全错，而且不会报错。
+    2026-11-16 起在录入卡片**下面**而不是里面：卡片里只有一张表单、一个主按钮。
     """
-    with st.expander("其他记录：送股/转增/拆股、现金分红", expanded=False):
+    with st.expander("其他记录：送股/转增/拆股、现金分红", expanded=False, key=BOX_OTHER_KEY):
         st.caption(guide.JOURNAL_OTHER_HINT)
         kind = st.radio("记录类型", OTHER_OPTIONS,
                         format_func=journal_ui.KIND_LABELS.get,
@@ -211,7 +267,8 @@ def _other_records(costs, names, today: date) -> None:
                                       step=0.01, format="%.2f",
                                       key=journal_ui.OTHER_AMOUNT_KEY,
                                       disabled=kind != "dividend",
-                                      help="税后实际到账。红利税记进「佣金」那一栏即可。")
+                                      help="税后实际到账的金额。之后另外被扣的红利税，"
+                                           "在下面的历史记录表里填进这一笔的「佣金」。")
         source = st.selectbox("来源（这笔持仓当初是怎么建的）", list(schema.SOURCES),
                               format_func=journal_ui.SOURCE_LABELS.get,
                               index=list(schema.SOURCES).index(
@@ -219,40 +276,64 @@ def _other_records(costs, names, today: date) -> None:
                               key=journal_ui.OTHER_SOURCE_KEY)
         reason = st.text_input("理由/说明", key=journal_ui.OTHER_REASON_KEY,
                                placeholder="例如：10送1 / 2025年度分红")
-        if st.button("记这一笔（其他）", key=journal_ui.OTHER_SUBMIT_KEY, icon=":material/add:"):
+        clicked = st.button("记这一笔（其他）", key=journal_ui.OTHER_SUBMIT_KEY,
+                            icon=":material/add:")
+        if clicked:
             journal_ui.submit(
                 dict(date=day, symbol=symbol, kind=kind,
                      shares=shares if kind == "adjust" else None,
                      amount=amount if kind == "dividend" else None,
                      source=source, reason=reason),
                 path=ui.JOURNAL_PATH, costs=costs, names=names, today=today)
-            st.rerun()
+    return clicked
 
 
 OTHER_OPTIONS = list(journal_ui.OTHER_KINDS)
 
 
-# ---------------------------------------------------------------- 日志表与导出（§5.2 / §5.5）
+# ---------------------------------------------------------------- 历史记录与导出（§5.2 / §5.5）
 
-def _log_section(trades) -> None:
-    st.html(theme.section(f"日志（共 {len(trades)} 条）"))
-    _filters(trades)
-    filtered = export.filter_trades(trades, **journal_ui.current_filter())
-    st.caption(f"筛出 {len(filtered)} 条。{guide.TABLE_HINTS['journal']}")
+def _log_section(trades) -> bool:
+    """历史记录那一区。返回这一轮有没有按下「保存修改」（页面画完之后要整页重跑）。"""
+    st.html(theme.section(guide.JOURNAL_LOG_TITLE.format(n=len(trades))))
     # 三种空态说的是三件不同的事，混成一句"暂无数据"就等于让用户猜：
     # 一笔都没记过（指路到录入区）、筛没了（指路到筛选条件）、有数据（画表）。
-    # 必须是 if/elif **语句**：裸三元会被 streamlit 的 magic 整条包进 st.write。
     if not len(trades):
+        # 一笔都没记过：筛选、表格、导出都没有东西可作用，只留这句话和撤销手段。
+        # 备份说明与「恢复上一版」照留——正要大批量录入的时刻，更需要知道"改错了还有救"。
         st.write(guide.JOURNAL_EMPTY)
-    elif not len(filtered):
-        st.write("没有符合条件的记录——把上面的筛选条件放宽些看看。")
+        st.caption(guide.JOURNAL_BACKUP_NOTE_EMPTY)
+        _restore_block()
+        return False
+    # 筛选收进折叠区（2026-11-16）：七笔记录上面常驻六个输入框，是这一页最吵的一排。
+    # 折叠而不是"点了才渲染"：控件一直在页面上，筛选条件不会因为收起而丢。
+    with st.expander(guide.JOURNAL_FILTER, type="compact", key=BOX_FILTER_KEY):
+        _filters(trades)
+    conditions = journal_ui.current_filter()
+    filtered = export.filter_trades(trades, **conditions)
+    if summary := journal_ui.filter_summary(conditions):
+        # 收起来之后筛了什么必须写在明面上：导出只导筛出来的这些行。
+        note, clear = st.columns([5, 1], vertical_alignment="center")
+        note.caption(guide.JOURNAL_FILTERED.format(shown=len(filtered), total=len(trades),
+                                                   summary=summary))
+        with clear.container(horizontal=True, horizontal_alignment="right"):
+            st.button(guide.JOURNAL_FILTER_CLEAR, key=journal_ui.FILTER_CLEAR_KEY,
+                      type="tertiary", icon=":material/filter_alt_off:",
+                      on_click=journal_ui.clear_filters)
+    # 必须是 if/else **语句**：裸三元会被 streamlit 的 magic 整条包进 st.write。
+    saved = False
+    if not len(filtered):
+        st.write(guide.JOURNAL_FILTER_NONE)
     else:
-        _editor(trades, filtered)
-    # 备份说明与「恢复上一版」**不放在 if/else 里面**：一笔都还没记的时候正是用户
-    # 即将大批量录入的时刻，那时更需要知道"改错了还有救"。位置紧跟历史表（设计 §3）。
+        st.caption(guide.TABLE_HINTS["journal"])
+        saved = _editor(filtered)
     st.caption(guide.JOURNAL_BACKUP_NOTE)
-    _restore_block()
-    _exports(filtered)
+    tools, exports = st.columns([3, 2], vertical_alignment="center")
+    with tools:
+        _restore_block()
+    with exports:
+        _exports(filtered)
+    return saved
 
 
 def _filters(trades) -> None:
@@ -273,23 +354,43 @@ def _filters(trades) -> None:
                        placeholder="例如 金叉")
 
 
-def _editor(trades, filtered) -> None:
-    """可编辑的日志表 + 「保存修改」。
+def _editor(filtered) -> bool:
+    """可编辑的历史表 + 「保存修改」。返回这一轮有没有按下保存。
 
     改与删都按 `trade_id` 定位（store.apply_edits 里那三条铁律）：这张表显示的是
-    **筛选后**的行，行号与整本日志对不上。
+    **筛选后**的行，行号与整本日志对不上。列序只管显示（journal_ui.EDITOR_ORDER），
+    交回来的表仍带全部字段。没填的格子显示 —（面板别处的缺值都是它），
+    不显示出厂的灰字 "None"——那是个英文词，还像是真填了什么。
+
+    **这个编辑器刻意不给 key**（2026-11-16 审查后改）。编辑器记的是"第几行的哪一格改成了
+    什么"；带 key 的固定行数编辑器，身份只看表的结构（列、行数、索引），不看里面的值
+    （streamlit 1.61 的文档原话：edits are matched by row position）。于是两个**行数相同**
+    的筛选结果是同一个控件：在「买入」那两行里勾了第一行删除、没保存，切到「卖出」
+    （也是两行），那个勾就落在另一笔交易上，点保存删掉的是它——真实浏览器里复现过，
+    落盘又是按 trade_id 写的，所以写得"很准"。不给 key 时身份取自表的**内容**：
+    表里换了一批记录、或者保存 / 恢复之后内容变了，它就是一个新控件，旧改动自然作废；
+    还是那几行时（在页面别处点了点什么），没保存的改动照常留着。
     """
-    edited = st.data_editor(journal_ui.editor_frame(filtered), key=journal_ui.EDITOR_KEY,
-                            column_config=journal_ui.editor_columns(),
+    shown = journal_ui.editor_frame(filtered)
+    edited = st.data_editor(shown, column_config=journal_ui.editor_columns(),
+                            column_order=journal_ui.EDITOR_ORDER,
                             num_rows="fixed", hide_index=True, width="stretch",
-                            disabled=["trade_id"])
-    row = st.columns([1, 4], vertical_alignment="center")
-    if row[0].button("✔ 保存修改", key=journal_ui.SAVE_KEY):
+                            disabled=["trade_id"], placeholder=fmt.MISSING)
+    # 表里改了却没点保存，切到别的页再回来就没了——有没保存的改动时，按钮变成主按钮、
+    # 旁边写明改了几行、勾了几行要删。没有改动时这一行只有一个安静的按钮。
+    # 比的是交回来的表与喂进去的表（值），不是编辑器记的"哪些格子被碰过"。
+    pending = journal_ui.pending_note(*journal_ui.pending_changes(shown, edited))
+    save, note = st.columns([1, 4], vertical_alignment="center")
+    clicked = save.button("保存修改", key=journal_ui.SAVE_KEY, icon=":material/save:",
+                          type="primary" if pending else "secondary",
+                          help=guide.JOURNAL_EDIT_HINT)
+    if clicked:
         # 不再传 trades：v0.5.0 起 save_edits 在锁里重新读整本日志，
         # 拿这一轮渲染时的旧快照整表重写会抹掉另一个标签页刚记的那一笔。
         journal_ui.save_edits(edited, path=ui.JOURNAL_PATH, today=date.today())
-        st.rerun()
-    row[1].caption(guide.JOURNAL_EDIT_HINT)
+    if pending:
+        note.caption(pending)
+    return clicked
 
 
 def _restore_block() -> None:
@@ -304,29 +405,33 @@ def _restore_block() -> None:
     否则确认框一直勾着，手一抖再点一次就又换回去了。
     """
     has_backup = store.backup_path(ui.JOURNAL_PATH).exists()
-    cols = st.columns([1, 2.2, 2], vertical_alignment="center")
-    confirmed = cols[1].checkbox("确认用上一版覆盖当前记录", key=journal_ui.RESTORE_CONFIRM_KEY,
-                                 disabled=not has_backup)
-    cols[0].button("恢复上一版", key=journal_ui.RESTORE_KEY, icon=":material/undo:",
-                   disabled=not (has_backup and confirmed),
-                   help=guide.JOURNAL_RESTORE_HELP if has_backup
-                   else "还没有上一版备份：第一次保存之后才会有。",
-                   on_click=journal_ui.restore_backup, kwargs={"path": ui.JOURNAL_PATH})
+    # 按钮与确认框排成一行（可换行的横向容器：窄屏时确认框折到下一行，而不是被截成半句）。
+    with st.container(horizontal=True, vertical_alignment="center"):
+        confirmed = bool(st.session_state.get(journal_ui.RESTORE_CONFIRM_KEY))
+        st.button("恢复上一版", key=journal_ui.RESTORE_KEY, icon=":material/undo:",
+                  disabled=not (has_backup and confirmed),
+                  help=guide.JOURNAL_RESTORE_HELP if has_backup
+                  else "还没有上一版备份：第一次保存之后才会有。",
+                  on_click=journal_ui.restore_backup, kwargs={"path": ui.JOURNAL_PATH})
+        st.checkbox("确认用上一版覆盖当前记录", key=journal_ui.RESTORE_CONFIRM_KEY,
+                    disabled=not has_backup)
 
 
 def _exports(filtered) -> None:
-    """导出区：**数据源只有一个**，就是上面那张表（所见即所得，设计 §5.5）。"""
-    cols = st.columns([1, 1, 3], vertical_alignment="center")
-    for col, payload in zip(cols, journal_ui.export_payloads(filtered, date.today())):
-        # 一律走 `with col:` + 顶层 st.*（而不是 col.download_button）：项目里所有
-        # "这个控件真的收到了什么"的测试都靠 monkeypatch 顶层 st.xxx，
-        # 而 DeltaGenerator 上的同名方法绕过那一层，断言会静默变成空跑。
-        with col:
+    """导出区：**数据源只有一个**，就是上面那张表（所见即所得，设计 §5.5）。
+
+    两个按钮靠右排成一行；说明在悬停提示里（guide.JOURNAL_EXPORT_HELP）。
+    """
+    with st.container(horizontal=True, horizontal_alignment="right"):
+        for payload in journal_ui.export_payloads(filtered, date.today()):
+            # 一律走顶层 st.*（而不是 容器.download_button）：项目里所有
+            # "这个控件真的收到了什么"的测试都靠 monkeypatch 顶层 st.xxx，
+            # 而 DeltaGenerator 上的同名方法绕过那一层，断言会静默变成空跑。
             if payload["error"]:
                 st.caption(payload["error"])
             else:
                 st.download_button(payload["label"], data=payload["data"],
                                    file_name=payload["file_name"],
-                                   mime=payload["mime"], key=payload["key"])
-    with cols[2]:
-        st.caption(guide.JOURNAL_EXPORT_HINT)
+                                   mime=payload["mime"], key=payload["key"],
+                                   icon=payload["icon"],
+                                   help=guide.JOURNAL_EXPORT_HELP[payload["kind"]])

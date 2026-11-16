@@ -197,7 +197,7 @@ def test_run_selector_displays_the_strategy_label_not_the_key(tmp_path, page):
     （pages_backtest.py 的 :32 与 :71），只钉住回测报告页时，把 K 线页那句退回
     `lambda p: p.name` 全绿——那页的下拉重新显示裸键 ma_cross_20260817_121152。
     设计 §1.2 把"UI 触点全部换 label"逐个列了出来，漏掉的触点不该悄悄退回去。
-    两页的 selectbox[0] 都是「选择回测」（控制条里没有选择框；K 线页的「选择标的」
+    两页的 selectbox[0] 都是「选择回测」（任务条里没有选择框；K 线页的「选择标的」
     在它之后）。
     """
     _complete_run(tmp_path / "output", "ma_cross_20260817_121152", {"n_trades": 1})

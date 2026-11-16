@@ -10,7 +10,7 @@
 判断与文案放在这里而不是页面里，是为了能单测：这几句话里全是数字（扫了多少只、
 池子里几只、最新信号是哪天），而本项目对"页面上的数字"只有一条纪律——
 **宁可说不知道，也不许猜**。所以每个函数都有一条"什么都没有"的分支，
-返回的是"还没跑过"而不是零、空字符串或今天的日期。
+返回的是"还没有结果"而不是零、空字符串或今天的日期。
 
 纯函数、不碰 streamlit、不发起任何 IO 以外的动作；调用方负责把路径传进来。
 """
@@ -35,7 +35,13 @@ class StepStatus:
     ready: bool
 
 
-UNKNOWN = "还没跑过"
+#: 磁盘上一份结果都没有时，三句话共用的开头。
+#: 2026-11-16 之前写的是「还没跑过」。可这几个函数看的是**结果**，不是"面板起没起过它"：
+#: 第一次扫描正在跑、或者第一次就失败了的时候，那句话紧挨着任务的运行状态——
+#: 「运行中　还没跑过」「失败　还没跑过」，两句话当面打架（任务条上尤其显眼）。
+#: 破折号后面那半句同理：只说"跑完一次才有什么"，不说"还没扫过 / 还没人盯"——
+#: 任务此刻也许正在跑、也许刚失败，那些话就又成了半句假话。
+UNKNOWN = "还没有结果"
 
 
 def scan_status(scan_dir: Path | str, today: date | None = None) -> StepStatus:
@@ -46,7 +52,7 @@ def scan_status(scan_dir: Path | str, today: date | None = None) -> StepStatus:
     """
     latest = scan_meta.latest_scan(Path(scan_dir))
     if latest is None:
-        return StepStatus(f"{UNKNOWN}——信号池之外的机会还没扫过", ready=False)
+        return StepStatus(f"{UNKNOWN}——信号池之外的机会要扫完一次才看得到", ready=False)
     day = scan_meta.scan_day(latest)
     meta = scan_meta.load_meta(latest)
     scope, _ = scan_meta.scope_badge(meta)
@@ -89,7 +95,7 @@ def signal_status(signal_dir: Path | str, today: date | None = None) -> StepStat
     files = sorted((p for p in d.glob("*.csv") if scan_meta.is_day(p)),
                    key=lambda p: p.stem, reverse=True) if d.is_dir() else []
     if not files:
-        return StepStatus(f"{UNKNOWN}——信号池里的买卖信号还没人盯", ready=False)
+        return StepStatus(f"{UNKNOWN}——信号池里的买卖信号要跑完一次才有", ready=False)
     day = files[0].stem
     fresh = today is not None and day == today.isoformat()
     return StepStatus(f"最新一份是 {day}" + ("" if fresh else "——不是今天的"), ready=True)
@@ -100,10 +106,10 @@ def backtest_status(runs: Sequence[str]) -> StepStatus:
 
     `runs` 是从新到旧的**显示名**（「策略 时间」，页面用 fmt.run_label 从结果目录名换出来）。
     回测不在每日那条链上，没有"就绪"可言，但控制台三张卡片标题下都有一行「最新结果」：
-    它原先只在"面板没起过回测"时写一句"还没跑过"——磁盘上明明攒着几十次结果也这么说
+    它原先只在"面板没起过回测"时写一句「还没跑过」——磁盘上明明攒着几十次结果也这么说
     （命令行跑的、或状态文件被清过），而面板跑过一次之后那一行又整个消失。
     现在与另两张卡片同一个口径：按**结果**说话，不按"面板起没起过它"说话。
     """
     if not runs:
-        return StepStatus(f"{UNKNOWN}——还没有任何回测结果", ready=False)
+        return StepStatus(f"{UNKNOWN}——历史检验的结论要跑完一次才有", ready=False)
     return StepStatus(f"最近一次：{runs[0]}，共 {len(runs)} 次", ready=True)

@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from quant.runner import jobs, process
+from quant.runner import jobs, process, steps
 from tests.conftest import app_module, copy_app, goto_page, stub_navigation
 
 DASHBOARD = Path(__file__).resolve().parent.parent / "app" / "dashboard.py"
@@ -189,7 +189,7 @@ def test_exactly_one_job_lives_elsewhere(tmp_path):
 
 
 def test_empty_state_when_nothing_ever_ran(tmp_path):
-    """三张卡片都空闲：主按钮可用、**没有**停止按钮、重跑禁用，且每张都明说"还没跑过"。
+    """三张卡片都空闲：主按钮可用、**没有**停止按钮、重跑禁用，且每张都明说还没有结果。
 
     停止按钮 2026-11-16 起只在运行中出现（在进度条旁）：三个永远灰着的「停止」是噪声。"""
     at = _console(tmp_path)
@@ -201,7 +201,7 @@ def test_empty_state_when_nothing_ever_ran(tmp_path):
         assert at.button(f"rerun_{name}").disabled is True, name
     metas = _card_metas(at)
     assert len(metas) == len(CONSOLE_JOBS), metas
-    assert all("还没跑过" in m for m in metas), metas
+    assert all(steps.UNKNOWN in m for m in metas), metas
     # 两区：区标题「每日流水线」「研究工具」+ 三张任务卡片。状态 pill **恰好**在任务卡片上：
     # 区标题与人工那一步都没有进程，给它们挂状态 pill 就是无中生有。
     titles = _card_titles(at)
@@ -293,6 +293,32 @@ def test_running_scan_shows_progress_bar_with_real_percent(tmp_path):
     assert "预计剩余" not in bars[0].proto.text, bars[0].proto.text
     assert any("预计剩余" in c.value for c in at.main.caption), \
         [c.value for c in at.main.caption]
+
+
+def _columns_holding(node, key: str, trail=()):
+    """从 node 往下找 key 对应的控件，返回 (它所在那一行分栏, 它在第几栏)；找不到返回 None。
+    元素树里一行分栏是 flex_container、每一栏是 column（streamlit 1.61.1）。"""
+    for child in getattr(node, "children", {}).values():
+        if getattr(child, "key", None) == key:
+            path = (*trail, node)
+            at_column = max(i for i, n in enumerate(path) if getattr(n, "type", "") == "column")
+            row = path[at_column - 1]
+            return row, list(row.children.values()).index(path[at_column])
+        found = _columns_holding(child, key, (*trail, node))
+        if found is not None:
+            return found
+    return None
+
+
+def test_the_stop_button_on_a_card_sits_to_the_right_of_the_progress(tmp_path):
+    """卡片上「停止」在进度条**右边**（2026-11-16 改版定的，照旧）。进度那一行现在与各页顶部的
+    任务条共用一个画法（ui.running_row），任务条里「停止」在最左边——共用之后，
+    卡片这一边的位置不许被顺手带过去。"""
+    _fake_run(tmp_path, "market_scan", "running",
+              log="\n".join(SCAN_LOG.splitlines()[:20]))
+    at = _console(tmp_path)
+    row, index = _columns_holding(at._tree, "stop_market_scan")
+    assert len(row.children) == 2 and index == 1, f"「停止」应在进度那一行的第二栏，实际第 {index} 栏"
 
 
 def test_stopped_midway_scan_shows_where_it_stopped_without_faking_eta(tmp_path):
@@ -1192,7 +1218,7 @@ def test_the_backtest_card_reports_results_on_disk_even_if_the_panel_never_ran_i
     assert not at.exception, at.exception
     meta = _backtest_meta(at)
     assert "最近一次" in meta and "双均线交叉" in meta and "共 1 次" in meta, meta
-    assert "还没跑过" not in meta, f"磁盘上明明有回测结果: {meta}"
+    assert steps.UNKNOWN not in meta, f"磁盘上明明有回测结果: {meta}"
 
 
 def test_the_backtest_card_keeps_its_latest_result_line_after_the_panel_ran_it(tmp_path):
@@ -1208,7 +1234,7 @@ def test_the_backtest_card_keeps_its_latest_result_line_after_the_panel_ran_it(t
 
 
 def test_a_corrupt_scan_meta_is_not_reported_as_never_scanned(tmp_path):
-    """扫描的 meta 坏了：如实警告，但别顺手再写一句"还没跑过"——结果文件明明在那儿。"""
+    """扫描的 meta 坏了：如实警告，但别顺手再写一句"还没有结果"——结果文件明明在那儿。"""
     scan = tmp_path / "output" / "scan"
     scan.mkdir(parents=True)
     (scan / "2026-09-01.csv").write_text("date,symbol\n", encoding="utf-8")
@@ -1216,5 +1242,5 @@ def test_a_corrupt_scan_meta_is_not_reported_as_never_scanned(tmp_path):
     at = _console(tmp_path)
     assert not at.exception, at.exception
     scan_meta_html = next(m for m in _card_metas(at) if _guide().CONSOLE_LEAD["market_scan"] in m)
-    assert "还没跑过" not in scan_meta_html, scan_meta_html
+    assert steps.UNKNOWN not in scan_meta_html, scan_meta_html
     assert any("损坏" in w.value for w in at.main.warning)

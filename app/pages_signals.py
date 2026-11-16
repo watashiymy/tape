@@ -146,7 +146,8 @@ def scan_section(names: dict[str, str]) -> None:
 def page_signals() -> None:
     ui.page_head("信号")
     pool.show_flash()   # 扫描表里点了 ＋ 之后那句 toast / 错误（回调跑在重跑之前）
-    # 本页同屏展示两类产物：固定池信号跟踪 + 页尾的全市场扫描区块，故控制条有两条
+    # 本页同屏展示两类结果：信号池的信号跟踪 + 页尾的全市场扫描区块，故任务条上有两行。
+    # 两行都在页顶：扫描区块在页尾，它的状态与按钮放在页顶，不必滚到底才知道那份结果是哪天的。
     ui.control_bar("daily_signal", "market_scan")
     # 名称查一次两张表共用：信号跟踪 CSV 没有 name 列，而「记一笔」要把名称一起预填
     # （查不到就留空，绝不编一个）。扫描表自己带 name，这份查询对它是冗余的兜底。

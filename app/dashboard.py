@@ -6,7 +6,7 @@
 落地页是**市场概览**（2026-09-23 用户定：先看市场、再干活；09-05～09-23 落地页是
 任务控制台，09-05 之前是使用说明）——指数行情、涨跌分布、涨停温度计与趋势宽度，
 文案全在 app/guide.py；
-三张只读页展示 output/ 与 data/cache/ 里的产物，顶部各有一条精简控制条（§4.2）；
+三张只读页展示 output/ 与 data/cache/ 里的产物，顶部各有一条任务条（§4.2，2026-11-16 改版）；
 控制台页可在**本机**起三个入口脚本并看进度、日志与结果；
 信号池页增删 universe（v0.2.2 §3；v0.3.2 起写本地 config/universe.local.yaml）；
 记账页读写 journal/trades.csv —— 面板上唯一会改**不可再生**文件的地方
@@ -39,7 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import guide       # noqa: E402  说明页与就地帮助的全部文案（app/guide.py，纯数据）
 import journal_ui  # noqa: E402  日志页的编排层（这里只用它那个跳页钩子）
 import theme       # noqa: E402  视觉基座（app/theme.py）
-import ui          # noqa: E402  共享件：页头 / 表格 / 控制条 / 路径（app/ui.py）
+import ui          # noqa: E402  共享件：页头 / 表格 / 任务条 / 路径（app/ui.py）
 import pages_guide  # noqa: E402  说明手册三页的渲染函数（RENDERERS 按页 key 取）
 from pages_backtest import page_backtest, page_kline        # noqa: E402
 from pages_console import page_console                      # noqa: E402

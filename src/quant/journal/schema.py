@@ -60,6 +60,13 @@ DATE_COLUMN = "date"
 
 KINDS = ("buy", "sell", "adjust", "dividend")
 
+#: 记录类型给人看的名字。文件里存的是上面那四个键，这里是它们在页面上、在校验信息里的叫法
+#: ——只有这一份（app/journal_ui.KIND_LABELS 就取自它），两处叫法不会各说各的。
+KIND_NAMES = {"buy": "买入", "sell": "卖出", "adjust": "股数调整", "dividend": "现金分红"}
+#: 校验信息里会点名的那几个数字字段。信息是给填表的人看的：空着表单点一下「记这一笔」，
+#: 页面上第一句话原先是「buy 必须填写 shares」——内部的键原样甩了出去（2026-11-16 真机看到）。
+_FIELD_NAMES = {"shares": "股数", "price": "成交价", "amount": "到账金额"}
+
 # adjust / dividend 不是可有可无的补丁（设计 §2.2）：
 # 送股不是交易但股数确实变了，没有 adjust 就与券商对不上，而且**不会报错**；
 # 静默忽略分红则是对长期持有收益的系统性低估。
@@ -197,20 +204,22 @@ def _check_symbol(value, *, ctx: Context) -> list[Issue]:
 
 def _check_numbers(row: Mapping, *, kind: str, ctx: Context) -> list[Issue]:
     issues: list[Issue] = []
+    kind_name = KIND_NAMES.get(kind, kind)
     for field in REQUIRED_BY_KIND[kind]:
         value = row.get(field)
+        field_name = _FIELD_NAMES.get(field, field)
         if is_blank(value):
-            issues.append(Issue(MISSING, field, f"{kind} 必须填写 {field}"))
+            issues.append(Issue(MISSING, field, f"{kind_name}必须填写{field_name}"))
             continue
         if to_number(value) is None:
-            issues.append(Issue(BAD_NUMBER, field, f"{field} 的值 {value!r} 不是数字"))
+            issues.append(Issue(BAD_NUMBER, field, f"{field_name}的值 {value!r} 不是数字"))
 
     shares = to_number(row.get("shares"))
     price = to_number(row.get("price"))
 
     if kind in ("buy", "sell"):
         if shares is not None and shares <= 0:
-            issues.append(Issue(BAD_NUMBER, "shares", f"{kind} 的股数必须为正，实际 {shares:g}"))
+            issues.append(Issue(BAD_NUMBER, "shares", f"{kind_name}的股数必须为正，实际 {shares:g}"))
         if price is not None and price <= 0:
             issues.append(Issue(BAD_NUMBER, "price", f"成交价必须为正，实际 {price:g}"))
     elif kind == "adjust" and shares is not None and shares == 0:
@@ -328,7 +337,10 @@ def is_blank(value) -> bool:
     公开而不是私有：`pnl` 也要照同一条规则判"这行有没有记下事实"。
     各写一份的话，某一天只有一边认得 NaN，缺股数的买入就会溜进 FIFO。
     """
-    if value is None:
+    if value is None or value is pd.NaT:
+        # NaT 必须排在下面那条"是日期就不算空"之前：`isinstance(pd.NaT, datetime)` 为真。
+        # 可编辑表格里把日期清空，交回来的就是它——漏判的话它会被当成一个真日期，
+        # 一路走到"晚不晚于今天"的比较才炸成 TypeError（2026-11-16 复审抓到）。
         return True
     if isinstance(value, str):
         return not value.strip()
