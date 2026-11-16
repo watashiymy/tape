@@ -775,9 +775,11 @@ def test_copy_quotes_buttons_by_their_words_not_by_glyphs():
 
 def test_no_copy_still_quotes_a_button_called_just_start():
     """面板上已经没有哪个按钮只写着「开始」两个字了（开始扫描 / 开始跟踪 / 开始回测 / 开始准备）。
-    带着引号写「开始」，就是在引一个页面上找不到的按钮——泛指的时候说"开始按钮"。"""
+    带着引号写「开始」，就是在引一个页面上找不到的按钮——泛指的时候说"开始按钮"。
+    README 同理（它也教人点哪里）。"""
     for name, text in _user_copy().items():
         assert "「开始」" not in text, f"{name} 还在引一个叫「开始」的按钮"
+    assert "「开始」" not in README, "README 还在引一个叫「开始」的按钮"
 
 
 def test_scan_lead_admits_the_first_run_takes_much_longer():
