@@ -369,22 +369,40 @@ def test_no_param_widget_is_left_without_help(tmp_path):
         assert el.proto.help.strip(), f"控件 {el.proto.label!r} 没有 help"
 
 
-# ================================================================ 就地帮助：表格灰字
+# ================================================================ 就地帮助：读表说明
+#
+# 2026-11-16 第二轮之前每张表上方常驻一行灰字。用户的话：这类解释性文字读起来是有成本的，
+# 用「？」提示、光标移上去再弹出来就行。现在读表说明在表格所在区块小标题后面的帮助圆点里。
 
-def test_trades_table_has_a_column_hint_above_it(tmp_path):
+def _section_with_hint(at: AppTest, title: str) -> str:
+    """title 开头的那个区块小标题（HTML）。恰有一个。"""
+    heads = [h for h in _htmls(at) if f'class="qd-section">{title}' in h]
+    assert len(heads) == 1, f"「{title}」小标题应恰有一个: {heads}"
+    return heads[0]
+
+
+def _hint_texts(at: AppTest) -> list[str]:
+    """页面上所有常驻的小字（st.caption）。读表说明不许再出现在这里。"""
+    return [c.value for c in at.main.caption]
+
+
+def test_trades_table_explains_itself_in_the_dot_after_its_title(tmp_path):
     _run_dir(tmp_path, trades="000333,buy,2016-04-05,10.0,100,5.0,0.0,,\n")
     at = _page(tmp_path, "回测报告")
-    captions = [c.value for c in at.main.caption]
-    assert guide.TABLE_HINTS["trades"] in captions, captions
+    assert theme.help_dot(guide.TABLE_HINTS["trades"]) in _section_with_hint(at, "交易明细")
+    assert guide.TABLE_HINTS["trades"] not in _hint_texts(at), "读表说明又常驻在表格上方了"
 
 
 def test_skipped_table_has_its_own_hint(tmp_path):
-    """被跳过的订单表解释的是 reason 列，跟成交明细不是一套话。"""
+    """被跳过的订单表解释的是 reason 列，跟成交明细不是一套话。
+    小标题里原来那个括号（涨跌停/资金不足等）也是解释，一并收进圆点。"""
     _run_dir(tmp_path, trades="000333,buy,2016-04-05,10.0,100,5.0,0.0,,\n",
              skipped="2016-04-05,000001,涨停无法买入\n")
     at = _page(tmp_path, "回测报告")
-    captions = [c.value for c in at.main.caption]
-    assert guide.TABLE_HINTS["skipped"] in captions, captions
+    head = _section_with_hint(at, "被跳过的订单")
+    assert head.startswith('<div class="qd-section">被跳过的订单<span class="qd-help-dot'), head
+    assert theme.help_dot(guide.TABLE_HINTS["skipped"]) in head
+    assert guide.TABLE_HINTS["skipped"] not in _hint_texts(at)
 
 
 def test_scan_table_has_the_volume_ratio_hint(tmp_path):
@@ -394,8 +412,10 @@ def test_scan_table_has_the_volume_ratio_hint(tmp_path):
         SCAN_HEADER + "2026-08-25,000020,深华发A,ma_cross,11.74,-5.09,2.9e8,4.22\n",
         encoding="utf-8")
     at = _page(tmp_path, "信号")
-    captions = [c.value for c in at.main.caption]
-    assert guide.TABLE_HINTS["scan"] in captions, captions
+    head = _section_with_hint(at, "全市场扫描")
+    assert theme.help_dot(guide.TABLE_HINTS["scan"]) in head
+    assert head.index("qd-help-dot") < head.index("qd-section-pill"), "圆点紧跟标题，在范围徽标之前"
+    assert guide.TABLE_HINTS["scan"] not in _hint_texts(at)
 
 
 def test_signal_table_has_its_own_hint(tmp_path):
@@ -405,16 +425,31 @@ def test_signal_table_has_its_own_hint(tmp_path):
         "date,symbol,strategy,action,close\n2026-08-25,000333,ma_cross,buy,10.0\n",
         encoding="utf-8")
     at = _page(tmp_path, "信号")
-    captions = [c.value for c in at.main.caption]
-    assert guide.TABLE_HINTS["signal"] in captions, captions
+    assert theme.help_dot(guide.TABLE_HINTS["signal"]) in _section_with_hint(at, "最新信号")
+    assert guide.TABLE_HINTS["signal"] not in _hint_texts(at)
 
 
-def test_an_empty_table_shows_no_column_hint(tmp_path):
-    """表格是空的时候还解释列，只是噪声。灰字跟着表格一起出现或一起消失。"""
-    _run_dir(tmp_path)      # 零成交
+def test_runs_overview_gets_a_short_help_line_above_it(tmp_path):
+    """「全部 N 次回测一览」在折叠区里，没有小标题可挂帮助圆点：表格上方一行很短的「读表说明 ?」，
+    话在圆点里（— 是什么意思、标的数不同为什么不能比）。原先是表格上方的一整行灰字。"""
+    _run_dir(tmp_path, trades="000333,buy,2016-04-05,10.0,100,5.0,0.0,,\n")
     at = _page(tmp_path, "回测报告")
-    captions = [c.value for c in at.main.caption]
-    assert guide.TABLE_HINTS["trades"] not in captions, captions
+    lines = [h for h in _htmls(at) if 'class="qd-help-line"' in h]
+    assert lines == [theme.help_line(guide.TABLE_HELP_LABEL, guide.TABLE_HINTS["runs"])], lines
+    assert "不是「当时关着」" in guide.TABLE_HINTS["runs"] and "标的数" in guide.TABLE_HINTS["runs"]
+    assert guide.TABLE_HINTS["runs"] not in _hint_texts(at)
+
+
+@pytest.mark.parametrize("page", ["信号", "回测报告", "个股K线", "信号池", "记账", "持仓与盈亏"])
+def test_no_table_hint_is_spelled_out_on_the_page_any_more(tmp_path, page):
+    """哪一页都不许再把读表说明摆在明面上（表格是空的时候更不许——对着一张空表解释列只是噪声）。
+    谁把 hint 又接回 st.caption，这条就红。"""
+    _run_dir(tmp_path)      # 零成交的一次回测：回测报告 / 个股K线两页有东西可画
+    at = _page(tmp_path, page)
+    assert not at.exception, at.exception
+    shown = "\n".join(_hint_texts(at))
+    for kind, hint in guide.TABLE_HINTS.items():
+        assert hint not in shown, f"{page} 页上常驻着 {kind} 表的读表说明"
 
 
 # ================================================================ 空态文案（§3.2）
@@ -432,19 +467,23 @@ def test_kline_empty_state_reuses_the_same_wording(tmp_path):
     assert guide.EMPTY_STATES["backtest"] in infos, infos
 
 
-def test_signal_empty_state_mentions_the_close_time(tmp_path):
+def test_signal_empty_state_points_at_the_button_that_knows_the_close_time(tmp_path):
+    """空态只指路；"收盘后再跑、当日数据几点才更新"在它指的那个按钮自己的悬停说明里。"""
     at = _page(tmp_path, "信号")
     infos = [i.value for i in at.main.info]
     assert guide.EMPTY_STATES["signal"] in infos, infos
-    assert any(guide.FACTS["data_ready"] in i for i in infos), infos
+    assert not any(guide.FACTS["data_ready"] in i for i in infos), infos
+    assert guide.FACTS["data_ready"] in at.button("bar_start_daily_signal").proto.help
 
 
-def test_scan_empty_state_warns_how_long_a_full_run_takes(tmp_path):
-    """全量扫描是挂机任务。空态不写耗时，用户点下去就以为面板卡死了。"""
+def test_scan_start_button_warns_how_long_a_full_run_takes(tmp_path):
+    """全量扫描是挂机任务。点之前不知道要多久，用户点下去就以为面板卡死了——
+    时长在按钮的悬停说明里（光标到按钮上就看得到），空态里只留一句"要很久，先试跑"。"""
     at = _page(tmp_path, "信号")
     infos = [i.value for i in at.main.info]
     assert guide.EMPTY_STATES["scan"] in infos, infos
-    assert any(guide.FACTS["scan_minutes"] in i for i in infos), infos
+    tip = at.button("bar_start_market_scan").proto.help
+    assert guide.FACTS["scan_minutes"] in tip and guide.FACTS["scan_cold"] in tip, tip
 
 
 def test_empty_states_are_not_hardcoded_in_the_dashboard(tmp_path):

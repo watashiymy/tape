@@ -13,7 +13,8 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from quant.runner import jobs, process, steps
-from tests.conftest import app_module, copy_app, goto_page, stub_navigation
+from tests.conftest import (app_module, copy_app, element_path, goto_page, path_to_element,
+                            sits_on_the_right, stub_navigation)
 
 DASHBOARD = Path(__file__).resolve().parent.parent / "app" / "dashboard.py"
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -47,8 +48,31 @@ def _card_titles(at: AppTest) -> list[str]:
 
 
 def _card_metas(at: AppTest) -> list[str]:
-    """标题下那两行：一句「做什么 / 什么时候跑」+ 一行「最新结果」。"""
-    return [h for h in _htmls(at) if 'class="qd-task-lead"' in h]
+    """各张卡片标题下那一行「最新结果」（读不出最新结果的卡片没有这一行）。
+    2026-11-16 第二轮之前这个元素里还有一句常驻的「做什么 / 什么时候跑」，拿掉了。"""
+    return [h for h in _htmls(at) if 'class="qd-task-status"' in h]
+
+
+def _card_block(at: AppTest, name: str):
+    """name 那张任务卡片（带边框的容器）：同时包住它的主按钮（标题行右端）与重跑按钮
+    （「更多选项」里）的**最里层**那个块——标题行自己是一行分栏，只包得住前者。"""
+    best = None
+    for block in _descend(at.main):
+        if getattr(block, "children", None) and {f"start_{name}", f"rerun_{name}"} <= _keys_under(block):
+            best = block               # _descend 自外向里：最后一个符合的就是最里层的
+    assert best is not None, f"找不到 {name} 的卡片"
+    return best
+
+
+def _card_html(at: AppTest, name: str) -> list[str]:
+    """name 那张卡片里我们自己包的全部 HTML（标题行、最新结果那一行……），按页面上的先后。"""
+    return [b for e in _descend(_card_block(at, name))
+            if (b := getattr(getattr(e, "proto", None), "body", None)) and "qd-" in b]
+
+
+def _card_meta(at: AppTest, name: str) -> str:
+    """name 那张卡片的「最新结果」那一行；没有就是空串。"""
+    return next((h for h in _card_html(at, name) if 'class="qd-task-status"' in h), "")
 
 
 def _expanders(at: AppTest, label: str) -> list:
@@ -295,30 +319,18 @@ def test_running_scan_shows_progress_bar_with_real_percent(tmp_path):
         [c.value for c in at.main.caption]
 
 
-def _columns_holding(node, key: str, trail=()):
-    """从 node 往下找 key 对应的控件，返回 (它所在那一行分栏, 它在第几栏)；找不到返回 None。
-    元素树里一行分栏是 flex_container、每一栏是 column（streamlit 1.61.1）。"""
-    for child in getattr(node, "children", {}).values():
-        if getattr(child, "key", None) == key:
-            path = (*trail, node)
-            at_column = max(i for i, n in enumerate(path) if getattr(n, "type", "") == "column")
-            row = path[at_column - 1]
-            return row, list(row.children.values()).index(path[at_column])
-        found = _columns_holding(child, key, (*trail, node))
-        if found is not None:
-            return found
-    return None
-
-
 def test_the_stop_button_on_a_card_sits_to_the_right_of_the_progress(tmp_path):
-    """卡片上「停止」在进度条**右边**（2026-11-16 改版定的，照旧）。进度那一行现在与各页顶部的
-    任务条共用一个画法（ui.running_row），任务条里「停止」在最左边——共用之后，
-    卡片这一边的位置不许被顺手带过去。"""
+    """卡片上「停止」在进度条**右边**（2026-11-16 改版定的，照旧）。进度那一行与各页顶部的任务条、
+    首页的收盘数据区共用一个画法（ui.running_row）：一个靠右的横向容器，进度在前、停止在后。"""
     _fake_run(tmp_path, "market_scan", "running",
               log="\n".join(SCAN_LOG.splitlines()[:20]))
     at = _console(tmp_path)
-    row, index = _columns_holding(at._tree, "stop_market_scan")
-    assert len(row.children) == 2 and index == 1, f"「停止」应在进度那一行的第二栏，实际第 {index} 栏"
+    row = element_path(at, "stop_market_scan")[-1]
+    kinds = [getattr(e, "type", "") for e in row.children.values()]
+    assert kinds == ["progress", "button"], f"进度那一行应是「进度条、停止」: {kinds}"
+    assert sits_on_the_right(at, "stop_market_scan")
+    # 与标题行的主按钮不同行：任务跑完那一刻，光标底下的按钮不许从停止换成开始
+    assert not [n for n in element_path(at, "start_market_scan") if n is row]
 
 
 def test_stopped_midway_scan_shows_where_it_stopped_without_faking_eta(tmp_path):
@@ -908,20 +920,121 @@ def test_the_first_time_callout_stays_quiet_when_the_state_file_is_corrupt(tmp_p
     assert _callouts(at) == []
 
 
-# ---------------------------------------------------------------- 标题下那两行
-def test_every_card_says_what_it_does_under_its_title(tmp_path):
-    """做什么、什么时候跑、多久——过去只在问号里，现在常驻在标题下面。"""
+def test_the_rerun_button_sits_right_of_the_line_that_says_what_it_reruns(tmp_path):
+    """「更多选项」里：要沿用的是哪些参数写在左边（那是会变的事实，必须在明面上），
+    「沿用上次参数重跑」在同一行的右端——操作按钮一律靠右。"""
+    _finished_scan(tmp_path)
     at = _console(tmp_path)
-    blob = "\n".join(_card_metas(at))
-    for name in CONSOLE_JOBS:
-        assert _guide().CONSOLE_LEAD[name] in blob, f"{name} 的那一句没渲染出来"
+    assert not at.exception, at.exception
+    row = element_path(at, "rerun_market_scan")[-1]
+    said, button = row.children.values()
+    assert getattr(said, "type", "") == "caption" and said.value.startswith("沿用上次参数"), said
+    assert button.key == "rerun_market_scan"
+    assert sits_on_the_right(at, "rerun_market_scan")
+    # 一个横向容器，不是按比例的分栏：按钮在比例栏里，1024 宽时那一栏只有一百二十几像素，
+    # 「沿用上次参数重跑」会折成两行（独立审查在真实浏览器里量的）。
+    assert not _in_a_ratio_column(at, "rerun_market_scan")
+
+
+def test_the_manual_step_line_only_states_the_fact(tmp_path):
+    """「人工步骤」那一行只说现在盯着几只；"为什么这一步得你自己来"在「去增删信号池」的
+    悬停说明里，不再跟在这一行后面。"""
+    at = _console(tmp_path)
+    rows = [h for h in _htmls(at) if 'class="qd-manual-row"' in h]
+    assert len(rows) == 1 and "加进信号池" in rows[0], rows
+    assert "值不值得" not in rows[0] and "自己判断" not in rows[0], rows[0]
+    link = next(e for e in at.get("page_link") if e.proto.label == "去增删信号池")
+    assert link.proto.help == _guide().PIPELINE_MANUAL_HELP
+
+
+def _in_a_ratio_column(at: AppTest, key: str) -> bool:
+    """key 那个控件是不是**直接**待在一行分栏的某一栏里（中间可以隔着一层横向小容器）。
+    按比例分出来的窄栏会把长一点的按钮挤成两行；该用"文字占剩下的地方 + 按钮自己的宽度"。"""
+    path = element_path(at, key)
+    return any(getattr(n, "type", "") == "column" for n in path[-2:])
+
+
+@pytest.mark.parametrize("name", CONSOLE_JOBS)
+def test_the_start_button_says_what_it_will_run_on_hover(tmp_path, name):
+    """主按钮点下去会跑什么、要多久、什么时候跑：在它自己的悬停说明里。卡片上常驻的那一句
+    拿掉之后，初稿里这个按钮悬停时一个字都没有——而它起的是一趟十几分钟到两小时的任务
+    （独立审查指出的；任务条上同名的按钮一直有）。"""
+    at = _console(tmp_path)
+    guide = _guide()
+    tip = at.button(f"start_{name}").proto.help
+    assert tip == guide.CONSOLE_START_HELP[name] and len(tip) > 20, tip
+    facts = {"market_scan": ("scan_minutes", "scan_cold", "data_ready"),
+             "daily_signal": ("data_ready",), "backtest": ("backtest_seconds",)}[name]
+    for key in facts:
+        assert guide.FACTS[key] in tip, f"{name} 主按钮的悬停说明里缺 {key}: {tip}"
+
+
+def test_the_limit_box_says_what_blank_means_inside_the_box(tmp_path):
+    """「更多选项」里的输入框，标题只说它是什么（不带括号说明）；"留空 = 全量"在空着的框里。"""
+    at = _console(tmp_path)
+    box = at.number_input(key="market_scan_limit")
+    assert box.label == "只扫前 N 只", box.label
+    assert box.proto.placeholder == "留空 = 全量"
+    labels = [e.label for kind in ("number_input", "date_input", "selectbox", "checkbox")
+              for e in at.get(kind)]
+    assert labels and not [x for x in labels if "（" in x or "(" in x], labels
+
+
+@pytest.mark.parametrize("name", CONSOLE_JOBS)
+def test_a_failed_start_is_reported_across_the_card_not_inside_the_button_column(tmp_path, name,
+                                                                                 monkeypatch):
+    """起任务失败的那句话要占整行、落在按钮下方——不许挤在标题行右边那一窄栏里。
+    按钮是在一栏里画的，起任务必须在那一栏外面做（独立审查指出这一条一直没人钉）。"""
+    def refuse(*args, **kwargs):
+        raise RuntimeError("另一个任务抢先了")
+    monkeypatch.setattr(process, "start", refuse)
+    at = _console(tmp_path)
+    at = at.button(f"start_{name}").click().run()
+    errors = [e for e in at.error if "启动失败" in e.value]
+    assert len(errors) == 1, [e.value for e in at.error]
+    path_to_error = path_to_element(at, errors[0])
+    assert not [n for n in path_to_error if getattr(n, "type", "") == "column"], \
+        "启动失败的提示落在了某一栏里"
+
+
+def test_a_failed_rerun_is_reported_below_its_row_not_inside_it(tmp_path, monkeypatch):
+    """「沿用上次参数重跑」起不来时，那句话同样要占整行：重跑是在按钮那一行**外面**起的
+    （独立审查点名的三处之一，另两处是主按钮与任务条上的开始按钮）。"""
+    _finished_scan(tmp_path)
+
+    def refuse(*args, **kwargs):
+        raise RuntimeError("另一个任务抢先了")
+    monkeypatch.setattr(process, "start", refuse)
+    at = _console(tmp_path)
+    at = at.button("rerun_market_scan").click().run()
+    assert not at.exception, at.exception
+    errors = [e for e in at.error if "启动失败" in e.value]
+    assert len(errors) == 1, [e.value for e in at.error]
+    row = element_path(at, "rerun_market_scan")[-1]
+    assert not [n for n in path_to_element(at, errors[0]) if n is row], "报错落在了按钮那一行里"
+
+
+# ---------------------------------------------------------------- 标题下那一行
+@pytest.mark.parametrize("name", CONSOLE_JOBS)
+def test_a_card_explains_itself_in_the_help_dot_not_on_its_face(tmp_path, name):
+    """做什么、什么时候跑、多久：在标题旁的帮助圆点里，**不常驻在卡片上**（2026-11-16 第二轮，
+    用户：这类解释性文字读起来是有成本的，用「？」提示、光标移上去再弹出来就行）。
+    卡片明面上我们自己包的只有两样：标题行（标题 + 圆点 + 状态）与「最新结果」那一行。"""
+    at = _console(tmp_path)
+    assert not at.exception, at.exception
+    title, *rest = _card_html(at, name)
+    assert 'class="qd-task-title"' in title and 'class="qd-help-tip"' in title, title
+    tip = title.split('class="qd-help-tip">', 1)[1]
+    assert "做什么" in tip and "多久" in tip and "什么时候跑" in tip, tip
+    assert len(rest) == 1 and 'class="qd-task-status"' in rest[0], rest
+    assert "qd-task-lead" not in "".join(rest), "卡片上又有一句常驻的说明了"
 
 
 def test_the_latest_product_line_is_labelled_and_dated(tmp_path):
     """「最新结果」那一行说的是**产物**（哪天的、什么范围），与上次运行成没成是两件事。"""
     _finished_scan(tmp_path)
     at = _console(tmp_path)
-    scan_meta_line = next(m for m in _card_metas(at) if _guide().CONSOLE_LEAD["market_scan"] in m)
+    scan_meta_line = _card_meta(at, "market_scan")
     assert _guide().CONSOLE_STATUS_KEY in scan_meta_line
     assert "最近一次 2026-08-24" in scan_meta_line, scan_meta_line
 
@@ -955,6 +1068,21 @@ def test_a_result_from_today_is_open_and_still_a_real_table(tmp_path):
     assert len(at.dataframe) == 1
 
 
+def test_the_scan_result_explains_itself_in_the_dot_after_its_title(tmp_path):
+    """卡片里那张扫描结果表的读表说明：在「本次扫描结果」小标题后面的帮助圆点里（圆点在范围徽标
+    之前），不再是表格上方常驻的一行灰字。变异自查抓到这一处没人钉——信号页那张同样的表有测试，
+    控制台卡片里这张没有。"""
+    _finished_scan(tmp_path)
+    at = _console(tmp_path)
+    assert not at.exception, at.exception
+    hint = _guide().TABLE_HINTS["scan"]
+    heads = [h for h in _htmls(at) if 'class="qd-section">本次扫描结果' in h]
+    assert len(heads) == 1, heads
+    assert app_module("theme").help_dot(hint) in heads[0]
+    assert heads[0].index("qd-help-dot") < heads[0].index("qd-section-pill")
+    assert hint not in [c.value for c in at.main.caption]
+
+
 def test_an_older_result_starts_collapsed_but_is_not_thrown_away(tmp_path):
     """三天前跑完的：结果还在，只是收起——一打开页面就摊着一张旧表，会被当成今天的。"""
     scan = tmp_path / "output" / "scan"
@@ -985,17 +1113,20 @@ def test_a_failed_run_keeps_its_log_tail_in_plain_sight(tmp_path):
     assert _expanders(at, guide.CONSOLE_LOG) == [] and _expanders(at, guide.CONSOLE_RESULT) == []
 
 
-def test_the_running_card_says_closing_the_browser_is_safe(tmp_path):
-    """「关掉浏览器也不会中断」只在动作现场说：过去它常驻在页顶，而没有任务在跑时
-    这句话没有任何可做的事。"""
-    note = None
-    at = _console(tmp_path)
+def test_closing_the_browser_is_safe_is_said_on_the_stop_button(tmp_path):
+    """「关掉浏览器也不会中断」只在动作现场说，而且不常驻：它是「停止」按钮的悬停说明
+    （想走开的人以为得先点它，其实不用）。进度条下面那一行只留会变的数。"""
     note = _guide().CONSOLE_BACKGROUND_NOTE
-    assert not [c.value for c in at.caption if note in c.value], "没有任务在跑却在说后台运行"
     _fake_run(tmp_path, "market_scan", "running", log="\n".join(SCAN_LOG.splitlines()[:20]))
     at = _console(tmp_path)
-    assert [c.value for c in at.main.caption if note in c.value], \
-        [c.value for c in at.main.caption]
+    assert not at.exception, at.exception
+    captions = [c.value for c in at.main.caption]
+    assert not [c for c in captions if "关掉浏览器" in c], captions
+    assert any("已用" in c for c in captions), captions
+    tip = at.button("stop_market_scan").proto.help
+    assert tip.startswith(note), tip
+    # 停掉一趟扫描会丢什么，要点停止的那一刻才用得上——跟在同一句悬停说明后面
+    assert "丢掉这趟已扫出的信号" in tip and tip == _guide().stop_help("market_scan")
 
 
 # ---------------------------------------------------------------- 版面就是流程
@@ -1205,7 +1336,7 @@ def test_the_first_time_callout_survives_a_run_of_the_home_page_job(tmp_path):
 
 
 def _backtest_meta(at: AppTest) -> str:
-    return next(m for m in _card_metas(at) if _guide().CONSOLE_LEAD["backtest"] in m)
+    return _card_meta(at, "backtest")
 
 
 def test_the_backtest_card_reports_results_on_disk_even_if_the_panel_never_ran_it(tmp_path):
@@ -1241,6 +1372,9 @@ def test_a_corrupt_scan_meta_is_not_reported_as_never_scanned(tmp_path):
     (scan / "2026-09-01.meta.json").write_text("{ broken json", encoding="utf-8")
     at = _console(tmp_path)
     assert not at.exception, at.exception
-    scan_meta_html = next(m for m in _card_metas(at) if _guide().CONSOLE_LEAD["market_scan"] in m)
-    assert steps.UNKNOWN not in scan_meta_html, scan_meta_html
+    # 读不出最新结果时那一行**整个不出**（不留一个后面什么都没有的「最新结果」标签）
+    assert _card_meta(at, "market_scan") == "", _card_meta(at, "market_scan")
+    assert steps.UNKNOWN not in "".join(_card_html(at, "market_scan"))
     assert any("损坏" in w.value for w in at.main.warning)
+    # 另外两张卡片不受连累：它们的「最新结果」照常
+    assert _card_meta(at, "daily_signal") and _card_meta(at, "backtest")

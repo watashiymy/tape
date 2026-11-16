@@ -23,7 +23,8 @@ import yaml
 from streamlit.testing.v1 import AppTest
 
 from quant.config import load_settings
-from tests.conftest import click_row_button, copy_app, goto_page
+from tests.conftest import (app_module, click_row_button, copy_app, element_path, goto_page,
+                            sits_on_the_right)
 
 ROOT = Path(__file__).resolve().parent.parent
 REAL_CONFIG = ROOT / "config" / "settings.yaml"
@@ -130,6 +131,16 @@ def _texts(at: AppTest) -> str:
                                *at.main.error, *at.main.markdown)]
     parts += [t.value for t in at.get("toast")]
     return "\n".join(parts)
+
+
+def _pool_heading(at: AppTest) -> str:
+    """「当前信号池（N 只）」那个小标题的 HTML：标题文字 + 帮助圆点（+ 默认池子的小标签）。
+    st.html 在 AppTest 里没有 .value，读 proto.body；theme.inject() 那段 <style> 要滤掉。"""
+    heads = [b for e in at.get("html")
+             if 'class="qd-section"' in (b := e.proto.body) and "当前信号池" in b
+             and not b.lstrip().startswith("<style>")]
+    assert len(heads) == 1, heads
+    return heads[0]
 
 
 def _errors(at: AppTest) -> str:
@@ -385,10 +396,14 @@ def test_the_universe_page_lists_the_pool_with_a_remove_button(tmp_path):
     assert list(table["代码"]) == ["600519", "000333"]
     assert pool.ACTION_COLUMN in dict(at.get("dataframe")[0].proto.button_click_widgets), \
         "移除列没注册成按钮列（on_click 不会被调用）"
-    assert str(len(pool.current(path))) in _texts(at), \
+    heading = _pool_heading(at)
+    assert f"当前信号池（{len(pool.current(path))} 只）" in heading, \
         "没说当前池子有多少只（§3.4 A）"
-    assert "立即生效" in _texts(at), "底部没说改动立即生效"
-    assert "universe.local.yaml" not in _texts(at), \
+    # "改了什么时候生效"在小标题后面的帮助圆点里（2026-11-16 第二轮之前是页面最底下一行灰字）
+    tip = heading.split('class="qd-help-tip">', 1)[1]
+    assert "立即生效" in tip, "没说改动立即生效"
+    assert "立即生效" not in _texts(at), "那句话又常驻在页面上了"
+    assert "universe.local.yaml" not in _texts(at) + heading, \
         "改动写进哪个文件是实现细节，正常状态的页面上不写（2026-09-05）"
 
 
@@ -476,6 +491,51 @@ def test_the_add_box_only_fetches_the_pool_when_asked(tmp_path, fake_provider):
     assert "600519 贵州茅台" not in labels, "已在池中的标的不该再出现在候选里"
 
 
+def test_the_load_button_says_how_long_it_may_take_on_hover(tmp_path, fake_provider):
+    """这一下可能要联网拉两到四分钟，必须在点之前说——说在按钮自己的悬停说明里
+    （点之前光标一定先到它上面）。2026-11-16 之前是按钮上方常驻的三行灰字。
+    按钮靠右；字前面那个箭头是图标，不是拼在文字里的字符。"""
+    _config(tmp_path, ("600519",))
+    at = _at(tmp_path)
+    guide = app_module("guide")
+    button = at.button(key=pool.LOAD_BUTTON_KEY)
+    assert (button.label, button.proto.icon) == ("加载可选标的清单", ":material/download:")
+    assert button.proto.help == guide.POOL_LOAD_HINT and guide.FACTS["pool_fetch"] in button.proto.help
+    assert "候选清单 =" not in _texts(at), "那三行灰字又常驻在页面上了"
+    assert sits_on_the_right(at, pool.LOAD_BUTTON_KEY)
+
+
+def test_the_add_button_sits_at_the_right_end_of_the_search_row(tmp_path, fake_provider):
+    """搜索框与「加入信号池」同一行，按钮在右端、底边对齐（2026-11-16 之前按钮单独在搜索框
+    下面的左边）。一个横向容器——搜索框占剩下的地方，按钮是它自己的宽度——不是按比例的分栏：
+    按钮在比例栏里，1024 宽时那一栏只有一百出头像素，「加入信号池」会折成两行、还顶出搜索框的
+    上沿（独立审查在真实浏览器里量的）。"""
+    _config(tmp_path, ("600519",))
+    at = _at(tmp_path)
+    at = at.button(key=pool.LOAD_BUTTON_KEY).click().run()
+    assert not at.exception, at.exception
+    row = element_path(at, pool.ADD_BUTTON_KEY)[-1]
+    assert [e.key for e in row.children.values()] == [pool.PICK_KEY, pool.ADD_BUTTON_KEY]
+    flex = row.proto.flex_container
+    assert flex.direction == flex.Direction.HORIZONTAL and flex.align == flex.Align.ALIGN_END, \
+        "搜索框与按钮要底边对齐"
+    assert sits_on_the_right(at, pool.ADD_BUTTON_KEY)
+    assert not [n for n in element_path(at, pool.ADD_BUTTON_KEY) if getattr(n, "type", "") == "column"]
+
+
+def test_the_candidate_list_says_how_fresh_it_is_in_plain_sight(tmp_path, fake_provider):
+    """清单是哪天的、还有几只可选：这是会变的事实，留在明面上（初稿把它收进了搜索框的悬停说明，
+    独立审查指出这不合"会变的留在明面上"）。"已在池里的不再列出"是解释，在搜索框的问号里。"""
+    _config(tmp_path, ("600519",))
+    at = _at(tmp_path)
+    at = at.button(key=pool.LOAD_BUTTON_KEY).click().run()
+    guide = app_module("guide")
+    choices = len(at.selectbox(key=pool.PICK_KEY).options)
+    assert guide.POOL_AS_OF.format(day="2026-08-27", n=choices) in [c.value for c in at.main.caption]
+    assert at.selectbox(key=pool.PICK_KEY).proto.help == guide.POOL_PICK_HELP
+    assert "不再列出" not in _texts(at)
+
+
 def test_the_add_box_uses_the_local_listing_instead_of_waiting_2_to_4_minutes(
         tmp_path, fake_provider):
     """v0.2.3：跑过扫描之后本地就有清单了，点「加载」应当**瞬时**出候选，不再联网。"""
@@ -558,6 +618,10 @@ def test_the_page_degrades_to_read_only_when_the_pool_cannot_be_fetched(tmp_path
     assert pool.PICK_KEY not in [s.key for s in at.selectbox], \
         "拉不到清单时不该渲染候选下拉框（一个空下拉框等于假装还能选）"
     assert list(_table(at)["代码"]) == ["600519", "000333"], "表格该照常显示"
+    # 出路是一个「重试」按钮，与页面上别的操作按钮一样靠右（变异自查抓到这一处没人钉）
+    retry = at.button(key=pool.RETRY_BUTTON_KEY)
+    assert (retry.label, retry.proto.icon) == ("重试", ":material/refresh:")
+    assert sits_on_the_right(at, pool.RETRY_BUTTON_KEY)
 
 
 # ================================================================ 信号页的 ＋（§3.4 B）
@@ -765,9 +829,10 @@ def test_the_page_shows_your_own_pool_without_naming_any_file(tmp_path):
     at = _at(tmp_path)
 
     assert not at.exception, at.exception
-    text = _texts(at)
+    text = _texts(at) + _pool_heading(at)      # 小标题（及它旁边的小标签）也算页面上的字
     assert "universe.local.yaml" not in text and "settings.yaml" not in text, text
     assert "默认池子" not in text, "已经是自己的池子了，别再说它是默认池子"
+    assert "qd-section-pill" not in _pool_heading(at), "自己的池子，小标题旁不该有小标签"
     assert list(_table(at)["代码"]) == ["600519", "000333"]
 
 
@@ -778,9 +843,15 @@ def test_the_page_says_the_pool_is_the_default_when_there_is_no_local_file(tmp_p
     at = _at(tmp_path)
 
     assert not at.exception, at.exception
-    text = _texts(at)
-    assert "默认池子" in text, text
-    assert "settings.yaml" not in text, text
+    # 小标题旁一个灰色小标签「默认池子」，那句解释在它的悬停提示里（title 属性）；
+    # 2026-11-16 第二轮之前是表格上方常驻的一行灰字。
+    heading = _pool_heading(at)
+    pill = heading.split('class="qd-section-pill">', 1)[1]
+    assert ">默认池子<" in pill and "qd-pill-idle" in pill, heading
+    assert 'title="' in pill and "还没改过" in pill, heading
+    assert "**" not in pill, "悬停提示是纯文字，星号会原样显示"
+    assert "默认池子" not in _texts(at), "那句话又常驻在页面上了"
+    assert "settings.yaml" not in _texts(at) + heading
 
 
 def test_a_broken_local_file_degrades_the_page_and_names_it(tmp_path):
@@ -853,6 +924,8 @@ def test_the_scan_table_offers_a_strategy_filter_when_there_is_more_than_one(tmp
     at = _at(tmp_path, SIGNALS_PAGE)
     assert not at.exception, at.exception
     assert _multi(at, "按策略筛"), "多策略时应有筛选控件"
+    assert _multi(at, "按策略筛").proto.placeholder == "不限", \
+        "不给的话浏览器里显示的是出厂的英文 Choose options"
 
     one = tmp_path / "output" / "scan" / "2026-08-28.csv"
     one.write_text(SCAN_HEADER + "2026-08-28,000333,美的集团,ma_cross,72.5,3.1,1.2e9,2.4\n",

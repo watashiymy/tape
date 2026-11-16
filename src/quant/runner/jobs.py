@@ -109,8 +109,11 @@ JOBS: dict[str, Job] = {
         name="market_scan", label="全市场扫描",
         script=str(SCRIPTS / "run_market_scan.py"),
         params=(
-            Param("limit", "--limit", "int", "只扫前 N 只（留空=全量）", max_value=LIMIT_MAX),
-            Param("date", "--date", "date", "基准交易日（留空=最近交易日）"),
+            # 标题只说它是什么。"留空 = 全量 / 最近交易日"这类解释原先写在标题的括号里；
+            # 2026-11-16 起在控件的悬停说明里（面板的 guide.PARAM_HELP），只扫前 N 只那个框
+            # 空着时框里另有一句「留空 = 全量」。
+            Param("limit", "--limit", "int", "只扫前 N 只", max_value=LIMIT_MAX),
+            Param("date", "--date", "date", "基准交易日"),
         ),
         parser=progress.parse_market_scan, result_kind="scan_csv"),
     # 内部键 daily_signal 与脚本文件名永不改（状态文件 runs/daily_signal.json、
@@ -119,16 +122,16 @@ JOBS: dict[str, Job] = {
         name="daily_signal", label="信号跟踪",
         script=str(SCRIPTS / "run_daily_signal.py"),
         params=(
-            Param("date", "--date", "date", "基准交易日（留空=数据最新的那天）"),
+            Param("date", "--date", "date", "基准交易日"),
         ),
         parser=progress.parse_daily_signal, result_kind="signal_csv"),
     "backtest": Job(
         name="backtest", label="回测",
         script=str(SCRIPTS / "run_backtest.py"),
         params=(
-            Param("strategy", "--strategy", "choice", "策略（留空=全部）",
+            Param("strategy", "--strategy", "choice", "策略",
                   choices=tuple(REGISTRY)),
-            Param("refresh", "--refresh", "flag", "重新下载全部行情（忽略本地缓存）"),
+            Param("refresh", "--refresh", "flag", "重新下载全部行情"),
         ),
         parser=progress.parse_backtest, result_kind="backtest_run"),
     # 首页「趋势宽度」的数据来源（spec §5）。无参数；控件只在「市场概览」页，控制台不渲染它。

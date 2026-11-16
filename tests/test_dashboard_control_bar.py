@@ -17,7 +17,8 @@ from streamlit.testing.v1 import AppTest
 
 from quant.runner import jobs, process, steps, view
 from quant.signal import scan_meta
-from tests.conftest import app_module, copy_app, goto_page
+from tests.conftest import (app_module, copy_app, element_path, goto_page, path_to_element,
+                            sits_on_the_right)
 
 ROOT = Path(__file__).resolve().parent.parent
 DASHBOARD = ROOT / "app" / "dashboard.py"
@@ -370,7 +371,12 @@ def test_control_bar_start_failure_is_shown_not_raised(tmp_path, monkeypatch):
     at = _page(tmp_path, "回测报告")
     at.button("bar_start_backtest").click().run()
     assert not at.exception, f"启动失败不该崩页: {at.exception}"
-    assert any("启动失败" in e.value for e in at.error), [e.value for e in at.error]
+    errors = [e for e in at.error if "启动失败" in e.value]
+    assert len(errors) == 1, [e.value for e in at.error]
+    # 那句话要占整行：按钮是在右边那一窄栏里画的，起任务必须在那一栏**外面**做——
+    # 否则报错挤在一百多像素宽的栏里折成一长条（独立审查指出这一条一直没人钉）。
+    assert not [n for n in path_to_element(at, errors[0]) if getattr(n, "type", "") == "column"], \
+        "启动失败的提示落在了按钮那一栏里"
 
 
 def test_control_bar_start_disabled_by_the_global_mutex(tmp_path):
@@ -426,31 +432,25 @@ def test_a_job_that_has_run_before_gets_no_stop_button_once_it_is_over(finished,
 
 
 def test_a_running_job_shows_its_progress_on_the_bar(tmp_path):
-    """点了「开始」之后这一页得自己会动：进度就摊在任务条上（与控制台卡片同一套文案），
-    顺带说一句关掉页面也不会中断。数得出进度时是进度条，数不出来时转圈。"""
+    """点了「开始」之后这一页得自己会动：进度就摊在任务条上（与控制台卡片同一套文案）。
+    数得出进度时是进度条，数不出来时转圈；已用多久、预计剩余这些会变的数写在下面一行。
+    「关掉页面也不会中断」不再常驻在那一行后面（2026-11-16 第二轮）——它是「停止」按钮的悬停说明。"""
     _fake_run(tmp_path, "market_scan", "running", log=SCAN_LOG_HALFWAY)
     at = _page(tmp_path, "信号")
     assert not at.exception, at.exception
     bars = at.main.get("progress")
     assert len(bars) == 1 and "1800/3010" in bars[0].proto.text, [b.proto.text for b in bars]
     guide = _guide()
-    assert any(guide.CONSOLE_BACKGROUND_NOTE in c.value for c in at.main.caption), \
-        [c.value for c in at.main.caption]
+    captions = [c.value for c in at.main.caption]
+    assert any("已用" in c and "信号 58 条" in c for c in captions), captions
+    assert not any("关掉浏览器" in c for c in captions), captions
+    tip = at.button("bar_stop_market_scan").proto.help
+    assert tip == guide.stop_help("market_scan") and tip.startswith(guide.CONSOLE_BACKGROUND_NOTE)
+    assert "丢掉这趟已扫出的信号" in tip, "停掉一趟扫描会丢什么，得在停止按钮自己身上说"
     # 谁在跑就摊在这条上（运行中的状态 + 进度），同一条上的另一行为什么点不了不言自明——
     # 不再另说一句「……正在运行」。别的页起的任务才需要点名（见互斥那两条）。
     assert not any("正在运行" in c.value for c in at.main.caption), \
         [c.value for c in at.main.caption]
-
-
-def _path_to(node, key: str, trail=()):
-    """从 node 往下找 key 对应的控件，返回一路经过的块（不含控件自己）；找不到返回 None。"""
-    for child in getattr(node, "children", {}).values():
-        if getattr(child, "key", None) == key:
-            return (*trail, node)
-        found = _path_to(child, key, (*trail, node))
-        if found is not None:
-            return found
-    return None
 
 
 @pytest.mark.parametrize("running", ["daily_signal", "market_scan"])
@@ -459,26 +459,30 @@ def test_no_start_button_can_slide_under_the_stop_button(tmp_path, running):
     信号跟踪十几秒就跑完，而它下面那一行的按钮是半小时到两小时的全市场扫描。所以：
 
     - 进度与「停止」那一行排在**所有任务行之后**——它出现、消失，哪个「开始」都不挪位置；
-    - 「停止」在那一行的**最左边**，「开始」都在最右边——上下也对不齐。"""
+      它消失时往上补位的只有任务条**下面**的内容，那里没有开始按钮；
+    - 「停止」自己占一行，不与任何「开始」同一行。
+
+    2026-11-16 第二轮起「停止」在那一行的右端，与页面上别的操作按钮一样靠右（用户要求
+    按钮位置统一）。第一轮里它在最左，是怕与上面几行的「开始」上下对齐；真正防住
+    "按钮在光标下换掉"的是上面第一条，那条没变。"""
     _fake_run(tmp_path, running, "running", log=SCAN_LOG_HALFWAY)
     at = _page(tmp_path, "信号")
     assert not at.exception, at.exception
     keys = _bar_keys(at)
     assert keys == ["bar_start_daily_signal", "bar_start_market_scan", f"bar_stop_{running}"], \
         f"「停止」那一行必须排在所有任务行之后: {keys}"
-    # 元素树里一行分栏是 flex_container、每一栏是 column（1.61.1 实测）
-    assert _column_index(at, f"bar_stop_{running}") == 0, "「停止」应在进度那一行的最左边一栏"
+    # 进度那一行是一个靠右的横向容器（进度条、停止）；任务行是一行分栏，按钮在最后一栏
+    stop_row = element_path(at, f"bar_stop_{running}")[-1]
+    kinds = [getattr(e, "type", "") for e in stop_row.children.values()]
+    # 数得出进度时是进度条，数不出来（信号跟踪）时是转圈的那一块
+    assert kinds in (["progress", "button"], ["status", "button"]), kinds
     for job in PAGE_JOBS["信号"]:
-        assert _column_index(at, f"bar_start_{job}") > 0, \
-            "「开始」不该在一行的最左边一栏（那是「停止」的位置）"
+        assert not [n for n in element_path(at, f"bar_start_{job}") if n is stop_row], \
+            "「停止」不许与「开始」同一行"
+    # 按钮一律靠右
+    for key in (f"bar_stop_{running}", *(f"bar_start_{job}" for job in PAGE_JOBS["信号"])):
+        assert sits_on_the_right(at, key), f"{key} 不在右边"
 
-
-def _column_index(at: AppTest, key: str) -> int:
-    """key 那个控件在它那一行分栏里的第几栏（0 起）。"""
-    path = _path_to(at._tree, key)
-    assert path is not None, f"找不到 {key}"
-    at_column = max(i for i, n in enumerate(path) if getattr(n, "type", "") == "column")
-    return list(path[at_column - 1].children.values()).index(path[at_column])
 
 
 def test_an_indeterminate_job_spins_instead_of_drawing_a_fake_bar(tmp_path):

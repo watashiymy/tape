@@ -128,7 +128,8 @@ CSS = f"""@import url("{FONT_IMPORT}");
   --qd-sans: {SANS};
   --qd-mono: {MONO};
 }}
-/* 页名与状态标签不收缩、说明可折行：页头与右端「帮助中心」同一行（2026-09-30），左栏变窄时只折说明。 */
+/* 页头：页名（后面紧跟一个帮助圆点）+ 右端的任务状态标签，与「帮助中心」同一行（2026-09-30）。
+   2026-11-16 起页名旁不再有常驻的说明小字——那句话收进了页名后面的圆点里。 */
 .qd-head {{
   display: flex;
   align-items: baseline;
@@ -146,12 +147,6 @@ CSS = f"""@import url("{FONT_IMPORT}");
   line-height: 1.2;
   white-space: nowrap;
   flex-shrink: 0;
-}}
-.qd-sub {{
-  font-family: var(--qd-sans);
-  font-size: 0.8rem;
-  color: var(--qd-muted);
-  min-width: 0;
 }}
 .qd-head-right {{
   margin-left: auto;
@@ -263,7 +258,8 @@ CSS = f"""@import url("{FONT_IMPORT}");
 
 /* 任务卡片（2026-11-16 控制台改版）。边框是原生 st.container(border=True) 给的——
    颜色与圆角走 config.toml 的 borderColor / baseRadius，这里一条规则都不用写；
-   我们只管卡片里自己包的那两块：标题行，以及标题下「做什么」与「最新结果」两行。
+   我们只管卡片里自己包的那两块：标题行，以及标题下「最新结果」那一行
+   （「记账」页表单底部的核对区借用同一对类：一行灰字 + 一行带小标签的字）。
    标题不带发丝线（卡片自己有边框，再画一道就是两道线）。 */
 .qd-task-title {{
   font-family: var(--qd-serif);
@@ -284,6 +280,9 @@ CSS = f"""@import url("{FONT_IMPORT}");
   font-size: 0.84rem;
   line-height: 1.55;
   color: var(--qd-text);
+}}
+/* 上面有那行灰字时才留间距：只有状态一行时（控制台卡片），它紧跟标题。 */
+.qd-task-lead + .qd-task-status {{
   margin-top: 0.3rem;
 }}
 .qd-task-status-key {{
@@ -421,6 +420,14 @@ CSS = f"""@import url("{FONT_IMPORT}");
   vertical-align: middle;
   cursor: help;
 }}
+/* 没有小标题的表格上方那一行「读表说明 ?」：小号灰字 + 帮助圆点，贴着表格。 */
+.qd-help-line {{
+  font-family: var(--qd-sans);
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  line-height: 1.4;
+  color: var(--qd-muted);
+}}
 .qd-help-dot:hover, .qd-help-dot:focus-visible {{
   color: var(--qd-text);
   border-color: var(--qd-text);
@@ -507,12 +514,16 @@ def pill(text: str, kind: str, tooltip: str = "") -> str:
     return f'<span class="qd-pill qd-pill-{css}"{title}>{_esc(text)}</span>'
 
 
-def page_head(title: str, subtitle: str, pill_html: str = "") -> str:
-    """通用页头（§2.4）：页名衬线大字 + 一句话说明灰色小字 + 右侧任务状态 pill。
+def page_head(title: str, pill_html: str = "", *, help: str = "") -> str:
+    """通用页头（§2.4）：页名衬线大字 + 帮助圆点 + 右侧任务状态 pill。
+
+    2026-11-16 之前页名旁常驻一句灰色小字说明（"这页给你看什么"）。用户的话：这类解释性
+    文字读起来是有成本的，要看的时候再看就行——所以收进页名后面的帮助圆点（`help`，
+    悬停或 Tab 键选中才出），页头只剩页名与状态。`help` 为空时不出圆点。
     `pill_html` 是本模块 pill() 的输出（已转义的可信 HTML），空则不出 pill。"""
+    dot = help_dot(help, wide=True) if help else ""
     right = f'<span class="qd-head-right">{pill_html}</span>' if pill_html else ""
-    return (f'<div class="qd-head"><span class="qd-title">{_esc(title)}</span>'
-            f'<span class="qd-sub">{_esc(subtitle)}</span>{right}</div>')
+    return f'<div class="qd-head"><span class="qd-title">{_esc(title)}{dot}</span>{right}</div>'
 
 
 def section(title: str, pill_html: str = "", *, help: str = "", help_align: str = "start",
@@ -577,13 +588,18 @@ def task_head(title: str, pill_html: str = "", *, help: str = "", help_align: st
 
 
 def task_meta(lead: str, status_key: str = "", status: str = "") -> str:
-    """任务卡片标题下的两行：一句「做什么 / 什么时候跑」，一行带小标签的最新结果。
+    """卡片里的两行小字：一行灰色的补充信息，一行带小标签的状态。
 
-    `status` 为空时**整行不出**：一个后面什么都没有的「最新结果」标签比没有更糟。
-    两行放进同一个元素，是为了行距由我们定——拆成两个 st.* 元素，中间就是
-    streamlit 的一整格元素间距，标题、说明、状态三行会散开。
+    两处在用：控制台任务卡片标题下的「最新结果」（只有第二行，2026-11-16 起那句
+    「做什么 / 什么时候跑」收进了标题旁的帮助圆点）；「记一笔」表单底部的核对
+    （第一行是代码带出的名称与价格区间，第二行是会写进去的钱）。
+
+    **哪一行没有内容，哪一行就不出**：一个后面什么都没有的「最新结果」标签比没有更糟，
+    一个空的灰色行则是一道莫名其妙的空隙。两行都空时返回空串——调用方据此连元素都不放
+    （`st.html("")` 也占一个元素位）。两行放进同一个元素，是为了行距由我们定——
+    拆成两个 st.* 元素，中间就是 streamlit 的一整格元素间距。
     """
-    out = f'<div class="qd-task-lead">{_esc(lead)}</div>'
+    out = f'<div class="qd-task-lead">{_esc(lead)}</div>' if lead else ""
     if status:
         key = f'<span class="qd-task-status-key">{_esc(status_key)}</span>' if status_key else ""
         out += f'<div class="qd-task-status">{key}{_esc(status)}</div>'
@@ -683,6 +699,15 @@ def _tip_markup(text: str) -> str:
     flush_para()
     flush_list()
     return "".join(blocks)
+
+
+def help_line(label: str, help: str, *, wide: bool = False) -> str:
+    """一行很短的灰字 + 帮助圆点（「读表说明 ?」），给**没有小标题**的表格用：
+    标签页里的表、折叠区里的表，上方没有一个标题可以挂圆点。有小标题的一律挂小标题
+    （section 的 help），不用这个。`help` 为空时返回空串——不出一行后面什么都没有的字。"""
+    if not help.strip():
+        return ""
+    return f'<div class="qd-help-line">{_esc(label)}{help_dot(help, wide=wide)}</div>'
 
 
 def help_dot(text: str, *, align: str = "start", wide: bool = False) -> str:

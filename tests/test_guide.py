@@ -60,8 +60,8 @@ def _all_text() -> str:
     parts += list(guide.PARAM_HELP.values())
     parts += list(guide.TABLE_HINTS.values())
     parts += list(guide.EMPTY_STATES.values())
-    # 信号池页那两段（v0.2.2 M3 §3.4）：底部"改动写到哪里"的说明与候选清单的代价。
-    parts += [guide.POOL_NOTE, guide.POOL_LOAD_HINT]
+    # 信号池页候选清单的代价（v0.2.2 M3 §3.4；"改了什么时候生效"那句并进了 TABLE_HINTS）。
+    parts += [guide.POOL_LOAD_HINT]
     parts += [p.lead for p in guide.GUIDE_PAGES]
     parts += [v for name in dir(guide) if name.startswith("HOME_")
               for v in ([getattr(guide, name)] if isinstance(getattr(guide, name), str)
@@ -479,8 +479,8 @@ def test_the_docstring_filter_actually_filters_something():
     那条断言就会开始扫 docstring 里的勘误说明并**误红**；反过来，若它把所有字面量
     都当 docstring 排除掉，那条断言就变成永远通过。两个方向都要有个哨兵。"""
     literals = _app_copy_literals()
-    assert any(guide.POOL_NOTE == s for s in literals), \
-        "连 POOL_NOTE 都没扫到：字面量收集坏了，那条勘误断言已经是空跑"
+    assert any(guide.JOURNAL_EMPTY == s for s in literals), \
+        "连 JOURNAL_EMPTY 都没扫到：字面量收集坏了，那条勘误断言已经是空跑"
     assert not any(s.startswith("信号池的读写编排") for s in literals), \
         "app/pool.py 的模块 docstring 没被排除：docstring 过滤失效了"
 
@@ -592,14 +592,16 @@ def test_refresh_tooltip_warns_it_costs_a_full_redownload():
 
 
 # 九张表：三张回测产物表 + 信号跟踪 + 信号池（v0.2.2 M3）
-# + 交易日志的四张（v0.3.0 M3：日志本身 / 持仓 / 逐笔平仓 / 按来源分组）
+# + 交易日志的三张（v0.3.0 M3：日志本身 / 逐笔平仓 / 按来源分组）+ 回测一览。
+# 「当前持仓」那张没有总说明（2026-11-16）：它要说的两件事一件在列头上、一件在页顶的已知局限里。
 TABLE_KINDS = ("trades", "skipped", "scan", "signal", "universe",
-               "journal", "positions", "closings", "by_source")
+               "journal", "closings", "by_source", "runs")
 
 
 @pytest.mark.parametrize("kind", TABLE_KINDS)
 def test_every_table_has_a_one_line_column_hint(kind):
-    """§3.2：每个数据表格上方一行灰字解释关键列。"""
+    """§3.2：每张数据表格有一段就地说明，解释关键列。2026-11-16 起它不再是表格上方常驻的
+    灰字，而是区块小标题后面帮助圆点里的话（没有小标题的表挂在列头上）——内容的要求不变。"""
     hint = guide.TABLE_HINTS[kind]
     assert 10 < len(hint) < 200, f"{kind} 的表格说明长度不合理: {hint!r}"
 
@@ -620,12 +622,38 @@ EMPTY_KINDS = ("backtest", "signal", "scan")
 
 @pytest.mark.parametrize("kind", EMPTY_KINDS)
 def test_empty_states_guide_instead_of_just_reporting(kind):
-    """§3.2：空态文案要有指导性——按钮在哪、等价命令是什么、大概多久。
-    「暂无数据」四个字什么也没告诉人。"""
+    """§3.2：空态文案要有指导性——说清点哪个按钮。「暂无数据」四个字什么也没告诉人。"""
     text = guide.EMPTY_STATES[kind]
     assert "开始" in text, f"{kind} 的空态没指路到「开始」按钮"
     assert "scripts/" not in text, f"{kind} 的空态不该再给命令行（实现细节，README 有）"
-    assert "约" in text, f"{kind} 的空态没给预计耗时"
+
+
+@pytest.mark.parametrize("kind, facts", [("backtest", ("backtest_seconds", "universe_n")),
+                                         ("signal", ("data_ready",)),
+                                         ("scan", ("scan_pool", "scan_minutes", "scan_cold"))])
+def test_empty_states_only_point_the_way_and_leave_the_numbers_to_the_button(kind, facts):
+    """2026-11-16 第二轮：空态只说点哪里。多久、什么时候跑、第一次要多久这些解释不再跟在
+    后面的括号里——它们在那个按钮自己的悬停说明上（下一条钉着）。把数字抄回空态，这条就红。"""
+    text = guide.EMPTY_STATES[kind]
+    for key in facts:
+        assert guide.FACTS[key] not in text, f"{kind} 的空态又带上了 {key}：{text}"
+    assert len(text) < 60, f"{kind} 的空态太长（{len(text)} 字）：{text}"
+
+
+@pytest.mark.parametrize("job, facts", [("backtest", ("backtest_seconds", "universe_n")),
+                                        ("daily_signal", ("data_ready",)),
+                                        ("market_scan", ("scan_pool", "scan_minutes", "scan_cold"))])
+def test_the_button_hover_carries_what_the_empty_state_no_longer_says(job, facts):
+    """从空态里拿掉的话不能凭空消失：多久、什么时候跑，在任务条那个按钮的悬停说明里。"""
+    text = guide.BAR_START_HELP[job]
+    for key in facts:
+        assert guide.FACTS[key] in text, f"{job} 按钮的悬停说明里缺 {key}：{text}"
+
+
+def test_the_scan_empty_state_still_warns_before_a_full_run():
+    """三句里只有这一句多留半句：全量扫描是半小时到两小时的事，点之前值得知道有个试跑。"""
+    text = guide.EMPTY_STATES["scan"]
+    assert "很久" in text and f"「{guide.CONSOLE_TRIAL_LABEL}」" in text, text
 
 
 def test_empty_states_cover_exactly_the_three_products():
@@ -688,20 +716,29 @@ def test_journal_export_help_covers_both_buttons_and_says_what_gets_exported():
         assert "筛选" in text, f"没说导出的是筛选后的行: {text}"
 
 
-def test_journal_backup_note_names_the_button_not_the_file():
-    note = guide.JOURNAL_BACKUP_NOTE
-    assert "「恢复上一版」" in note and ".bak" not in note, note
-    assert len(note) < 70, f"这一句是常驻的，要短: {len(note)} 字"
+def test_the_way_to_undo_is_explained_on_the_restore_button_itself():
+    """撤销手段在哪、怎么用：在「恢复上一版」自己的悬停说明里，说的是按钮、不是备份文件。
+    2026-11-16 第二轮之前历史表下面另有一行常驻的灰字讲同一件事——那一行拿掉了。"""
+    text = guide.JOURNAL_RESTORE_HELP
+    assert "上一版" in text and "只留一版" in text and "再点一次" in text, text
+    assert ".bak" not in text, text
+    for gone in ("JOURNAL_BACKUP_NOTE", "JOURNAL_BACKUP_NOTE_EMPTY"):
+        assert not hasattr(guide, gone), f"{gone}：表格下面那行常驻的灰字已经拿掉"
+    assert "备份" in guide.JOURNAL_EXPORT_HELP["csv"], "「长期备份用导出」这半句挪到了导出按钮上"
 
 
-def test_journal_filtered_line_says_export_follows_the_filter():
+def test_journal_filtered_line_says_what_was_filtered_and_how_many_are_left():
+    """筛选收起来之后，筛了什么、剩几条必须写在明面上（会变的事实）。
+    "导出也只含这些"是解释，在两个导出按钮的悬停说明里（上面那条钉着），不在这一行。"""
     text = guide.JOURNAL_FILTERED.format(shown=1, total=7, summary="类型 卖出")
-    assert "1 / 7" in text and "类型 卖出" in text and "导出" in text, text
+    assert "1 / 7" in text and "类型 卖出" in text, text
+    assert "导出" not in text, text
 
 
 # ================================================================ 控制台改版（2026-11-16）
 #
-# 卡片上常驻的字只有这几样：一句「做什么 / 什么时候跑」、按钮上的字、首次引导。
+# 卡片上常驻的字只有按钮上的字与首次引导；「做什么 / 什么时候跑 / 多久」在标题旁的帮助圆点里
+# （2026-11-16 第二轮之前卡片上另有一句常驻的说明，用户让拿掉了）。
 # 它们同样是使用者照着做判断的话——时长与时刻必须取自 FACTS，
 # 正文里教人"点哪个按钮"时引的必须是按钮上真正的字。
 
@@ -714,28 +751,25 @@ def test_trial_limit_fact_is_the_runner_constant():
     assert guide.FACTS["trial_limit"] == str(jobs.TRIAL_LIMIT)
 
 
-def test_every_console_card_has_a_lead_and_a_start_label():
-    assert set(guide.CONSOLE_LEAD) == set(CONSOLE_CARDS)
+def test_every_console_card_has_a_start_label():
     assert set(guide.CONSOLE_START) == set(CONSOLE_CARDS)
     for name in CONSOLE_CARDS:
         assert guide.CONSOLE_START[name].startswith("开始"), guide.CONSOLE_START[name]
 
 
-@pytest.mark.parametrize("name", CONSOLE_CARDS)
-def test_console_lead_is_short_plain_text(name):
-    """标题下那一句常驻在页面上，所以要短；它走 HTML 转义渲染，写 ** 会原样显示成星号。"""
-    text = guide.CONSOLE_LEAD[name]
-    assert 20 <= len(text) <= 70, f"{name} 的那一句长度不合适（{len(text)} 字）: {text}"
-    assert "**" not in text and "\n" not in text, text
+def test_the_console_cards_keep_no_always_on_explanation():
+    """卡片标题下那句常驻的「做什么 / 什么时候跑」拿掉了（用户：解释性文字读起来是有成本的，
+    用「？」提示就行）。常量一并删掉——留着没人用的文案会慢慢过期，也免得谁顺手又摆回卡片上。"""
+    assert not hasattr(guide, "CONSOLE_LEAD")
 
 
-def test_console_leads_carry_the_measured_durations_and_the_ready_time():
-    """「多久」与「什么时候跑」是新手最需要、过去只藏在问号里的两件事。"""
-    assert guide.FACTS["scan_minutes"] in guide.CONSOLE_LEAD["market_scan"]
-    assert guide.FACTS["data_ready"] in guide.CONSOLE_LEAD["market_scan"]
-    assert guide.FACTS["data_ready"] in guide.CONSOLE_LEAD["daily_signal"]
-    assert guide.FACTS["backtest_seconds"] in guide.CONSOLE_LEAD["backtest"]
-    assert "不产生今天的信号" in guide.CONSOLE_LEAD["backtest"], \
+def test_the_help_dot_carries_what_the_card_face_no_longer_says():
+    """从卡片上拿掉的话不能凭空消失：「多久」与「什么时候跑」在标题旁帮助圆点的 JOB_HELP 里。"""
+    assert guide.FACTS["scan_minutes"] in guide.JOB_HELP["market_scan"]
+    assert guide.FACTS["data_ready"] in guide.JOB_HELP["market_scan"]
+    assert guide.FACTS["data_ready"] in guide.JOB_HELP["daily_signal"]
+    assert guide.FACTS["backtest_seconds"] in guide.JOB_HELP["backtest"]
+    assert "不产生今天的信号" in guide.JOB_HELP["backtest"], \
         "回测不在每日那条链上——这句是它单独成区的全部理由"
 
 
@@ -782,10 +816,55 @@ def test_no_copy_still_quotes_a_button_called_just_start():
     assert "「开始」" not in README, "README 还在引一个叫「开始」的按钮"
 
 
-def test_scan_lead_admits_the_first_run_takes_much_longer():
+def test_scan_help_admits_the_first_run_takes_much_longer():
     """「全量约 18 分钟」是行情已在本地时的实测；第一次要按 0.5–2 小时准备。
-    常驻在卡片上的那一句只说前半截，第一次用的人就会守着进度条等它十八分钟。"""
-    assert "第一次" in guide.CONSOLE_LEAD["market_scan"], guide.CONSOLE_LEAD["market_scan"]
+    只说前半截，第一次用的人就会守着进度条等它十八分钟——圆点里与任务条按钮上都得说全。"""
+    for text in (guide.JOB_HELP["market_scan"], guide.BAR_START_HELP["market_scan"]):
+        assert "第一次" in text and guide.FACTS["scan_cold"] in text, text
+
+
+def test_the_first_run_callout_only_says_what_to_click():
+    """首次引导只点名先点哪个按钮；"为什么先点它"在那个按钮自己的悬停说明里。"""
+    text = guide.CONSOLE_FIRST_RUN
+    assert f"「{guide.CONSOLE_TRIAL_LABEL}」" in text and len(text) < 40, text
+    assert "比全量快" not in text and "比全量快" in guide.CONSOLE_TRIAL_HELP
+
+
+def test_closing_the_browser_is_safe_is_said_on_the_stop_button():
+    """「关掉浏览器也不会中断」原来是进度条下面常驻的半句；现在是「停止」按钮的悬停说明——
+    想走开的人以为得先点它，其实不用。"""
+    assert "关掉浏览器" in guide.CONSOLE_BACKGROUND_NOTE and "不会中断" in guide.CONSOLE_BACKGROUND_NOTE
+    assert not hasattr(guide, "PIPELINE_MANUAL_NOTE"), "「人工步骤」那行后面的半句解释已经拿掉"
+
+
+def test_the_stop_button_says_what_stopping_this_job_costs():
+    """要点停止的那一刻才用得上的话：停掉**这个**任务会丢什么。扫描的结果整轮跑完才保存，
+    中途停就全丢——这句原先只在卡片标题旁的帮助圆点里（独立审查指出它该在停止按钮上）。
+    每个任务的说明都以通用的那句开头；没有额外代价可说的任务只有那一句。"""
+    for job in jobs.JOBS:
+        assert guide.stop_help(job).startswith(guide.CONSOLE_BACKGROUND_NOTE), job
+    assert "丢掉这趟已扫出的信号" in guide.stop_help("market_scan")
+    assert "不会丢" in guide.stop_help("market_breadth") and "接着补" in guide.stop_help("market_breadth")
+    assert guide.stop_help("backtest") == guide.stop_help("daily_signal") == guide.CONSOLE_BACKGROUND_NOTE
+    assert set(guide.CONSOLE_STOP_NOTES) <= set(jobs.JOBS), "键得是真的任务名"
+
+
+def test_console_start_help_covers_the_three_cards():
+    """卡片主按钮的悬停说明：三张卡片各一条（常驻的那一句拿掉之后，时长与时刻就靠它和帮助圆点）。"""
+    assert set(guide.CONSOLE_START_HELP) == set(CONSOLE_CARDS)
+    assert guide.FACTS["scan_cold"] in guide.CONSOLE_START_HELP["market_scan"], "第一次要久得多，得说"
+    assert f"「{guide.CONSOLE_OPTIONS}」" in guide.CONSOLE_START_HELP["market_scan"]
+    assert "不产生今天的信号" in guide.CONSOLE_START_HELP["backtest"]
+
+
+def test_param_labels_carry_no_bracketed_explanations():
+    """参数控件的标题只说它是什么。「留空 = 全量」这类解释原先写在标题的括号里——
+    记账页的输入框标题去了括号，控制台的也一样（独立审查指出只改了一处）。"""
+    for job in jobs.JOBS.values():
+        for spec in job.params:
+            assert "（" not in spec.label and "(" not in spec.label, f"{job.name}.{spec.name}: {spec.label}"
+    assert guide.CONSOLE_PARAM_PLACEHOLDER[("market_scan", "limit")] == "留空 = 全量"
+    assert "留空 = 全量" in guide.PARAM_HELP[("market_scan", "limit")], "细说仍在悬停说明里"
 
 
 def test_copy_that_says_it_is_explained_in_the_log_says_where_the_log_is():
@@ -831,7 +910,8 @@ def _user_copy() -> dict[str, str]:
     # 常量不只是 str：HOME_HELP / HOME_THERMO_LABELS / HOME_STATE_TEXT 是字典，HOME_COUNT_LABELS
     # 是元组——只收 str 的话它们整个漏过实现细节扫描。字典按值、元组按项摊平。
     for name in dir(guide):
-        if not name.startswith(("JOURNAL_", "POOL_", "CONSOLE_", "PIPELINE_", "HOME_", "BAR_")):
+        if not name.startswith(("JOURNAL_", "POOL_", "CONSOLE_", "PIPELINE_", "HOME_", "BAR_",
+                                "RUNS_")):
             continue
         value = getattr(guide, name)
         if isinstance(value, str):
@@ -938,8 +1018,26 @@ def test_home_state_text_covers_every_state_enum():
 
 
 def test_home_help_covers_the_terms_on_the_page():
-    for key in ("limit_up", "limit_down", "zb_rate", "max_lbc", "above_ma", "high_low", "buckets"):
+    for key in ("limit_up", "limit_down", "zb_rate", "max_lbc", "above_ma", "high_low"):
         assert 10 < len(guide.HOME_HELP[key]) < 200, key
+
+
+def test_home_section_help_covers_the_three_blocks_that_used_to_carry_grey_text():
+    """首页三个区块小标题后面的帮助圆点（2026-11-16 第二轮）。改之前这些话是常驻的灰字：
+    页脚的数据来源、分布图下面的分档规则、趋势宽度的统计范围与图表下面的读图说明。"""
+    assert set(guide.HOME_SECTION_HELP) == {"index", "dist", "trend"}
+    assert "延迟" in guide.HOME_SECTION_HELP["index"]
+    dist = guide.HOME_SECTION_HELP["dist"]
+    assert "{sealed}" in dist and "23 档" in dist and "平盘" in dist, dist
+    trend = guide.HOME_SECTION_HELP["trend"]
+    assert "不含 ST" in trend and "上半幅" in trend and "下半幅" in trend and "50%" in trend, trend
+    for gone in ("HOME_FOOTER", "HOME_BUCKET_NOTE", "HOME_TREND_CHART_NOTE", "HOME_SCOPE_TREND"):
+        assert not hasattr(guide, gone), f"{gone}：那行常驻的灰字已经收进帮助圆点"
+
+
+def test_the_trend_pill_only_says_which_day_the_data_is_from():
+    """小标题旁的小标签只说数据是哪天的；统计范围是解释，在帮助圆点里。"""
+    assert guide.HOME_TREND_ASOF.format(day="2026-09-24") == "收盘数据截至 2026-09-24"
 
 
 def test_above_ma_help_is_a_template_for_each_window():
@@ -953,10 +1051,8 @@ def test_high_low_total_is_a_template():
     assert guide.HOME_HL_TOTAL.format(n=4922) == "共 4922 只"
 
 
-def test_trend_chart_copy_exists_and_is_plain():
+def test_trend_chart_copy_exists():
     assert guide.HOME_TREND_SPAN_LABEL == "显示最近"
-    note = guide.HOME_TREND_CHART_NOTE
-    assert "上半幅" in note and "下半幅" in note and "50%" in note and "**" not in note
     assert not hasattr(guide, "HOME_RECENT_DAYS") and not hasattr(guide, "HOME_ABOVE_MA_NOTE"), "小图的注脚常量已删"
 
 
@@ -970,6 +1066,9 @@ def test_breadth_job_help_names_no_button_and_has_no_stray_space():
 def test_every_help_text_renders_cleanly_in_a_help_dot():
     """帮助圆点只认加粗 / 空行分段 / 带续行列表三种写法：现有全部文案渲染后不能剩下 ** 或换行。"""
     texts = list(guide.JOB_HELP.values()) + list(guide.HOME_HELP.values())
+    # 2026-11-16 第二轮起进圆点的还有这几批：首页三个区块、各张表的读表说明、仪表盘的口径。
+    texts += [v.format(sealed=guide.HOME_SEALED_CLOSE) for v in guide.HOME_SECTION_HELP.values()]
+    texts += list(guide.TABLE_HINTS.values()) + [guide.JOURNAL_PNL_HINT]
     for t in texts:
         html = theme.help_dot(t, wide=True)
         assert "**" not in html and "\n" not in html, t[:24]

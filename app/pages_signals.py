@@ -68,8 +68,10 @@ def _filter_by_strategy(df: pd.DataFrame) -> pd.DataFrame:
     options = journal_ui.filter_options(df, "strategy")
     if len(options) < 2:                 # 只有一个策略时这个控件是纯噪声
         return df
+    # placeholder 要给：出厂的是一句英文 "Choose options"；留空 = 全部，所以写「不限」
+    # （与「记账」页筛选区的几个多选框同一个词）。
     picked = st.multiselect("按策略筛", options, default=[], key=SCAN_STRATEGY_KEY,
-                            format_func=strategy_label,
+                            format_func=strategy_label, placeholder="不限",
                             help="留空 = 全部。同一只票被两个策略同时报出来只说明"
                                  "两套规则今天都满足，**不代表信号更强**。")
     if not picked:
@@ -94,7 +96,7 @@ def _scan_table(df: pd.DataFrame, names: dict[str, str]) -> None:
         ui.data_table(fmt.for_display(journal_ui.record_table(df)),
                       {**fmt.scan_column_config(),
                        **_record_column(df, names, journal_ui.SCAN_CLICK_KEY)},
-                      "当日无新信号", hint=guide.TABLE_HINTS["scan"],
+                      "当日无新信号",
                       color_columns=ui.SCAN_COLOR_COLUMNS,
                       height=ui.SCAN_TABLE_HEIGHT)
         return
@@ -102,7 +104,7 @@ def _scan_table(df: pd.DataFrame, names: dict[str, str]) -> None:
     ui.data_table(fmt.for_display(
                       journal_ui.record_table(pool.scan_table(df, in_pool))),
                   _scan_columns(df, symbols, names),
-                  "当日无新信号", hint=guide.TABLE_HINTS["scan"],
+                  "当日无新信号",
                   color_columns=ui.SCAN_COLOR_COLUMNS,
                   height=ui.SCAN_TABLE_HEIGHT)
 
@@ -138,8 +140,9 @@ def scan_section(names: dict[str, str]) -> None:
     # 就不是一回事了，而用户看的是屏幕。筛过时两个数都给，才看得出自己筛掉了多少。
     count = (f"报出 {len(df)} 条信号" if len(shown) == len(df)
              else f"筛出 {len(shown)} / {len(df)} 条信号")
+    # 读表说明在小标题后面的帮助圆点里（原先是表格上方的一行灰字）。
     st.html(theme.section(f"全市场扫描（{scan_meta.scan_day(latest)}）· {count}",
-                          ui.scan_scope_pill(latest)))
+                          ui.scan_scope_pill(latest), help=guide.TABLE_HINTS["scan"]))
     _scan_table(shown, names)
 
 
@@ -175,7 +178,7 @@ def _latest_signals(files: list, names: dict[str, str]) -> None:
     scan_section 由 page_signals 在本函数之后调，不受这里的 return 影响。
     """
     latest = files[0]
-    st.html(theme.section(f"最新信号（{latest.stem}）"))
+    st.html(theme.section(f"最新信号（{latest.stem}）", help=guide.TABLE_HINTS["signal"]))
     # 与扫描 CSV 同一套容错：半截/零字节文件不许把整页打没
     try:
         df = pd.read_csv(latest, dtype={"symbol": str})
@@ -191,7 +194,7 @@ def _latest_signals(files: list, names: dict[str, str]) -> None:
     ui.data_table(fmt.for_display(journal_ui.record_table(df)),
                   {**fmt.signal_column_config(),
                    **_record_column(df, names, journal_ui.SIGNAL_CLICK_KEY)},
-                  "当日无新信号", hint=guide.TABLE_HINTS["signal"])
+                  "当日无新信号")
     if len(files) == 1:
         return
     st.html(theme.section("历史信号"))
@@ -207,7 +210,7 @@ def _latest_signals(files: list, names: dict[str, str]) -> None:
         st.write("无")
         return
     hist = pd.concat(frames, ignore_index=True)
-    # 历史表不再重复那行灰字：同一页里连着出现两遍等于噪声。
+    # 历史表的小标题不带帮助圆点：读表说明在上面「最新信号」那一个里，同一页不说两遍。
     # 也刻意**不**带「记一笔」：补记几个月前的老交易走录入表单更合适，
     # 而这张表可能有几百行，多一列按钮只会让"今天该做什么"更难看清。
     ui.data_table(fmt.for_display(hist), fmt.signal_column_config(), "无")

@@ -20,7 +20,7 @@ from quant.market.session import Calendar, Decision, State, TradeDay
 from quant.market.store import MarketStore
 from quant.market.trend import ButtonState as B
 from quant.report import charts, fmt, minicharts
-from quant.runner import process, progress, view
+from quant.runner import process, progress
 
 
 def _store() -> MarketStore:
@@ -143,7 +143,8 @@ def _fallback_note(block: live.Block) -> str:
 
 
 def _index_cards(snap: live.LiveSnapshot) -> None:
-    st.html(theme.section(guide.HOME_INDEX_TITLE))
+    # 数据来源与延迟：在小标题后面的帮助圆点里（原先是页面最底下常驻的一行灰字）。
+    st.html(theme.section(guide.HOME_INDEX_TITLE, help=guide.HOME_SECTION_HELP["index"]))
     if snap.quotes is None:
         st.caption(guide.HOME_UNAVAILABLE)
         return
@@ -268,7 +269,16 @@ def _breadth_and_thermo(snap: live.LiveSnapshot, decision: Decision) -> None:
 def _distribution(snap: live.LiveSnapshot, decision: Decision) -> None:
     b = snap.breadth
     scope = b.scope if b is not None else ""
-    st.html(theme.section(guide.HOME_DIST_TITLE, theme.pill(scope, "idle") if scope else ""))
+    # 分档规则在小标题后面的帮助圆点里（原先是分布图下面常驻的一行灰字）。只在真画得出
+    # 分布图时才有：只有家数的那种兜底数据，圆点里讲二十三档就是指着空气。
+    tip = ""
+    if b is not None and isinstance(b.value, sources.Distribution):
+        # 按数据自己的日期判：盘前/状态未知时显示的是上一交易日的块，那天早已收盘封住
+        closed = session.sealed_at_close(decision.state, b.trade_date, market.now().date())
+        sealed = guide.HOME_SEALED_CLOSE if closed else guide.HOME_SEALED_INTRADAY
+        tip = guide.HOME_SECTION_HELP["dist"].format(sealed=sealed)
+    st.html(theme.section(guide.HOME_DIST_TITLE, theme.pill(scope, "idle") if scope else "",
+                          help=tip))
     if b is None:
         st.caption(guide.HOME_UNAVAILABLE)
         return
@@ -283,10 +293,6 @@ def _distribution(snap: live.LiveSnapshot, decision: Decision) -> None:
     st.html(theme.stat_card("", "", img=minicharts.ratio_bar(up, flat, down)))
     if isinstance(v, sources.Distribution):
         st.html(theme.stat_card("", "", img=minicharts.histogram(v.buckets)))
-        # 按数据自己的日期判：盘前/状态未知时显示的是上一交易日的块，那天早已收盘封住
-        closed = session.sealed_at_close(decision.state, b.trade_date, market.now().date())
-        sealed = guide.HOME_SEALED_CLOSE if closed else guide.HOME_SEALED_INTRADAY
-        st.caption(guide.HOME_BUCKET_NOTE.format(sealed=sealed), help=guide.HOME_HELP["buckets"])
     else:
         st.caption(guide.HOME_COUNTS_ONLY)        # 腾讯兜底：只有家数，画不了分布图
 
@@ -336,8 +342,11 @@ def _trend_cards(ms: MarketStore) -> None:
         st.html(theme.section(guide.HOME_TREND_TITLE))
         return
     asof = pd.Timestamp(table["date"].iloc[-1]).date()      # 表里只有有快照的日子，末行就是真实的最后一天
+    # 小标签只说数据是哪天的；统计范围与下面那张图怎么读，在帮助圆点里
+    # （原先一半挤在这个小标签里、一半是图表下面常驻的一行灰字）。
     pill = theme.pill(guide.HOME_TREND_ASOF.format(day=asof), "idle")
-    st.html(theme.section(guide.HOME_TREND_TITLE, pill))
+    st.html(theme.section(guide.HOME_TREND_TITLE, pill, help=guide.HOME_SECTION_HELP["trend"],
+                          help_wide=True))
     last = table.iloc[-1]
     have, cal, gaps = set(ms.snapshot_dates()), ms.load_calendar(), ms.permanent_gaps()
     cols = st.columns(4)
@@ -367,7 +376,6 @@ def _trend_chart(table: pd.DataFrame) -> None:
                     key="home_trend_span", format_func=lambda k: charts.BREADTH_SPANS[k][0])
     st.plotly_chart(charts.breadth_chart(table, charts.BREADTH_SPANS[span][1]), width="stretch",
                     config={"displayModeBar": False, "displaylogo": False})
-    st.caption(guide.HOME_TREND_CHART_NOTE)
 
 
 def _shortfall_note(n: int, asof: date, cal: Calendar | None, have: set[date], gaps: set[date]) -> str:
@@ -387,29 +395,35 @@ def _job_area(ms: MarketStore) -> None:
         broken, message = True, str(e)
     running = state is not None and state.status == process.RUNNING
     now = market.now()
+    data = dict(snapshot_dates=ms.snapshot_dates(), calendar=ms.load_calendar(),
+                permanent=ms.permanent_gaps(), now=now, ready=market.BREADTH_READY,
+                window=market.WINDOW_TRADING_DAYS)
     bstate = trend.button_state(
         state_broken=broken, running=running,
         busy_other=bool(busy) and busy != "market_breadth",
-        last_failed=state is not None and state.status == process.FAILED,
-        snapshot_dates=ms.snapshot_dates(), calendar=ms.load_calendar(),
-        permanent=ms.permanent_gaps(), now=now, ready=market.BREADTH_READY,
-        window=market.WINDOW_TRADING_DAYS)
+        last_failed=state is not None and state.status == process.FAILED, **data)
     if bstate is B.BROKEN:
         st.error(message)
         return
     if bstate is B.RUNNING:
-        log = process.read_log(state)
-        prog = progress.parse_market_breadth(log)
-        head, detail = view.progress_lines(prog, view.elapsed_seconds(state), status=state.status)
-        ratio = view.progress_ratio(prog)
-        if ratio is not None:              # 必须是 if 语句：裸三元会被 streamlit magic 整条包进 st.write
-            st.progress(ratio, text=head)
-        else:
-            st.caption(head)
+        # **一行：进度、停止、然后是那个点不了的开始按钮——开始按钮始终在这一行的最右端。**
+        # 任务结束（或被停掉）的那一刻，光标底下的按钮不许从「停止」换成「开始」：这一页上停止是
+        # 被鼓励的动作（"可随时停止、下次接着补"），手快再点一下就把刚停的任务又起了一遍。
+        # 控制台卡片与任务条靠"上下错开"防这件事，这里不行——这一区在页面**最底下**：
+        # 任务一停，进度那一行没了、页面变短，浏览器把滚到底的内容整体往下挪，上面那一行的
+        # 开始按钮就落到停止原来的位置（2026-11-16 真机量到：错开成两行之后仍然重合 2 px，
+        # 没有下面那行灰字时完全重合；初稿两个按钮都在第一行右端，独立审查量到完全重合）。
+        # 放进同一行：运行前后这一行的高度不变，开始按钮横竖都不动；停止在它左边，
+        # 任务停下之后那个位置是空的。
+        # 停下之后会是哪个按钮，按"没在跑"再判一次：从没准备过 → 开始准备，补到一半 →
+        # 更新收盘数据；已经补齐（跑完之后本来就没有按钮）时就不画它。
+        idle = trend.button_state(state_broken=False, running=False, busy_other=False,
+                                  last_failed=False, **data)
+        prog = progress.parse_market_breadth(process.read_log(state))
+        detail = ui.running_row(state, prog, stop_key="home_breadth_stop",
+                                trailing=lambda: _start_button(idle, disabled=True))
         if detail:
             st.caption(detail)
-        if st.button(guide.HOME_BTN_STOP, key="home_breadth_stop", icon=":material/stop:"):
-            ui.stop_job(state)
         return
     if bstate is B.BUSY_OTHER:
         st.caption(guide.HOME_TREND_BUSY)
@@ -419,21 +433,46 @@ def _job_area(ms: MarketStore) -> None:
         st.caption(progress.parse_market_breadth(log).extras.get("错误") or guide.HOME_JOB_FAILED)
         with st.expander(guide.HOME_LOG_TITLE):
             st.code(log or guide.HOME_LOG_EMPTY, language="text", height=ui.LOG_BOX_HEIGHT)
-    if bstate in (B.NEVER, B.FAILED_START):
-        if bstate is B.NEVER:
-            st.caption(guide.HOME_TREND_NEVER)
-        label, key = guide.HOME_BTN_START, "home_breadth_start"
-    elif bstate in (B.UPDATE, B.FAILED_UPDATE):
-        label, key = guide.HOME_BTN_UPDATE, "home_breadth_update"
-    elif bstate is B.NOT_READY:
+    if bstate is B.NOT_READY:
         st.caption(guide.HOME_TREND_NOT_READY.format(day=fmt.cn_month_day(now)))
         return
-    else:
-        return                                   # UP_TO_DATE：什么都不显示
-    # 说明挂在按钮自己身上（原生按钮提示，支持加粗与列表）；不再在旁边另开一个带下拉箭头的「?」。
-    if st.button(label, key=key, icon=":material/play_arrow:",
-                 help=guide.JOB_HELP["market_breadth"]):
-        ui.start_job("market_breadth", {})
+    if _start_row(bstate):
+        ui.start_job("market_breadth", {})     # 在那一行外面起：启动失败的那句话要占整行
+
+
+def _start_row(bstate: B) -> bool:
+    """「开始准备 / 更新收盘数据」那一行；返回这一轮有没有按下。不该有按钮的状态什么都不画。
+
+    一行靠右：左边那句话（只有从没准备过时才有），右端是按钮——操作按钮一律靠右（2026-11-16
+    第二轮）。一个横向容器，不用按比例的分栏：1024 宽时按钮那一栏只有一百三十几像素，
+    「更新收盘数据」会折成两行（独立审查量的）；这样写按钮永远是它自己的宽度。
+    """
+    if _start_label(bstate) is None:
+        return False
+    with st.container(horizontal=True, horizontal_alignment="right", vertical_alignment="center"):
+        if bstate is B.NEVER:
+            st.caption(guide.HOME_TREND_NEVER)
+        return _start_button(bstate)
+
+
+def _start_label(bstate: B) -> tuple[str, str] | None:
+    """这个状态下该出哪个开始按钮：(按钮上的字, key)；不该有按钮时是 None。"""
+    if bstate in (B.NEVER, B.FAILED_START):
+        return guide.HOME_BTN_START, "home_breadth_start"
+    if bstate in (B.UPDATE, B.FAILED_UPDATE):
+        return guide.HOME_BTN_UPDATE, "home_breadth_update"
+    return None                                  # 已经补齐 / 还没到时刻 / 别的状态：没有按钮
+
+
+def _start_button(bstate: B, *, disabled: bool = False) -> bool:
+    """开始按钮自己（画在调用方给的那一行里）。说明挂在按钮身上（原生按钮提示，支持加粗与列表）。
+    `disabled` 给运行中那一轮用：按钮留在这一行的最右端、只是点不了（见 _job_area）。"""
+    found = _start_label(bstate)
+    if found is None:
+        return False
+    label, key = found
+    return st.button(label, key=key, icon=":material/play_arrow:", disabled=disabled,
+                     help=guide.JOB_HELP["market_breadth"])
 
 
 @st.fragment(run_every=ui.AUTO_REFRESH_S)
@@ -465,4 +504,3 @@ def page_home() -> None:
     except RuntimeError:
         busy = ""
     (_job_live if busy else _job_idle)(busy)      # 任一任务在跑都 2 秒一跳（§4.4），跑完才能自己发现
-    st.caption(guide.HOME_FOOTER)

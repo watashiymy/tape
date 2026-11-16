@@ -24,8 +24,8 @@ from streamlit.testing.v1 import AppTest
 
 from quant.report import fmt
 from quant.runner import jobs
-from tests.conftest import (APP_FILES, app_module, copy_app, goto_page,
-                            make_bars, stub_navigation)
+from tests.conftest import (APP_FILES, action_button_keys, app_module, copy_app, goto_page,
+                            make_bars, sits_on_the_right, stub_navigation)
 
 ROOT = Path(__file__).resolve().parent.parent
 DASHBOARD = ROOT / "app" / "dashboard.py"
@@ -131,15 +131,19 @@ def _bodies_under(block) -> list[str]:
 
 @pytest.mark.parametrize("page", PAGES)
 def test_every_page_opens_with_a_page_head(tmp_path, page):
-    """取代"直接甩控件"的开局：页名（衬线大字）+ 一句话说明（灰色小字）。"""
+    """取代"直接甩控件"的开局：页名（衬线大字）+ 一个帮助圆点。
+    2026-11-16 起那句"这页给你看什么"不再常驻在页名旁（用户：这类解释性文字读起来是有成本的）
+    ——它在圆点的提示框里，页头的明面上只有页名与状态。"""
     at = _page(tmp_path, page)
     assert not at.exception, at.exception
     heads = [h for h in _htmls(at) if 'class="qd-head"' in h]
     assert len(heads) == 1, f"{page} 应有且仅有一个页头，实际 {len(heads)}"
     head = heads[0]
-    assert f'class="qd-title">{page}<' in head, head
-    assert 'class="qd-sub">' in head and 'class="qd-sub"></span>' not in head, \
-        f"{page} 的页头缺一句话说明: {head}"
+    assert f'class="qd-title">{page}<span class="qd-help-dot' in head, head
+    assert "qd-sub" not in head, f"{page} 的页名旁又有常驻的说明小字了: {head}"
+    tip = head.split('class="qd-help-tip">', 1)[1]
+    assert len(tip.split("</span>", 1)[0]) > 10, f"{page} 页名后面的圆点里没有话: {head}"
+    assert "**" not in head and "\n" not in head, f"{page} 的页头说明没渲染干净: {head}"
 
 
 @pytest.mark.parametrize("page", PAGES)
@@ -410,7 +414,8 @@ def _kline_args(at: AppTest) -> dict:
 
 def test_kline_page_enables_scroll_zoom_and_explains_the_gestures(tmp_path):
     """滚轮/双指缩放是**前端配置**，图对象自己开不了——必须真的传到前端（组件 args 里的
-    config）；图下面一句话说清手势与 ▲▼ 的位置。"""
+    config）。手势与 ▲▼ 的位置在页名后面的帮助圆点里说清——2026-11-16 之前是图下面常驻的
+    三行灰字，那三行不许再回到图下面。"""
     _run_dir(tmp_path, klines=("600519",))
     _cache_bars(tmp_path, "600519")
     at = _page(tmp_path, "个股K线")
@@ -418,8 +423,11 @@ def test_kline_page_enables_scroll_zoom_and_explains_the_gestures(tmp_path):
     args = _kline_args(at)
     assert args["config"].get("scrollZoom") is True, args["config"]
     assert args["config"].get("responsive") is True
+    head = [h for h in _htmls(at) if 'class="qd-head"' in h][0]
+    tip = head.split('class="qd-help-tip">', 1)[1]
+    assert "双指" in tip and "双击" in tip and "▲" in tip, tip
     captions = " ".join(c.value for c in at.caption)
-    assert "双指" in captions and "双击" in captions and "▲" in captions, captions
+    assert "双指" not in captions and "▲" not in captions, captions
 
 
 def test_kline_page_does_not_use_st_plotly_chart(tmp_path):
@@ -850,3 +858,142 @@ def test_buttons_carry_icons_as_icons_not_as_leading_characters():
             assert not (text and text[0] in _GLYPHS), \
                 f"{p.name} L{call.lineno}: 按钮文字以字符图标开头 {text!r}，改用 icon="
     assert seen >= 10, f"只扫到 {seen} 个按钮调用，像是扫描本身出了问题"
+
+
+# ================================================================ 操作按钮一律靠右（2026-11-16）
+#
+# 用户的话：「记这一笔」在左下角，其他页面的一些按钮在右下角，很不统一。现在全站一条规矩：
+# 操作按钮靠右——表单的提交按钮在表单右下角，任务卡片 / 任务条的开始按钮在那一行的右端，
+# 运行中的「停止」在进度条右边。AppTest 没有像素，看的是元素树里的排版（conftest.sits_on_the_right）。
+
+#: 侧栏里的八个功能页（手册三页没有按钮）。
+FUNCTION_PAGES = ["市场概览", "任务控制台", "信号", "信号池", "记账", "持仓与盈亏", "回测报告", "个股K线"]
+
+
+def _with_settings(tmp_path: Path) -> Path:
+    """给 tmp 里放一份真的 settings.yaml：没有它，「记账」页不给录入表单、「信号池」页整页降级，
+    这两页上的按钮就一个都数不到。"""
+    import shutil
+    (tmp_path / "config").mkdir(exist_ok=True)
+    shutil.copy(ROOT / "config" / "settings.yaml", tmp_path / "config" / "settings.yaml")
+    return tmp_path
+
+
+@pytest.mark.parametrize("page", FUNCTION_PAGES)
+def test_every_action_button_sits_on_the_right(tmp_path, page):
+    """谁新加一个按钮顺手放在左边，这条就红。"""
+    at = _page(_with_settings(tmp_path), page)
+    assert not at.exception, at.exception
+    for key in action_button_keys(at):
+        assert sits_on_the_right(at, key), f"{page} 页的按钮 {key} 不在右边"
+
+
+def test_the_button_sweep_really_sees_the_buttons(tmp_path):
+    """上一条的哨兵：页面上要是一个按钮都没数到，那条就是永远通过的空跑。"""
+    _with_settings(tmp_path)
+    seen = {page: action_button_keys(_page(tmp_path, page))
+            for page in ("市场概览", "任务控制台", "信号", "信号池", "记账")}
+    assert seen["市场概览"] == ["home_breadth_start"], seen
+    assert seen["信号池"] == ["universe_load_pool"], seen
+    assert seen["信号"] == ["bar_start_daily_signal", "bar_start_market_scan"], seen
+    assert {"trial_market_scan", "start_market_scan", "rerun_market_scan",
+            "start_backtest", "rerun_backtest"} <= set(seen["任务控制台"]), seen
+    assert {"journal_submit", "journal_other_submit", "journal_restore"} <= set(seen["记账"]), seen
+
+
+def test_the_right_side_check_can_tell_left_from_right(tmp_path):
+    """助手自己的哨兵：帮助中心那个链接所在的容器靠右，记账页的输入框不靠右。
+    它要是对什么都答"靠右"，上面两条就都成了空跑。"""
+    at = _page(_with_settings(tmp_path), "记账")
+    assert sits_on_the_right(at, "journal_submit")
+    assert not sits_on_the_right(at, "journal_symbol"), "第一栏里的输入框不该算靠右"
+    assert not sits_on_the_right(at, "journal_kind"), "直接放在卡片里的切换不该算靠右"
+
+
+@pytest.mark.parametrize("page, job, stop_key", [
+    ("任务控制台", "market_scan", "stop_market_scan"),
+    ("信号", "market_scan", "bar_stop_market_scan"),
+    ("回测报告", "backtest", "bar_stop_backtest"),
+    ("市场概览", "market_breadth", "home_breadth_stop"),
+])
+def test_the_stop_button_sits_right_of_the_progress_wherever_a_job_runs(tmp_path, page, job, stop_key):
+    """运行中的「停止」三处一个画法（ui.running_row）：进度在左、停止在同一行的右端，
+    悬停说明都是那句"关掉浏览器也不会中断"。改之前任务条上的在最左、首页的单独在进度条下面。"""
+    _fake_run(tmp_path, job, "running", log="login success!\n")
+    at = _page(tmp_path, page)
+    assert not at.exception, at.exception
+    assert stop_key in action_button_keys(at), action_button_keys(at)
+    assert sits_on_the_right(at, stop_key), f"{page} 页的「停止」不在右边"
+    stop = at.button(stop_key)
+    assert stop.label == "停止" and stop.proto.icon == ":material/stop:"
+    guide = app_module("guide")
+    assert stop.proto.help == guide.stop_help(job) and guide.CONSOLE_BACKGROUND_NOTE in stop.proto.help
+
+
+# ---------------------------------------------------------------- 助手自己得靠得住
+# 独立审查举了三个反例：初稿的 sits_on_the_right 只看按钮自己那一行靠不靠右，不看这一行本身
+# 在不在右边——靠右对齐的容器若在左边那一栏里，它也答"靠右"。下面是那三个反例与几个正例。
+
+def _layout_left_column_right_aligned():
+    import streamlit as st
+    left, right = st.columns([1, 3])
+    with left.container(horizontal=True, horizontal_alignment="right"):
+        st.button("x", key="k")          # 只到整行四分之一处
+    right.write("右边还有四分之三")
+
+
+def _layout_two_right_aligned_columns():
+    import streamlit as st
+    a, b = st.columns([1, 1])
+    with a.container(horizontal=True, horizontal_alignment="right"):
+        st.button("mid", key="mid")      # 只到整行一半处
+    with b.container(horizontal=True, horizontal_alignment="right"):
+        st.button("end", key="end")
+
+
+def _layout_narrow_column_in_the_left_half():
+    import streamlit as st
+    left, right = st.columns([1, 1])
+    _bar, stop = left.columns([5, 1])
+    stop.button("stop", key="stop")
+    right.write("右半边")
+
+
+def _layout_the_shapes_the_panel_uses():
+    import streamlit as st
+    with st.container(horizontal=True, horizontal_alignment="right"):
+        st.button("plain", key="plain")
+    with st.container(horizontal=True, horizontal_alignment="right"):
+        with st.container(horizontal=True, width="content"):
+            st.button("grouped", key="grouped")
+    _bar, stop = st.columns([5, 1])
+    stop.button("narrow", key="narrow")
+    _a, b = st.columns(2)
+    _c, d = b.columns(2)
+    with d.container(horizontal=True, horizontal_alignment="right"):
+        st.button("nested", key="nested")
+    with st.container(border=True):
+        st.button("bare", key="bare")
+    with st.container(horizontal=True):
+        st.button("leftrow", key="leftrow")
+    _wide, also = st.columns([1, 1])
+    also.button("widecol", key="widecol")
+
+
+@pytest.mark.parametrize("layout, key, expected", [
+    (_layout_left_column_right_aligned, "k", False),
+    (_layout_two_right_aligned_columns, "mid", False),
+    (_layout_two_right_aligned_columns, "end", True),
+    (_layout_narrow_column_in_the_left_half, "stop", False),
+    (_layout_the_shapes_the_panel_uses, "plain", True),      # 靠右对齐的横向容器
+    (_layout_the_shapes_the_panel_uses, "grouped", True),    # 里面再包一组随内容宽的
+    (_layout_the_shapes_the_panel_uses, "narrow", True),     # 5:1 里的那个 1
+    (_layout_the_shapes_the_panel_uses, "nested", True),     # 嵌套分栏，层层都是最后一栏
+    (_layout_the_shapes_the_panel_uses, "bare", False),      # 直接放在卡片里
+    (_layout_the_shapes_the_panel_uses, "leftrow", False),   # 横向容器但靠左
+    (_layout_the_shapes_the_panel_uses, "widecol", False),   # 最后一栏但栏很宽，按钮在它左缘
+])
+def test_sits_on_the_right_tells_right_from_not_right(layout, key, expected):
+    at = AppTest.from_function(layout).run()
+    assert not at.exception, at.exception
+    assert sits_on_the_right(at, key) is expected

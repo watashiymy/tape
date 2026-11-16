@@ -32,9 +32,8 @@ def page_backtest() -> None:
     # 恰好是最要紧的那几次（README 那张叠加层归因表的四组对照就是同一天连着跑的，
     # 区别只在 config_snapshot 里）。所以先铺一张总览表，再选。
     with st.expander(f"全部 {len(runs)} 次回测一览", expanded=False):
-        ui.data_table(ui.runs_overview(runs), {}, "无",
-                      hint="叠加层两列为 — 的是较早的回测（那时还没有这项设置），"
-                           "不是「当时关着」。「标的数」不同就不是同一个池子，收益不可直接比。",
+        # 折叠区里的表没有小标题可挂帮助圆点：表格上方一行很短的「读表说明 ?」。
+        ui.data_table(ui.runs_overview(runs), {}, "无", help=guide.TABLE_HINTS["runs"],
                       height=ui.SCAN_TABLE_HEIGHT)
     # 显示「策略显示名 时间」，底层值仍是产物目录（目录名存键，是数据不是界面）
     run = st.selectbox("选择回测", runs, format_func=lambda p: fmt.run_label(p.name))
@@ -60,15 +59,14 @@ def page_backtest() -> None:
     # src/width/height/tab_index），iframe 自带滚动条，不需要它。
     # 不能换成 st.html：那个不套 iframe 且默认忽略 JavaScript，plotly 报告会是空白页。
     st.iframe(run / "report.html", height=650)
-    st.html(theme.section("交易明细"))
+    # 两张表的读表说明都在小标题后面的帮助圆点里（原先是表格上方的灰字、标题里的括号）。
+    st.html(theme.section("交易明细", help=guide.TABLE_HINTS["trades"]))
     ui.data_table(fmt.map_action_labels(trades), fmt.trades_column_config(),
-                  "本次回测没有任何成交",
-                  hint=guide.TABLE_HINTS["trades"])
+                  "本次回测没有任何成交")
     if skipped is not None:
-        st.html(theme.section("被跳过的订单（涨跌停/资金不足等）"))
+        st.html(theme.section("被跳过的订单", help=guide.TABLE_HINTS["skipped"]))
         # 这张表只有 date/symbol/reason，列配置得各用各的（成交表那套会漏掉 reason）
-        ui.data_table(skipped, fmt.skipped_column_config(), "无被跳过的订单",
-                      hint=guide.TABLE_HINTS["skipped"])
+        ui.data_table(skipped, fmt.skipped_column_config(), "无被跳过的订单")
 
 
 def page_kline() -> None:
@@ -121,11 +119,9 @@ def page_kline() -> None:
     # 不走 st.plotly_chart：它在缩放中途反复重画整图，触控板双指缩放会抽动
     # （根因与实测见 app/kline_view.py 的模块 docstring）。config 必须传：滚轮/双指缩放
     # 是前端行为，图对象自己开不了（见 charts.KLINE_CONFIG）。
+    # 怎么操作这张图、▲▼ 是什么：在页名后面的帮助圆点里（ui.PAGE_INTRO），不再常驻在图下面。
     kline_view.render(charts.kline_chart(df, sym_trades, sym, freq=freq, span=span),
                       config=charts.KLINE_CONFIG, bg=palette.SURFACE)
-    st.caption("悬停查看开高低收与成交量、成交额；滚轮或触控板双指缩放，拖动平移，双击复位。"
-               "▲▼ 标在 K 线外侧：▲ 在最低价下方是买入，▼ 在最高价上方是卖出。"
-               "横轴按交易日紧排，不留周末与节假日的空档。")
 
 
 def _symbol_summary(rows: pd.DataFrame) -> None:

@@ -31,8 +31,9 @@ from streamlit.testing.v1 import AppTest
 from quant.backtest.costs import commission, stamp_tax
 from quant.config import load_settings
 from quant.journal import export, schema, store
-from tests.conftest import (app_module, click_row_button, copy_app, edit_table, goto_page,
-                            make_bars)
+from tests.conftest import (action_button_keys, app_module, click_row_button, copy_app,
+                            edit_table, element_path, element_slot, goto_page, make_bars,
+                            path_to_element, sits_on_the_right)
 
 ROOT = Path(__file__).resolve().parent.parent
 REAL_CONFIG = ROOT / "config" / "settings.yaml"
@@ -422,7 +423,7 @@ def test_the_entry_page_keeps_the_form_in_a_card(tmp_path):
 
 def _fill_entry(at: AppTest, *, symbol="000333", shares=1000.0, price=71.5,
                 day: date = D_BUY, kind="buy", reason="20日线金叉") -> AppTest:
-    at.radio(key=jui.KIND_KEY).set_value(kind)
+    at.button_group(key=jui.KIND_KEY).set_value(kind)
     at.date_input(key=jui.DATE_KEY).set_value(day)
     at.text_input(key=jui.SYMBOL_KEY).set_value(symbol)
     at = at.run()
@@ -583,7 +584,7 @@ def test_other_records_can_be_entered_too(tmp_path):
     root = _root(tmp_path)
     _journal(root, _buy())
     at = _page(root)
-    at.radio(key=jui.OTHER_KIND_KEY).set_value("dividend")
+    at.button_group(key=jui.OTHER_KIND_KEY).set_value("dividend")
     at.date_input(key=jui.OTHER_DATE_KEY).set_value(D_SELL)
     at.text_input(key=jui.OTHER_SYMBOL_KEY).set_value("000333")
     at = at.run()
@@ -632,9 +633,12 @@ def test_the_entry_page_offers_restore_instead_of_naming_the_backup_file(tmp_pat
     assert not at.exception, at.exception
     text = _texts(at)
     assert "trades.csv.bak" not in text, f"记账页还在要求使用者认识备份文件：{text}"
-    assert "上一版" in text, f"没说清有「上一版」可以换回：{text}"
+    # 「恢复上一版」这个按钮自己就是告示（2026-11-16 第二轮之前另有一行常驻的灰字讲它）；
+    # 怎么用、只留几版，在它的悬停说明里。
     button = at.button(key=jui.RESTORE_KEY)
     assert (button.label, button.proto.icon) == ("恢复上一版", ":material/undo:")
+    assert button.proto.help == _guide().JOURNAL_RESTORE_HELP and "只留一版" in button.proto.help
+    assert ".bak" not in button.proto.help
     assert button.disabled, "没勾确认之前按钮必须是禁用的（两步纪律，同删除）"
     assert not at.checkbox(key=jui.RESTORE_CONFIRM_KEY).disabled
 
@@ -646,9 +650,8 @@ def test_the_restore_button_is_disabled_and_explained_before_the_first_save(tmp_
     at = _page(root)
 
     assert not at.exception, at.exception
-    assert "上一版" in _texts(at)
     button = at.button(key=jui.RESTORE_KEY)
-    assert button.disabled
+    assert button.label == "恢复上一版" and button.disabled
     assert "第一次保存" in button.proto.help, button.proto.help
     assert at.checkbox(key=jui.RESTORE_CONFIRM_KEY).disabled
 
@@ -932,7 +935,7 @@ def test_recording_from_a_signal_jumps_to_the_journal_with_the_form_prefilled(tm
         f"点了「记一笔」没跳到日志页：{heads}"
     assert at.text_input(key=jui.SYMBOL_KEY).value == "000333"
     assert at.date_input(key=jui.DATE_KEY).value == date(2026, 8, 24)
-    assert at.radio(key=jui.KIND_KEY).value == "buy"
+    assert at.button_group(key=jui.KIND_KEY).value == "buy"
     assert at.selectbox(key=jui.SOURCE_KEY).value == "ma_cross"
     assert "美的集团" in _texts(at)
     assert at.number_input(key=jui.PRICE_KEY).value is None, "价格不该被预填"
@@ -945,7 +948,7 @@ def test_recording_a_sell_signal_prefills_the_sell_direction(tmp_path):
     at = click_row_button(at, jui.RECORD_COLUMN, 0, jui.RECORD_LABEL)
 
     assert not at.exception, at.exception
-    assert at.radio(key=jui.KIND_KEY).value == "sell"
+    assert at.button_group(key=jui.KIND_KEY).value == "sell"
     assert at.selectbox(key=jui.SOURCE_KEY).value == "donchian"
 
 
@@ -1582,7 +1585,7 @@ def _check_line(at: AppTest) -> str:
     return ""
 
 
-def test_the_first_row_is_the_five_things_every_trade_needs(tmp_path):
+def test_fees_and_the_two_optional_fields_are_tucked_into_more(tmp_path):
     """自动算好的费用与两个可空项收进「更多」：它们九成的时候不用碰，
     摆在明面上却和必填的五样一个分量——第一次来的人分不清先填哪个。
     折叠而不是不渲染：控件一直在页面上，费用照常自动算。"""
@@ -1658,7 +1661,11 @@ def test_an_active_filter_is_spelled_out_above_the_table_and_can_be_cleared(tmp_
     said = [c.value for c in at.main.caption if "筛出" in c.value]
     assert len(said) == 1, [c.value for c in at.main.caption]
     assert "筛出 1 / 2 条" in said[0] and "卖出" in said[0] and "「跌破」" in said[0], said
-    assert "导出也只含这些" in said[0], said
+    # "导出也只含这些"是解释，不在这一行；它在两个导出按钮自己的悬停说明里
+    assert "导出" not in said[0], said
+    exports = at.get("download_button")
+    assert len(exports) == 2 and all("筛选" in e.proto.help for e in exports), \
+        [e.proto.help for e in exports]
     clear = at.button(key=jui.FILTER_CLEAR_KEY)
     assert (clear.label, clear.proto.type) == (_guide().JOURNAL_FILTER_CLEAR, "tertiary")
 
@@ -1684,6 +1691,11 @@ def test_filtering_everything_away_says_so_and_keeps_the_way_out(tmp_path):
     assert _guide().JOURNAL_FILTER_NONE in _texts(at)
     assert at.button(key=jui.FILTER_CLEAR_KEY), "筛没了更需要「清除筛选」"
     assert not [e for e in at.get("dataframe") if e.proto.id], "筛没了就不画一张空的编辑表"
+    # 没有表可改，就没有「保存修改」（点下去没有东西可存）；撤销与导出照留。
+    # 变异自查抓到这一处没人钉：按钮从表格的函数里挪出来之后，它在不在得另外判。
+    keys = action_button_keys(at)
+    assert jui.SAVE_KEY not in keys, keys
+    assert {jui.RESTORE_KEY, jui.CSV_KEY, jui.XLSX_KEY} <= set(keys), keys
 
 
 def test_an_empty_journal_shows_the_way_in_and_nothing_to_operate_on(tmp_path):
@@ -1696,11 +1708,15 @@ def test_an_empty_journal_shows_the_way_in_and_nothing_to_operate_on(tmp_path):
     assert guide.JOURNAL_LOG_TITLE.format(n=0) in _texts(at)
     assert not [e for e in at.expander if e.label == guide.JOURNAL_FILTER], "没有记录时不出筛选"
     assert not at.get("download_button"), "没有记录时不出导出"
-    # 屏幕上没有导出按钮，那句常驻的话里就不该还叫人"用导出"（审查时抓到的）
+    # 屏幕上没有导出按钮，页面上就不该有哪句话还叫人"用导出"（审查时抓到的）
     assert not any("导出" in c.value for c in at.main.caption), [c.value for c in at.main.caption]
-    assert any("恢复上一版" in c.value for c in at.main.caption), "撤销手段在哪还得说"
     assert not [e for e in at.get("dataframe") if e.proto.id]
-    assert at.button(key=jui.RESTORE_KEY).disabled
+    # 撤销手段还在：按钮自己就是告示（没有可恢复的版本，所以禁用，悬停说明里说为什么）
+    restore = at.button(key=jui.RESTORE_KEY)
+    assert restore.label == "恢复上一版" and restore.disabled
+    # 没有表可改，小标题后面就不带那个讲"怎么改怎么删"的帮助圆点
+    head = [h for h in _texts(at).splitlines() if 'class="qd-section"' in h and "历史记录" in h]
+    assert head and "qd-help-dot" not in head[0], head
 
 
 def test_unsaved_edits_are_called_out_next_to_the_save_button(tmp_path):
@@ -1757,20 +1773,23 @@ def test_blank_cells_show_a_dash_not_the_word_none(tmp_path):
 
 
 def test_the_tools_under_the_table_explain_themselves_on_hover(tmp_path):
-    """表格下面改之前是三段常驻的灰字。现在只留一句撤销手段在哪，
-    其余的话挂在各自的按钮上（悬停才出）。"""
+    """表格上下改之前是四段常驻的灰字（怎么改怎么删、保存说明、撤销手段、导出说明）。
+    2026-11-16 第二轮起一句都不常驻：怎么改怎么删在「历史记录」小标题后面的帮助圆点里，
+    其余的挂在各自的按钮上（悬停才出）。没有待保存的改动时，表格周围没有一行小字。"""
     root = _root(tmp_path)
-    _journal(root, _buy(), _sell())
+    path = _journal(root, _buy(), _sell())
+    store.save_trades(store.load_trades(path), path)     # 造出一份备份：恢复按钮才有正经的说明
     at = _page(root)
     guide = _guide()
     assert at.button(key=jui.SAVE_KEY).proto.help == guide.JOURNAL_EDIT_HINT
+    assert at.button(key=jui.RESTORE_KEY).proto.help == guide.JOURNAL_RESTORE_HELP
+    assert {e.proto.help for e in at.get("download_button")} == set(guide.JOURNAL_EXPORT_HELP.values())
     captions = [c.value for c in at.main.caption]
-    assert guide.JOURNAL_BACKUP_NOTE in captions, captions
-    assert guide.JOURNAL_EDIT_HINT not in captions and \
-        not any(v in captions for v in guide.JOURNAL_EXPORT_HELP.values()), captions
+    assert captions == [], f"没有筛选、没有待保存的改动时，这一页不该有任何常驻的小字: {captions}"
     hint = guide.TABLE_HINTS["journal"]
-    assert captions.count(hint) == 1 and "不会" in hint and "重算" in hint, \
-        "改股数或成交价时金额不会跟着变——这一句得留在表格上方"
+    assert "不会" in hint and "重算" in hint, "改股数或成交价时金额不会跟着变——这一句不能丢"
+    head = [h for h in _texts(at).splitlines() if 'class="qd-section"' in h and "历史记录" in h]
+    assert len(head) == 1 and "qd-help-tip" in head[0] and "重算" in head[0], head
 
 
 # ---------------------------------------------------------------- 记完之后清表单（2026-11-16 真机抓到）
@@ -1812,7 +1831,7 @@ def test_the_form_keeps_direction_source_and_date_after_recording(tmp_path):
     at = at.button(key=jui.SUBMIT_KEY).click().run()
 
     assert not at.exception, at.exception
-    assert at.radio(key=jui.KIND_KEY).value == "sell"
+    assert at.button_group(key=jui.KIND_KEY).value == "sell"
     assert at.selectbox(key=jui.SOURCE_KEY).value == "ma_cross"
     assert at.date_input(key=jui.DATE_KEY).value == D_SELL
 
@@ -1835,7 +1854,7 @@ def test_a_refused_trade_leaves_the_form_as_typed(tmp_path):
 
 
 def _record_a_dividend(at: AppTest, amount: float = 320.0) -> AppTest:
-    at.radio(key=jui.OTHER_KIND_KEY).set_value("dividend")
+    at.button_group(key=jui.OTHER_KIND_KEY).set_value("dividend")
     at.date_input(key=jui.OTHER_DATE_KEY).set_value(D_SELL)
     at.text_input(key=jui.OTHER_SYMBOL_KEY).set_value("000333")
     at.text_input(key=jui.OTHER_REASON_KEY).set_value("2025年度分红")
@@ -1883,7 +1902,7 @@ def test_recording_a_share_adjustment_empties_its_share_count_too(tmp_path):
     root = _root(tmp_path)
     _journal(root, _buy())
     at = _page(root)
-    at.radio(key=jui.OTHER_KIND_KEY).set_value("adjust")
+    at.button_group(key=jui.OTHER_KIND_KEY).set_value("adjust")
     at.date_input(key=jui.OTHER_DATE_KEY).set_value(D_SELL)
     at.text_input(key=jui.OTHER_SYMBOL_KEY).set_value("000333")
     at = at.run()
@@ -2183,3 +2202,324 @@ def test_the_first_refusal_a_newcomer_sees_is_in_plain_chinese(tmp_path):
     assert "没有" in said and "股数" in said and "成交价" in said, said
     for key in ("buy", "shares", "price"):
         assert key not in said, f"报错里冒出了内部键 {key!r}: {said}"
+
+
+# ================================================================ 第二轮：减字、重排、按钮靠右（2026-11-16）
+#
+# 用户看过上面那一版之后提的三条：① 页面上常驻的解释性文字拿掉，用「？」提示、光标移上去
+# 再弹出来；② 「记一笔」方向与四个输入框挤在一行，单选框后面空着一大截，看着别扭；
+# ③ 操作按钮位置不统一——「记这一笔」在左下，别的页有的在右。
+# AppTest 没有像素，下面钉的是元素树里看得见的东西：谁和谁同一行、第几栏、各栏权重、
+# 容器朝哪边对齐，以及哪些话在明面上、哪些只在悬停说明里。
+
+def _column_row(at: AppTest, key: str):
+    """key 那个控件所在的（最里层）那一行分栏。"""
+    rows = [n for n in element_path(at, key)
+            if any(getattr(c, "type", "") == "column" for c in getattr(n, "children", {}).values())]
+    assert rows, f"{key} 不在任何一行分栏里"
+    return rows[-1]
+
+
+def _row_layout(at: AppTest, key: str) -> list[tuple[list[str], float]]:
+    """key 所在那一行分栏：每一栏里的控件 key（按先后）与这一栏的权重。"""
+    return [([k for e in _walk(col) if (k := getattr(e, "key", None))], col.weight)
+            for col in _column_row(at, key).children.values()]
+
+
+def _page_order(at: AppTest) -> list[str]:
+    """页面正文里的先后：带 key 的控件记 key，我们自己包的 HTML 记正文。"""
+    out = []
+    for e in _walk(at.main):
+        if key := getattr(e, "key", None):
+            out.append(key)
+        elif (body := getattr(getattr(e, "proto", None), "body", None)) and "qd-" in body:
+            out.append(body)
+    return out
+
+
+def test_direction_is_a_toggle_above_the_fields_not_one_of_them(tmp_path):
+    """方向是表单最上面的一个「买入｜卖出」切换，不再是第一行里的一格。
+    改之前它与四个输入框排成一行五格：单选框只占半格，后面空着一大截（用户原话：看着别扭）。"""
+    at = _page(_root(tmp_path))
+    kind = at.button_group(key=jui.KIND_KEY)
+    assert kind.options == ["买入", "卖出"] and kind.value == "buy"
+    assert kind.proto.required, "点已经选中的那个不许变成「都没选」"
+    assert kind.proto.label_visibility.value == kind.proto.label_visibility.COLLAPSED, \
+        "「买入｜卖出」自己就说清了这是什么，上面不必再顶一行「方向」"
+    assert getattr(element_path(at, jui.KIND_KEY)[-1], "type", "") != "column", \
+        "方向又被塞回某一行分栏里了"
+    order = _page_order(at)
+    assert order.index(jui.KIND_KEY) < order.index(jui.SYMBOL_KEY), "切换在四个输入框上面"
+
+
+def test_the_first_row_is_four_equal_fields(tmp_path):
+    """第一行只有每一笔都要填的四样，四格等宽：代码、成交日期、股数、成交价。"""
+    at = _page(_root(tmp_path))
+    layout = _row_layout(at, jui.SYMBOL_KEY)
+    assert [keys for keys, _ in layout] == [[jui.SYMBOL_KEY], [jui.DATE_KEY],
+                                            [jui.SHARES_KEY], [jui.PRICE_KEY]], layout
+    assert len({weight for _, weight in layout}) == 1, f"四格应等宽: {layout}"
+
+
+def test_the_why_row_lines_up_with_the_four_fields_above(tmp_path):
+    """第二行：理由占上面四格里的前两格，来源与计划止损各占一格。
+    **先对半分、右半边再对半分**，不是一行 2:1:1——栏间空隙是固定宽度，三栏两道空隙、
+    四栏三道，2:1:1 的竖线会比上面那一行偏出几个像素（真机量过）；嵌套之后逐栏对齐。"""
+    at = _page(_root(tmp_path))
+    outer = _row_layout(at, jui.REASON_KEY)
+    assert [keys for keys, _ in outer] == [[jui.REASON_KEY], [jui.SOURCE_KEY, jui.STOP_KEY]], outer
+    assert outer[0][1] == outer[1][1], f"左右各半: {outer}"
+    inner = _row_layout(at, jui.SOURCE_KEY)
+    assert [keys for keys, _ in inner] == [[jui.SOURCE_KEY], [jui.STOP_KEY]], inner
+    assert inner[0][1] == inner[1][1], f"右半边再对半: {inner}"
+
+
+def test_an_empty_form_carries_no_standing_explanation(tmp_path):
+    """什么都没填时，卡片上没有一行说明。改之前第一行下面常驻一句"填入 6 位代码后，这里会带出
+    名称与该日的价格区间（都取自本地数据，离线可用）"——用户点名让拿掉的就是它。
+    那句话现在在「代码」输入框自己的悬停说明里。"""
+    at = _page(_root(tmp_path))
+    assert [c.value for c in at.main.caption] == [], [c.value for c in at.main.caption]
+    shown = [b for b in _page_order(at) if "qd-task-lead" in b or "qd-task-status" in b]
+    assert shown == [], f"什么都没填，表单底部却有字: {shown}"
+    tip = at.text_input(key=jui.SYMBOL_KEY).proto.help
+    assert tip == _guide().JOURNAL_SYMBOL_HELP and "价格区间" in tip and "离线" not in tip
+
+
+@pytest.mark.parametrize("key", [jui.SYMBOL_KEY, jui.DATE_KEY, jui.SHARES_KEY, jui.PRICE_KEY,
+                                 jui.REASON_KEY, jui.SOURCE_KEY, jui.STOP_KEY,
+                                 jui.OTHER_SYMBOL_KEY, jui.OTHER_DATE_KEY, jui.OTHER_SHARES_KEY,
+                                 jui.OTHER_AMOUNT_KEY, jui.OTHER_SOURCE_KEY, jui.OTHER_REASON_KEY])
+def test_field_titles_carry_no_explanations_in_brackets(tmp_path, key):
+    """输入框的标题只说它是什么。改之前有四个标题带着括号说明（理由（为什么做这一笔）、
+    股数变化（送股填正、缩股填负）……），那些话现在在悬停说明或示例文字里。"""
+    at = _page(_root(tmp_path))
+    widget = next(e for e in _walk(at.main) if getattr(e, "key", None) == key)
+    assert "（" not in widget.label and "(" not in widget.label, widget.label
+
+
+def test_the_check_lines_sit_in_the_footer_beside_the_submit_button(tmp_path):
+    """核对那两行在表单底部左侧，紧挨着右下角的主按钮——点之前眼睛正好经过它。
+    改之前它夹在第一行与第二行之间，按钮单独在左下角。"""
+    at = _fill_entry(_page(_root(tmp_path)))
+    left, right = _column_row(at, jui.SUBMIT_KEY).children.values()
+    said = [b for e in _walk(left) if (b := getattr(getattr(e, "proto", None), "body", None))]
+    assert len(said) == 1 and "qd-task-lead" in said[0] and "qd-task-status" in said[0], said
+    assert "美的" in said[0] or "000333" in said[0], said        # 第一行：代码带出的名称
+    assert "共付出 71,517.88 元" in said[0], said                # 第二行：会写进去的钱
+    assert _keys_inside(right) == {jui.SUBMIT_KEY}
+    order = _page_order(at)
+    assert order.index(jui.FEE_KEY) < order.index(said[0]) < order.index(jui.SUBMIT_KEY), \
+        "核对在「更多」之后、主按钮之前——它是表单的最后一样东西"
+
+
+def test_the_submit_button_is_the_primary_one_in_the_bottom_right(tmp_path):
+    at = _page(_root(tmp_path))
+    button = at.button(key=jui.SUBMIT_KEY)
+    assert (button.label, button.proto.type) == ("记这一笔", "primary")
+    assert sits_on_the_right(at, jui.SUBMIT_KEY), "「记这一笔」应在表单右下角"
+    card_keys = [k for k in _page_order(at) if k in (jui.KIND_KEY, jui.SYMBOL_KEY, jui.REASON_KEY,
+                                                     jui.FEE_KEY, jui.SUBMIT_KEY)]
+    assert card_keys[-1] == jui.SUBMIT_KEY, f"主按钮是表单里的最后一个控件: {card_keys}"
+
+
+def test_other_records_form_is_laid_out_like_the_main_one(tmp_path):
+    """「其他记录」与上面那张表单同一种排法：类型是最上面的一个切换，一行四格，按钮在右下角。
+    改之前折叠区一打开先是三行灰字，那些话现在在两个输入框自己的悬停说明里。"""
+    at = _page(_root(tmp_path))
+    guide = _guide()
+    box = next(e for e in at.expander if e.label.startswith("其他记录"))
+    kind = at.button_group(key=jui.OTHER_KIND_KEY)
+    assert kind.options == ["股数调整", "现金分红"] and kind.value == "adjust" and kind.proto.required
+    layout = _row_layout(at, jui.OTHER_SYMBOL_KEY)
+    assert [keys for keys, _ in layout] == [[jui.OTHER_SYMBOL_KEY], [jui.OTHER_DATE_KEY],
+                                            [jui.OTHER_SHARES_KEY], [jui.OTHER_AMOUNT_KEY]], layout
+    assert len({weight for _, weight in layout}) == 1, layout
+    assert [keys for keys, _ in _row_layout(at, jui.OTHER_REASON_KEY)] == [
+        [jui.OTHER_REASON_KEY], [jui.OTHER_SOURCE_KEY, jui.OTHER_SUBMIT_KEY]]
+    assert [keys for keys, _ in _row_layout(at, jui.OTHER_SOURCE_KEY)] == [
+        [jui.OTHER_SOURCE_KEY], [jui.OTHER_SUBMIT_KEY]]
+    assert at.button(key=jui.OTHER_SUBMIT_KEY).label == "记这一条"
+    assert sits_on_the_right(at, jui.OTHER_SUBMIT_KEY)
+    assert not [e for e in _walk(box) if getattr(e, "type", "") == "caption"], "折叠区里又有常驻的灰字了"
+    assert at.number_input(key=jui.OTHER_SHARES_KEY).proto.help == guide.JOURNAL_ADJUST_HELP
+    # 正负号填反是这一页上不会报错的错：空着的框里摆一个示例，不能只靠悬停说明
+    assert at.number_input(key=jui.OTHER_SHARES_KEY).proto.placeholder == "100 或 -50"
+    assert at.number_input(key=jui.OTHER_AMOUNT_KEY).proto.help == guide.JOURNAL_DIVIDEND_HELP
+    assert "不改成本总额" in guide.JOURNAL_ADJUST_HELP and "佣金" in guide.JOURNAL_DIVIDEND_HELP
+
+
+def test_every_button_on_the_entry_page_sits_on_the_right(tmp_path):
+    """操作按钮一律靠右（用户：位置要统一）。谁新加一个按钮顺手放在左边，这条就红。"""
+    root = _root(tmp_path)
+    _journal(root, _buy(), _sell())
+    at = _page(root)
+    at.multiselect(key=jui.FILTER_KIND_KEY).set_value(["sell"])      # 让「清除筛选」也出现
+    at = at.run()
+    keys = action_button_keys(at)
+    assert set(keys) == {jui.SUBMIT_KEY, jui.OTHER_SUBMIT_KEY, jui.FILTER_CLEAR_KEY, jui.SAVE_KEY,
+                         jui.RESTORE_KEY, jui.CSV_KEY, jui.XLSX_KEY}, keys
+    for key in keys:
+        assert sits_on_the_right(at, key), f"{key} 不在右边"
+
+
+def test_the_actions_under_the_table_are_one_row_ending_with_save(tmp_path):
+    """历史表下面一行，从左到右：恢复上一版（确认框在它前面，先勾再点）、两个导出、保存修改
+    ——主按钮在最右。改之前它们分三处：保存在表格左下，撤销在更下面一行的左边，导出在那一行右边。"""
+    root = _root(tmp_path)
+    _journal(root, _buy(), _sell())
+    at = _page(root)
+    row = [jui.RESTORE_CONFIRM_KEY, jui.RESTORE_KEY, jui.CSV_KEY, jui.XLSX_KEY, jui.SAVE_KEY]
+    assert [k for k in _page_order(at) if k in row] == row
+    # 同一个靠右的横向容器里分两组：撤销一组，导出与保存一组。窄屏放不下时整组折行，
+    # 不会把确认框和它的按钮、或者两个导出拆在两行上。
+    groups = [element_path(at, key)[-1] for key in row]
+    assert groups[0] is groups[1] and groups[2] is groups[3] is groups[4], "分组不对"
+    assert groups[0] is not groups[2]
+    for group in (groups[0], groups[2]):
+        assert group.proto.width_config.use_content, "组要随内容宽，否则它自己就占满一行"
+    outers = {id(element_path(at, key)[-2]) for key in row}
+    assert len(outers) == 1, "两组应在同一个横向容器里"
+    editor = at.get("dataframe")[_log_table_index(at)]
+    order = [e for e in _walk(at.main)]
+    assert order.index(editor) < order.index(at.button(key=jui.SAVE_KEY)), "这一行在表格下面"
+
+
+def test_the_pending_note_appears_below_the_actions_and_moves_no_button(tmp_path):
+    """有没保存的改动时那句提醒在按钮那一行的**下面**、靠右。它是改了第一格才冒出来的：
+    放在按钮上方会把整行按钮顶下去——真实浏览器里量过，1024 宽下「恢复上一版」正好落到
+    「保存修改」原来的位置上，确认框若恰好勾着，奔着保存去的那一下就成了恢复（独立审查抓到的）。
+    所以钉两件事：提醒在那一行之后；五样东西的位置在提醒出现前后一模一样。"""
+    root = _root(tmp_path)
+    _journal(root, _buy(), _sell())
+    row = [jui.RESTORE_CONFIRM_KEY, jui.RESTORE_KEY, jui.CSV_KEY, jui.XLSX_KEY, jui.SAVE_KEY]
+    at = _page(root)
+    quiet = {key: element_slot(at, key) for key in row}
+
+    at = edit_table(at, {0: {"reason": "改了理由"}}, dataframe=_log_table_index(at))
+    assert not at.exception, at.exception
+    notes = [c for c in at.main.caption if "还没保存" in c.value]
+    assert len(notes) == 1, [c.value for c in at.main.caption]
+    assert {key: element_slot(at, key) for key in row} == quiet, "提醒一出现，按钮挪了位置"
+    order = [e for e in _walk(at.main)]
+    holder = element_path(at, jui.SAVE_KEY)[-2]            # 靠右的那一行（[-1] 是行里的一组）
+    assert order.index(holder) < order.index(notes[0]), "提醒要在按钮那一行下面"
+    # 靠右：它在一个靠右对齐的横向容器里（容器的对齐在元素树里看得见，文字自己的对齐看不见）
+    box = path_to_element(at, notes[0])[-1].proto.flex_container
+    assert box.direction == box.Direction.HORIZONTAL and box.justify == box.Justify.JUSTIFY_END
+    assert at.button(key=jui.SAVE_KEY).proto.type == "primary"
+
+
+def test_the_submit_button_does_not_move_when_the_check_lines_appear(tmp_path):
+    """核对那两行是填完最后一格才冒出来的——人正把光标往「记这一笔」上移。那一行两栏必须
+    **顶端对齐**：底端对齐时按钮会被它顶下去（真实浏览器里量过，1024 宽下核对折成四行，
+    按钮下移 48 px）。AppTest 量不了像素，钉的是对齐方式与按钮在元素树里的位置不变。"""
+    at = _page(_root(tmp_path))
+    empty = element_slot(at, jui.SUBMIT_KEY)
+    at = _fill_entry(at)
+    assert _check_line(at), "前提：核对那两行出来了"
+    assert element_slot(at, jui.SUBMIT_KEY) == empty
+    for column in _column_row(at, jui.SUBMIT_KEY).children.values():
+        align = column.proto.vertical_alignment
+        assert align == column.proto.VerticalAlignment.TOP, "核对与按钮那一行要顶端对齐"
+
+
+def test_the_action_row_survives_a_missing_excel_writer(tmp_path, monkeypatch):
+    """导不出 Excel（缺那个库）时：只摘掉 Excel 按钮并如实说明，CSV、撤销、保存照常——
+    这句说明现在与按钮同在一行里，页面不许因此出错（独立审查指出这条分支在页面上没人测）。"""
+    def no_excel(frame):
+        raise RuntimeError("导出 Excel 需要另装一个库")
+    monkeypatch.setattr(export, "to_excel_bytes", no_excel)
+    root = _root(tmp_path)
+    _journal(root, _buy(), _sell())
+    at = _page(root)
+    assert not at.exception, at.exception
+    keys = action_button_keys(at)
+    assert jui.XLSX_KEY not in keys and {jui.CSV_KEY, jui.SAVE_KEY, jui.RESTORE_KEY} <= set(keys), keys
+    said = [c for c in at.main.caption if "导出 Excel 需要" in c.value]
+    assert len(said) == 1, [c.value for c in at.main.caption]
+    assert path_to_element(at, said[0])[-1] is element_path(at, jui.CSV_KEY)[-1], \
+        "那句说明应在导出那一组里，占着 Excel 按钮的位置"
+    for key in keys:
+        assert sits_on_the_right(at, key), key
+
+
+def test_prefilled_form_keeps_one_short_warning_about_the_signal_day(tmp_path):
+    """从「信号」页点「＋ 记一笔」过来：表单上方留一句话（预填的日期是信号日，不是成交日——
+    照着记就是一个看着正常的错数）。只留要做的事，不再展开讲为什么。"""
+    text = _guide().JOURNAL_PREFILLED.format(source="双均线交叉信号", day="2026-08-25")
+    assert "信号日" in text and "实际成交那天" in text and len(text) < 70, text
+    # 成交价与股数是空着的（不预填），所以说"填"不说"改"（独立审查指出初稿的"请按实际成交改"
+    # 读着像它们已经填好了）
+    assert "成交价与股数按实际成交填" in text, text
+
+
+# ---------------------------------------------------------------- 「持仓与盈亏」页的减字
+def _report_section(at: AppTest, title: str) -> str:
+    heads = [b for e in at.get("html")
+             if f'class="qd-section">{title}' in (b := e.proto.body)]
+    assert len(heads) == 1, heads
+    return heads[0]
+
+
+def test_the_report_page_keeps_how_the_numbers_are_counted_in_the_dashboard_dot(tmp_path):
+    """口径说明（为什么是元、与回测同口径、没有市价的怎么算）在「仪表盘」小标题后面的帮助圆点里。
+    2026-11-16 之前它们是指标块上下常驻的三段灰字。"""
+    root = _root(tmp_path)
+    _journal(root, _buy(), _sell())
+    at = _page(root, REPORT_PAGE)
+    assert not at.exception, at.exception
+    head = _report_section(at, "仪表盘")
+    tip = head.split('class="qd-help-tip">', 1)[1]
+    assert "收益率" in tip and "同一套口径" in tip and "不按 0 算" in tip, tip
+    assert "qd-help-wide" in head, "三段话，要用宽档的提示框"
+    shown = "\n".join(c.value for c in at.main.caption)
+    for gone in ("同一套口径", "金额一律是", "同一个函数"):
+        assert gone not in shown, f"页面上又常驻着一句口径说明：{gone}"
+
+
+def test_positions_without_a_price_are_still_called_out_in_one_short_line(tmp_path):
+    """有持仓拿不到市价：这是事实、会影响上面的数怎么读，所以留在明面上——只留事实那半句，
+    为什么与怎么办在圆点里。"""
+    root = _root(tmp_path)
+    _journal(root, _buy())                      # 只买不卖：一只持仓，tmp 里没有它的行情
+    at = _page(root, REPORT_PAGE)
+    assert not at.exception, at.exception
+    line = _guide().JOURNAL_UNPRICED.format(n=1)
+    assert line in [c.value for c in at.main.caption], [c.value for c in at.main.caption]
+    assert len(line) < 30 and "跑一次" not in line, line
+
+
+def test_report_tables_in_tabs_get_a_short_help_line_above_them(tmp_path):
+    """标签页里的表没有小标题可挂帮助圆点：表格上方一行很短的「读表说明 ?」，话在圆点里。
+    初稿把它们挂在列头上——列头的悬停说明没有问号可看，平仓明细要指的那一列还在横向滚动条
+    外面（独立审查在真实浏览器里量的），等于没有。表格上方那行完整的灰字也不许回来。"""
+    root = _root(tmp_path)
+    _journal(root, _buy(), _sell())
+    at = _page(root, REPORT_PAGE)
+    assert not at.exception, at.exception
+    guide, theme = _guide(), app_module("theme")
+    lines = [b for e in at.get("html") if 'class="qd-help-line"' in (b := e.proto.body)
+             and not b.lstrip().startswith("<style>")]
+    assert lines == [theme.help_line(guide.TABLE_HELP_LABEL, guide.TABLE_HINTS["closings"]),
+                     theme.help_line(guide.TABLE_HELP_LABEL, guide.TABLE_HINTS["by_source"])], lines
+    shown = [c.value for c in at.main.caption]
+    assert guide.TABLE_HINTS["closings"] not in shown and guide.TABLE_HINTS["by_source"] not in shown
+    # 每一行紧挨在它那张表的上面
+    order = [e for e in _walk(at.main)]
+    tables = list(at.get("dataframe"))
+    assert len(tables) >= 2, "前提：平仓明细与来源对比两张表都画出来了"
+    for body in lines:
+        line = next(e for e in order if getattr(getattr(e, "proto", None), "body", None) == body)
+        after = order[order.index(line) + 1]
+        assert any(after is t for t in tables), "「读表说明」下面紧跟的应该是表格"
+
+
+def test_an_empty_report_table_gets_no_help_line(tmp_path):
+    """表格是空的时候不出「读表说明」：对着一句"还没有已平仓的交易"解释列只是噪声。"""
+    root = _root(tmp_path)
+    _journal(root, _buy())                      # 只买不卖：没有平仓明细，也没有来源对比
+    at = _page(root, REPORT_PAGE)
+    assert not at.exception, at.exception
+    assert not [e for e in at.get("html") if 'class="qd-help-line"' in e.proto.body
+                and not e.proto.body.lstrip().startswith("<style>")]

@@ -366,24 +366,42 @@ def test_every_pill_kind_has_a_css_rule(kind):
     assert f".qd-pill-{kind} {{" in theme.CSS
 
 
-def test_page_head_has_title_subtitle_and_pill():
-    """§2.4 通用页头：页名（衬线大字）+ 一句话说明（灰色小字）+ 右侧状态 pill。"""
-    html = theme.page_head("回测报告", "看历史检验结果", theme.pill("空闲", "idle"))
-    assert 'class="qd-head"' in html
-    assert 'class="qd-title"' in html and ">回测报告<" in html
-    assert 'class="qd-sub"' in html and "看历史检验结果" in html
-    assert "qd-pill-idle" in html
+def test_page_head_is_the_title_with_a_help_dot_and_a_pill():
+    """§2.4 通用页头：页名（衬线大字）+ 帮助圆点 + 右侧状态 pill。
+    2026-11-16 起那句"这页给你看什么"不再常驻在页名旁——它在圆点的提示框里，要看才出来。"""
+    p = theme.pill("空闲", "idle")
+    html = theme.page_head("回测报告", p, help="看历史检验结果")
+    dot = theme.help_dot("看历史检验结果", wide=True)
+    assert html == (f'<div class="qd-head"><span class="qd-title">回测报告{dot}</span>'
+                    f'<span class="qd-head-right">{p}</span></div>')
+
+
+def test_page_head_has_no_always_visible_subtitle():
+    """页名旁那行灰色小字整个拿掉了：页头里说明文字只许出现在提示框（qd-help-tip）里面。
+    把它加回成一个常驻的 span，这条就红。"""
+    html = theme.page_head("回测报告", theme.pill("空闲", "idle"), help="看历史检验结果")
+    assert "qd-sub" not in html and ".qd-sub" not in theme.CSS
+    outside_tip = html.replace(theme.help_dot("看历史检验结果", wide=True), "")
+    assert "看历史检验结果" not in outside_tip
+
+
+def test_page_head_without_help_has_no_dot():
+    """没有说明就不出圆点：一个悬停只见空框的问号比没有更糟。"""
+    assert theme.page_head("回测报告") == (
+        '<div class="qd-head"><span class="qd-title">回测报告</span></div>')
+    assert "qd-help-dot" not in theme.page_head("回测报告", theme.pill("空闲", "idle"), help="  ")
 
 
 def test_page_head_without_a_pill_still_renders():
-    html = theme.page_head("回测报告", "看历史检验结果")
-    assert "qd-pill" not in html
+    html = theme.page_head("回测报告", help="看历史检验结果")
+    assert "qd-pill" not in html and "qd-head-right" not in html
     assert "回测报告" in html
 
 
-def test_page_head_escapes_title_and_subtitle():
-    html = theme.page_head("<b>x</b>", "<i>y</i>")
+def test_page_head_escapes_title_and_help():
+    html = theme.page_head("<b>x</b>", help="<i>y</i>")
     assert "<b>" not in html and "<i>" not in html
+    assert "&lt;b&gt;x&lt;/b&gt;" in html and "&lt;i&gt;y&lt;/i&gt;" in html
 
 
 def test_section_is_a_serif_hairline_heading():
@@ -529,6 +547,44 @@ def test_task_meta_without_a_status_leaves_no_empty_line():
     """没有状态可说时不留空行——一个只有小标签的「最新结果」比没有更糟。"""
     assert theme.task_meta("做什么。") == '<div class="qd-task-lead">做什么。</div>'
     assert "qd-task-status" not in theme.task_meta("做什么。", "最新结果", "")
+
+
+def test_help_line_is_a_short_label_followed_by_a_dot():
+    """没有小标题的表格上方那一行：几个字 + 帮助圆点，话在圆点里。"""
+    html = theme.help_line("读表说明", "**盈亏**只在平仓那一笔上有值。")
+    assert html == ('<div class="qd-help-line">读表说明'
+                    + theme.help_dot("**盈亏**只在平仓那一笔上有值。") + "</div>")
+    assert ".qd-help-line {" in theme.CSS
+
+
+def test_help_line_without_help_is_empty():
+    """没有话可说就整行不出：一行后面什么都没有的「读表说明」比没有更糟。"""
+    assert theme.help_line("读表说明", "") == "" and theme.help_line("读表说明", "  ") == ""
+
+
+def test_help_line_escapes_its_label():
+    assert "<b>" not in theme.help_line("<b>x</b>", "y")
+
+
+def test_task_meta_without_a_lead_is_the_status_line_alone():
+    """控制台卡片上只剩「最新结果」一行（2026-11-16：那句常驻的说明收进了标题旁的圆点）。
+    没有内容的那一行**不出**——留一个空的灰色行，就是标题与结果之间一道莫名其妙的空隙。"""
+    assert theme.task_meta("", "最新结果", "最近一次 2026-11-13") == (
+        '<div class="qd-task-status"><span class="qd-task-status-key">最新结果</span>'
+        '最近一次 2026-11-13</div>')
+
+
+def test_task_meta_with_nothing_to_say_is_empty():
+    """两行都没有内容时返回空串：调用方据此连元素都不放（st.html("") 也占一个元素位）。"""
+    assert theme.task_meta("") == ""
+    assert theme.task_meta("", "核对", "") == ""
+
+
+def test_the_status_line_keeps_its_gap_only_below_a_lead():
+    """有上面那行灰字时两行之间留一点间距；只有状态一行时它紧跟标题，不许自带上边距。"""
+    rules = _css_rules()
+    assert "margin-top" not in rules[".qd-task-status"], rules[".qd-task-status"]
+    assert "margin-top" in rules[".qd-task-lead + .qd-task-status"]
 
 
 def test_task_meta_escapes_every_part():
@@ -755,17 +811,18 @@ def test_section_help_dot_follows_the_title_before_the_pill():
 
 # ================================================================ 页头右端的「帮助中心」（2026-09-30 设计）
 
-def test_page_head_keeps_title_and_pill_on_one_line_and_lets_the_lead_wrap():
-    """页头左栏变窄时（1024 宽、侧边栏展开）只让那句说明折行：不加这几条，页名会被折成「信 / 号」。
-    .qd-head 本身不许 flex-wrap：一换行，状态标签就掉到第二行去了。"""
+def test_page_head_keeps_title_and_pill_on_one_line():
+    """页头左栏变窄时（1024 宽、侧边栏展开）页名不许折成「信 / 号」。
+    .qd-head 本身不许 flex-wrap：一换行，状态标签就掉到第二行去了。
+    （2026-11-16 之前这里还有一句可折行的说明小字 .qd-sub；它拿掉了，规则也跟着删。）"""
     heads = [h for h, _ in _css_rule_pairs()]
-    for sel in (".qd-head", ".qd-title", ".qd-sub", ".qd-head-right"):
+    for sel in (".qd-head", ".qd-title", ".qd-head-right"):
         assert heads.count(sel) == 1, sel
+    assert ".qd-sub" not in heads
     rules = _css_rules()
     assert "flex-wrap" not in rules[".qd-head"], rules[".qd-head"]
     assert "white-space: nowrap" in rules[".qd-title"] and "flex-shrink: 0" in rules[".qd-title"]
     assert "white-space: nowrap" in rules[".qd-head-right"] and "flex-shrink: 0" in rules[".qd-head-right"]
-    assert "min-width: 0" in rules[".qd-sub"]
 
 
 # ---------------------------------------------------------------- 各页顶部的任务条（2026-11-16）

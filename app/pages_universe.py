@@ -35,16 +35,15 @@ def page_universe() -> None:
                  "里的 universe 至少有 1 只标的（上面的原因里写着到底是哪个文件）；"
                  "本页在此期间不做任何修改。")
         return
-    st.html(theme.section(f"当前信号池（{len(symbols)} 只）"))
-    # 只在还是默认池子时说一句；已经是自己的池子时这一行不出现（空串 = 不渲染）。
-    # 必须是 if **语句**：裸三元会被 streamlit 的 magic 整条包进 st.write。
-    if note := guide.pool_source_note(source):
-        st.caption(note)
+    # 小标题一行说完三件事（2026-11-16 第二轮之前是表格上方两行、页面最底下一行灰字）：
+    # 这张表是什么、改了什么时候生效 → 帮助圆点；还是默认池子 → 一个灰色小标签，话在悬停里。
+    note = guide.pool_source_note(source)
+    pill = theme.pill(guide.POOL_DEFAULT_PILL, "idle", tooltip=note) if note else ""
+    st.html(theme.section(f"当前信号池（{len(symbols)} 只）", pill,
+                          help=guide.TABLE_HINTS["universe"]))
     ui.data_table(pool.pool_table(symbols, ui.symbol_names(), ui.CACHE_DIR),
-                  _pool_columns(symbols), "信号池是空的",
-                  hint=guide.TABLE_HINTS["universe"])
+                  _pool_columns(symbols), "信号池是空的")
     _add_block(symbols)
-    st.caption(guide.POOL_NOTE)
 
 
 def _pool_columns(symbols: tuple[str, ...]) -> dict:
@@ -71,8 +70,11 @@ def _add_block(symbols: tuple[str, ...]) -> None:
     一打开这页就卡两分钟是不可接受的，而只想移除标的的人根本不需要这份清单。"""
     st.html(theme.section("添加标的"))
     if not st.session_state.get(pool.LOAD_FLAG):
-        st.caption(guide.POOL_LOAD_HINT)
-        if st.button("↧ 加载可选标的清单", key=pool.LOAD_BUTTON_KEY):
+        # 这一下可能要联网拉两到四分钟——说在按钮自己的悬停提示里（点之前光标一定先到它上面）。
+        with st.container(horizontal=True, horizontal_alignment="right"):
+            load = st.button("加载可选标的清单", key=pool.LOAD_BUTTON_KEY,
+                             icon=":material/download:", help=guide.POOL_LOAD_HINT)
+        if load:
             st.session_state[pool.LOAD_FLAG] = True
             st.rerun()          # 重跑一轮：这一轮的版面就只剩下拉框，按钮不再占位
         return
@@ -85,20 +87,29 @@ def _add_block(symbols: tuple[str, ...]) -> None:
         st.warning(f"拉不到候选清单（{type(e).__name__}: {e}）。"
                    "「加入」需要这份清单核对标的是否在扫描范围内，暂不可用；"
                    "上面的表格与 − 移除照常可用。")
-        if st.button("重试", key=pool.RETRY_BUTTON_KEY, icon=":material/refresh:"):
+        with st.container(horizontal=True, horizontal_alignment="right"):
+            retry = st.button("重试", key=pool.RETRY_BUTTON_KEY, icon=":material/refresh:")
+        if retry:
             pool.scan_pool.clear()     # 失败不进缓存，但清一下更直白
             st.rerun()
         return
     choices = [o for o in pool.options(listing) if pool.symbol_of(o) not in set(symbols)]
-    st.caption(f"清单基准日 {as_of}，可选 {len(choices)} 只（已在池中的不再列出）。")
     if not choices:
         st.write("候选清单里的标的都已在信号池中。")
         return
-    picked = st.selectbox("搜索代码或名称", choices, index=None, key=pool.PICK_KEY,
-                          placeholder="输入代码或名称筛选，例如 600519 / 茅台")
-    if st.button("加入信号池", key=pool.ADD_BUTTON_KEY, icon=":material/add:",
-                 disabled=picked is None):
-        _do_add(picked, listing)
+    # 清单是哪天的、还有几只可选：会变的事实，留在明面上。
+    st.caption(guide.POOL_AS_OF.format(day=as_of, n=len(choices)))
+    # 搜索框与按钮同一行、按钮在右端（操作按钮一律靠右），底边对齐。一个横向容器，不用按比例的
+    # 分栏：1024 宽时按钮那一栏只有一百出头像素，「加入信号池」会折成两行、还会顶出搜索框的上沿
+    # （独立审查量的）；这样写按钮永远是它自己的宽度，搜索框占剩下的地方。
+    with st.container(horizontal=True, horizontal_alignment="right", vertical_alignment="bottom"):
+        picked = st.selectbox(
+            "搜索代码或名称", choices, index=None, key=pool.PICK_KEY,
+            placeholder="输入代码或名称筛选，例如 600519 / 茅台", help=guide.POOL_PICK_HELP)
+        add = st.button("加入信号池", key=pool.ADD_BUTTON_KEY, icon=":material/add:",
+                        disabled=picked is None)
+    if add:
+        _do_add(picked, listing)                # 在那一行外面做：结果提示要占整行
 
 
 def _do_add(option: str, listing) -> None:

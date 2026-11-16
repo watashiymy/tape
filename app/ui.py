@@ -88,15 +88,16 @@ SCAN_TABLE_HEIGHT = 600   # 扫描结果表（v0.5.0）：一次全量能报上�
 # 文件读取量兜住（一天一份，长期跑下来 output/scan/ 会攒到几百份）。
 NAME_LOOKBACK_FILES = 30
 
-# 每页顶部那句话（§2.4 通用页头）。只讲"这页给你看什么、什么时候看"，
-# 数字必须与实测一致（baostock 约 17:30 后才有当日数据 —— README/spec §11）。
+# 每页页名后面那个帮助圆点里的话（§2.4 通用页头）。只讲"这页给你看什么、什么时候看"。
+# **2026-11-16 第二轮之前它是页名旁常驻的一行灰色小字**。用户的话：这类解释性文字读起来
+# 是有成本的，用「？」提示、光标移上去再弹出来就行——所以页头只剩页名与状态，这句话要看才出来。
 # 键就是页名（page_head 按页名取值），顺序与 dashboard.py 的 PAGES 一致；
 # 少一页会让那一页的页头 KeyError 崩页（tests/test_dashboard_nav.py 钉住两边一致）。
 # 说明手册那三页（v0.5.0）的键必须逐个**字面量**写出来，不许改写成
 # `**{p.title: p.lead for p in guide.GUIDE_PAGES}`：tests/test_dashboard_guide.py
 # 按 AST 读这个字典的键（`k.value`），推导式里的键在 AST 里是 None，那条测试会
 # 以 AttributeError 炸掉——而它守的正是"每页都有页头文案"这件事。
-# 页头是纯文字（theme.page_head 会转义）：不许写 ** 之类的 Markdown，会原样显示。
+# 进的是帮助圆点的提示框：认 `**加粗**`、空行分段、行首 `- ` 的列表（theme._tip_markup）。
 PAGE_INTRO = {
     # 硬约束：不能含「今天」/「今日」（test_home_copy_never_says_today）。
     "市场概览": guide.HOME_LEAD,
@@ -104,14 +105,16 @@ PAGE_INTRO = {
     "读懂回测": guide.guide_page("guide_metrics").lead,
     "边界与安全": guide.guide_page("guide_limits").lead,
     "任务控制台": "启动任务、查看进度与结果；同时只跑一个。",
-    # 「17:30」只留在空态文案里：那才是用户问"为什么是空的"的时刻，
-    # 而空态每天都会出现（绝大多数日子没有新信号）。页头这句覆盖面更广但不可执行。
     "信号": "信号池标的的最新买卖信号；页尾是全市场扫描发现的新买入信号。",
     "记账": "记你真实成交的每一笔；历史记录可筛选、可修改、可删除、可导出。",
     "持仓与盈亏": "按全部记录算出的当前持仓、已实现盈亏与来源对比。",
     "信号池": "增删「信号跟踪」每天盯着的那批标的。",
     "回测报告": "历史检验的结果：绩效指标、净值曲线与逐笔成交。",
-    "个股K线": "单只标的的日线走势，叠加这次回测在它身上的买卖点。",
+    # 后两段原来是 K 线图下面常驻的三行灰字（怎么操作这张图、▲▼ 是什么）。
+    "个股K线": ("单只标的的日线走势，叠加这次回测在它身上的买卖点。\n\n"
+              "悬停查看开高低收与成交量、成交额；滚轮或触控板双指缩放，拖动平移，双击复位。\n\n"
+              "▲▼ 标在 K 线外侧：▲ 在最低价下方是买入，▼ 在最高价上方是卖出。"
+              "横轴按交易日紧排，不留周末与节假日的空档。"),
 }
 
 
@@ -136,15 +139,14 @@ SCAN_COLOR_COLUMNS = ("pct_chg",)   # 扫描表里唯一有方向的列（红涨
 
 
 def page_head(page: str, *, help_center: bool = True) -> None:
-    """通用页头（§2.4）：页名衬线大字 + 一句话说明 + 右侧全局任务状态 pill。
+    """通用页头（§2.4）：页名衬线大字 + 帮助圆点（这页给你看什么）+ 右侧全局任务状态 pill。
 
     `help_center=True`（默认）时一行两栏：左栏是页头，右栏靠右一个「帮助中心」链接到「使用说明」
     （2026-09-30：手册不是系统的功能，不占侧边栏，从这里进）。用分栏不用水平容器：
     st.container(horizontal=True) 在 1.61.1 强制允许换行，1024 宽、侧边栏展开时会把链接挤到下一行
-    （评审实测）；分栏不换行，左栏变窄时靠 theme.CSS 只让说明折行。用 st.page_link 不用页头 HTML 里的
+    （评审实测）；分栏不换行。用 st.page_link 不用页头 HTML 里的
     <a>：后者整页刷新、开新会话，记账页填到一半的内容就丢了。手册三页自己传 False（它们有页内导航）。
-    两栏顶端对齐：页头自带下外边距、窄屏时说明折两行，居中会把链接压到页名下方 11–21 px；
-    顶端对齐与页名齐平（实测 1024/1280 两种宽度）。
+    两栏顶端对齐：页头自带下外边距，居中会把链接压到页名下方；顶端对齐与页名齐平。
 
     这里**不**报 st.error：状态文件损坏时下面的任务条/卡片会报，页头再喊一遍只是噪声；
     但 pill 必须如实说"未知"，不能退回"空闲"（那是猜的，而且正是 fail-safe 要挡的误导）。
@@ -153,7 +155,7 @@ def page_head(page: str, *, help_center: bool = True) -> None:
         text, kind = view.busy_pill(process.any_running(RUNS_DIR))
     except RuntimeError:
         text, kind = view.UNKNOWN_TEXT, view.PILL_IDLE
-    head = theme.page_head(page, PAGE_INTRO[page], theme.pill(text, kind))
+    head = theme.page_head(page, theme.pill(text, kind), help=PAGE_INTRO[page])
     if not help_center:
         st.html(head)
         return
@@ -181,13 +183,15 @@ def metric_grid(metrics: dict, per_row: int = 4) -> None:
 
 
 def data_table(df: pd.DataFrame, config: dict, empty_text: str, *,
-               hint: str = "", color_columns: tuple[str, ...] = (),
+               help: str = "", color_columns: tuple[str, ...] = (),
                height: int | str = "auto") -> None:
     """信号/扫描/交易表的统一渲染口。
 
-    `hint` 是表格上方那行灰字（§3.2 就地帮助），只解释关键列——逐列说明在
-    「使用说明」页里。**表格为空时不出**：对着一张空表解释列只是噪声，
-    而且会把"当日无新信号"这句真正要看的话往下挤。
+    **表格上方不再有那行解释列的灰字**（2026-11-16 第二轮；原先的 `hint` 参数）：用户的话，
+    解释性文字读起来是有成本的，用「？」提示就行。读表说明现在在帮助圆点里，挂哪儿分两种：
+    - 表格上方有区块小标题的：调用方给 theme.section 传 help=guide.TABLE_HINTS[...]；
+    - 没有小标题的（标签页里的表、折叠区里的表）：传给这里的 `help`，表格上方出一行很短的
+      「读表说明 ?」。**表格为空时不出**——对着一句"还没有已平仓的交易"解释列只是噪声。
 
     `height` 给行数多的表用。缺省 `"auto"` 就是 `st.dataframe` 自己的缺省
     （**不能写 None**——1.61 会抛 StreamlitInvalidHeightError，而这一路会把
@@ -203,8 +207,8 @@ def data_table(df: pd.DataFrame, config: dict, empty_text: str, *,
     if not len(df):
         st.write(empty_text)
         return
-    if hint:
-        st.caption(hint)
+    if help:
+        st.html(theme.help_line(guide.TABLE_HELP_LABEL, help))
     data = fmt.direction_styler(df, color_columns) if color_columns else df
     st.dataframe(data, width="stretch", column_config=config, hide_index=True,
                  height=height)
@@ -394,29 +398,36 @@ def step_status(job_name: str) -> steps.StepStatus | None:
     return None
 
 
-def running_row(state: process.RunState, prog, *, stop_key: str,
-                stop_first: bool = False) -> str:
-    """正在跑的任务那一行：进度（数得出来就画进度条，否则转圈 + 阶段）+ 停止按钮。
-    返回细节那句话（已用多久、预计剩余、信号条数），由调用方决定后面再跟什么。
+def running_row(state: process.RunState, prog, *, stop_key: str, trailing=None) -> str:
+    """正在跑的任务那一行：进度（数得出来就画进度条，否则转圈 + 阶段）+ 右端的停止按钮。
+    返回细节那句话（已用多久、预计剩余、信号条数），由调用方决定要不要写出来。
 
-    控制台卡片与各页顶部的任务条共用（2026-11-16）：两处各画一份，迟早只改一边。
+    控制台卡片、各页顶部的任务条与首页的收盘数据区共用（2026-11-16）：各画一份，迟早只改一边。
     **停止按钮在这一行、不在开始按钮的位置上**：任务恰好跑完的那一刻，光标底下的按钮
     不许从「停止」换成「开始」——点下去就是又一趟十几分钟的扫描。
-    `stop_first=True` 把停止放在这一行的**最左边**（任务条用）：那里的「开始」都靠右，
-    上下也不许对齐。控制台卡片里它在右边，卡片的主按钮在标题行，本来就不同行。
+    **停止在进度条右边**（2026-11-16 第二轮，用户要求操作按钮统一靠右）。第一轮里任务条上的
+    停止在最左，是怕它与上面几行的「开始」上下对齐；真正防住"按钮在光标下换掉"的是另一条——
+    这一行排在所有任务行**之后**，它来了又走，上面哪个「开始」都不挪位置（那条没变，有测试钉着）。
+
+    一个靠右的横向容器：进度占剩下的地方，按钮是它自己的宽度（与上面几行开始按钮的右缘对齐；
+    不用按比例的分栏——窄屏时比例栏会把按钮挤成两行）。
+    `trailing` 是一个可选的回调，在停止按钮**右边**接着画东西。首页用它把那个点不了的开始按钮
+    留在这一行的最右端（见 pages_home._job_area：那一区在页面最底下，上下错开防不住）。
     """
     head, detail = view.progress_lines(prog, view.elapsed_seconds(state), status=state.status)
     ratio = view.progress_ratio(prog)
-    if stop_first:
-        stop, bar = st.columns([1, 5], vertical_alignment="center")
-    else:
-        bar, stop = st.columns([5, 1], vertical_alignment="center")
-    with bar:
+    with st.container(horizontal=True, horizontal_alignment="right", vertical_alignment="center"):
         if ratio is not None:              # 必须是 if 语句：裸三元会被 streamlit magic 包进 st.write
             st.progress(ratio, text=head)
         else:
             st.status(head, state="running")     # 不确定态：转圈 + 阶段
-    if stop.button(guide.CONSOLE_STOP, key=stop_key, icon=":material/stop:", width="stretch"):
+        # "关掉浏览器也不会中断"挂在停止按钮自己的悬停说明上：想走开的人以为得先点它，其实不用。
+        # 后面跟着"停掉这个任务会丢什么"（扫描：这趟已扫出的信号全丢）——要点它的那一刻才用得上。
+        clicked = st.button(guide.CONSOLE_STOP, key=stop_key, icon=":material/stop:",
+                            help=guide.stop_help(state.script))
+        if trailing is not None:
+            trailing()
+    if clicked:
         stop_job(state)                    # SIGTERM 进程组 → 10s → SIGKILL，然后整页重跑
     return detail
 
@@ -455,10 +466,10 @@ def control_bar(*job_names: str) -> None:
     有任务在跑、或上次没跑成时出现（view.bar_follow_up）。有任务在跑时每 2 秒只重画这一条，
     跑完整页重跑一次——下面的表自己换成新结果。
 
-    **进度那一行排在所有任务行之后、「停止」在它的最左边**：它出现、消失，哪个「开始」都
-    不挪位置，上下也对不齐。信号跟踪十几秒就跑完，它下面那一行的按钮却是半小时到两小时的
-    全市场扫描——任务恰好跑完的那一刻，光标底下的按钮不许从「停止」换成某个「开始」
-    （与控制台卡片同一条规矩，有测试钉着）。
+    **进度那一行排在所有任务行之后**：它出现、消失，哪个「开始」都不挪位置。
+    信号跟踪十几秒就跑完，它下面那一行的按钮却是半小时到两小时的全市场扫描——任务恰好
+    跑完的那一刻，光标底下的按钮不许从「停止」换成某个「开始」（与控制台卡片同一条规矩，
+    有测试钉着）。「停止」在进度条右边，与页面上别的操作按钮一样靠右（见 running_row）。
 
     仍是薄的：实时日志、参数、结果表都在控制台页。
     必须排在各页只读逻辑的**最前面**：三页在没有结果时都会 st.info 之后早退，
@@ -535,9 +546,9 @@ def _bar_row(name: str, state: process.RunState | None, busy: str | None) -> Non
 def _bar_running(name: str, state: process.RunState) -> None:
     """正在跑的那个任务的进度与「停止」（与控制台卡片同一套文案，ui.running_row）。"""
     detail = running_row(state, jobs.JOBS[name].parser(process.read_log(state)),
-                         stop_key=f"bar_stop_{name}", stop_first=True)
-    # "关掉浏览器也不会中断"只在动作现场说（同控制台卡片）。
-    st.caption("。".join(x for x in (detail, guide.CONSOLE_BACKGROUND_NOTE) if x))
+                         stop_key=f"bar_stop_{name}")
+    if detail:
+        st.caption(detail)                 # 已用多久、预计剩余、信号条数：会变的数，留在明面上
 
 
 @st.fragment(run_every=AUTO_REFRESH_S)

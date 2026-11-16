@@ -4,8 +4,9 @@
 启停三个落点在 app/ui.py（各页顶部的任务条与本页卡片共用同一套闸门）。
 
 **版式（2026-11-16 改版）**：每个任务一张**整幅宽**的卡片，自上而下就是流程的顺序——
-全市场扫描 → 人工那一步 → 信号跟踪，「研究工具」区另放回测。卡片上常驻的只有四样：
-标题与状态、一句「做什么 / 什么时候跑」、最新结果是哪天的、一个主按钮。
+全市场扫描 → 人工那一步 → 信号跟踪，「研究工具」区另放回测。卡片上常驻的只有三样：
+标题与状态、最新结果是哪天的、一个主按钮（「做什么 / 什么时候跑」当天第二轮起不再常驻，
+在标题旁的帮助圆点与主按钮的悬停说明里）。
 参数、日志、结果表都收进折叠区；只有正在跑或没跑成的时候，进度与日志才摊开。
 
 改之前是 v0.5.0 的两栏并排，毛病有四个，都是真机上看出来的：
@@ -47,9 +48,11 @@ def _param_widgets(job: jobs.Job) -> dict:
         key = f"{job.name}_{spec.name}"
         tip = guide.PARAM_HELP[(job.name, spec.name)]
         if spec.kind == "int":
+            # 标题只说它是什么；"留空是什么意思"在空着的框里（填了数它自己就消失），细说在问号里。
             values[spec.name] = st.number_input(
                 spec.label, min_value=1, max_value=spec.max_value, value=None,
-                step=1, key=key, help=tip)
+                step=1, key=key, help=tip,
+                placeholder=guide.CONSOLE_PARAM_PLACEHOLDER.get((job.name, spec.name)))
         elif spec.kind == "date":
             values[spec.name] = st.date_input(spec.label, value=None, key=key,
                                               help=tip)
@@ -66,7 +69,7 @@ def _param_widgets(job: jobs.Job) -> dict:
     return values
 
 
-def _result_table(path_str: str, config: dict, hint: str,
+def _result_table(path_str: str, config: dict,
                   color_columns: tuple[str, ...]) -> None:
     """扫描/信号的产物 CSV。symbol 必须按字符串读，否则 000333 变成 333。"""
     try:
@@ -76,7 +79,7 @@ def _result_table(path_str: str, config: dict, hint: str,
         return
     # 策略列只在显示层换中文显示名，磁盘上的 CSV 照旧存键
     ui.data_table(fmt.for_display(df), config, "当次无新信号",
-                  hint=hint, color_columns=color_columns)
+                  color_columns=color_columns)
 
 
 def _result_scan(path_str: str) -> None:
@@ -86,16 +89,16 @@ def _result_scan(path_str: str) -> None:
     全量扫描的结果长得一模一样——尤其是两者都"无新信号"的时候。
     路径取自日志里的 `已保存:` 行，meta 就在它旁边。
     """
-    st.html(theme.section("本次扫描结果", ui.scan_scope_pill(ui.resolve(path_str))))
-    _result_table(path_str, fmt.scan_column_config(), guide.TABLE_HINTS["scan"],
-                  ui.SCAN_COLOR_COLUMNS)
+    # 读表说明在小标题后面的帮助圆点里（原先是表格上方的一行灰字）。
+    st.html(theme.section("本次扫描结果", ui.scan_scope_pill(ui.resolve(path_str)),
+                          help=guide.TABLE_HINTS["scan"]))
+    _result_table(path_str, fmt.scan_column_config(), ui.SCAN_COLOR_COLUMNS)
 
 
 def _result_signal(path_str: str) -> None:
     """信号跟踪 CSV 的列与扫描**不是**同一套（没有 name/成交额/放量倍数），
     列配置也得各用各的，否则 action / close 连中文标签都没有。"""
-    _result_table(path_str, fmt.signal_column_config(),
-                  guide.TABLE_HINTS["signal"], ())
+    _result_table(path_str, fmt.signal_column_config(), ())
 
 
 def _result_metrics(dir_str: str) -> None:
@@ -167,8 +170,8 @@ def _run_panel(job: jobs.Job, state: process.RunState, log: str,
         # **不占**标题行主按钮的位置：任务恰好跑完的那一刻，光标底下的按钮不许从「停止」
         # 换成「开始」——点下去就是又一趟十几分钟的扫描。
         detail = ui.running_row(state, prog, stop_key=f"stop_{job.name}")
-        # "关掉浏览器也不会中断"只在动作现场说：没有任务在跑时这句话没有任何可做的事。
-        st.caption("。".join(x for x in (detail, guide.CONSOLE_BACKGROUND_NOTE) if x))
+        if detail:
+            st.caption(detail)             # 已用多久、预计剩余、信号条数：会变的数，留在明面上
     else:
         # 已停止 / 失败：进度条照画，这时它是"停在哪儿"的存档（文案已由 view 换成终态词、
         # 不带 ETA）。**不存在断点续跑**——重跑从第 1 只开始；存档的价值只是
@@ -225,10 +228,13 @@ def _card_body(job: jobs.Job) -> str | None:
         if name == "market_scan":
             trial = st.button(guide.CONSOLE_TRIAL_LABEL, key=f"trial_{name}",
                               disabled=disabled, help=guide.CONSOLE_TRIAL_HELP)
+        # 这一下会跑什么、要多久、什么时候跑：在按钮自己的悬停说明里（同任务条上那个同名的按钮）。
         start = st.button(guide.CONSOLE_START[name], key=f"start_{name}", type="primary",
-                          icon=":material/play_arrow:", disabled=disabled)
+                          icon=":material/play_arrow:", disabled=disabled,
+                          help=guide.CONSOLE_START_HELP[name])
 
-    # —— 标题下两行：做什么 / 什么时候跑；最新结果是哪天的。
+    # —— 标题下一行：最新结果是哪天的。（「做什么 / 什么时候跑」那句 2026-11-16 第二轮起
+    # 不再常驻在卡片上——它在标题旁的帮助圆点里，见 guide.py 里 JOB_HELP 上方的说明。）
     # **必须接住 RuntimeError**：scan_status 会读扫描的 meta，而 load_meta 对损坏文件是
     # 响亮抛错（那是数据层的设计，不改）。这里不接的话，异常从 fragment 冒到 exec_code
     # 会让整页**提前中止**——这张卡片之后的一切都不再渲染，包括正在跑的那趟扫描的停止按钮。
@@ -239,7 +245,8 @@ def _card_body(job: jobs.Job) -> str | None:
             status_text = status.text
     except RuntimeError as e:
         st.warning(str(e))                   # 状态读不出来就不写那一行——不许顺手补一句"还没有结果"
-    st.html(theme.task_meta(guide.CONSOLE_LEAD[name], guide.CONSOLE_STATUS_KEY, status_text))
+    if status_text:
+        st.html(theme.task_meta("", guide.CONSOLE_STATUS_KEY, status_text))
     # 点名是谁在跑，否则灰按钮无从解释。正在跑的那张自己就摊着进度，不必对自己再说一遍。
     if notice and not running:
         st.caption(notice)
@@ -273,11 +280,17 @@ def _card_body(job: jobs.Job) -> str | None:
     with options:
         # 要重跑什么直接写出来（v0.5.0 是悬停提示）：上次的参数只存在磁盘那份 JSON 里，
         # 本机那份 argv 就带着 --date，点一下白扫昨天十几分钟。
-        st.caption(view.rerun_hint(name, state.argv) if state is not None
-                   else guide.CONSOLE_RERUN_NEVER)
-        if st.button(guide.CONSOLE_RERUN, key=f"rerun_{name}", type="tertiary",
-                     icon=":material/replay:", disabled=disabled or state is None):
-            ui.rerun_job(name, state)
+        # 那句话在左、按钮靠右（2026-11-16 第二轮：操作按钮一律靠右）。一个横向容器，
+        # 不用按比例的分栏：1024 宽时按钮那一栏只有一百二十几像素，「沿用上次参数重跑」会折成
+        # 两行（独立审查量的）。这样写按钮永远是它自己的宽度，左边那句话占剩下的地方、自己折行。
+        with st.container(horizontal=True, horizontal_alignment="right",
+                          vertical_alignment="center"):
+            st.caption(view.rerun_hint(name, state.argv) if state is not None
+                       else guide.CONSOLE_RERUN_NEVER)
+            rerun = st.button(guide.CONSOLE_RERUN, key=f"rerun_{name}", type="tertiary",
+                              icon=":material/replay:", disabled=disabled or state is None)
+        if rerun:
+            ui.rerun_job(name, state)      # 在那一行外面起：启动失败的那句话要占整行
 
     if state is None:
         return busy
@@ -366,7 +379,8 @@ def _manual_step_strip() -> None:
     控制台上进行不了任何操作，却占了相当大的面积、还在页面正中间，整个布局很奇怪。
     它在这一页唯一的价值是三样：说清这是人工动作、现在盯着几只、去哪两页操作——
     一行放得下。它夹在两张任务卡片之间（上下各一个向下的箭头），位置就是它在流程里的位置。
-    详细说明挂在「去增删信号池」那个链接的悬停提示上。
+    "为什么这一步得你自己来"挂在「去增删信号池」那个链接的悬停提示上——2026-11-16 第二轮之前
+    这一行后面还常驻着半句同样的话，拿掉了。
     """
     try:
         symbols = pool.current(ui.CONFIG_PATH)
@@ -374,8 +388,7 @@ def _manual_step_strip() -> None:
         symbols = None
     status = steps.pool_status(symbols)
     text, links = st.columns([3, 2], vertical_alignment="center")
-    text.html(theme.manual_row("人工步骤",
-                               f"加进信号池：{status.text}。{guide.PIPELINE_MANUAL_NOTE}"))
+    text.html(theme.manual_row("人工步骤", f"加进信号池：{status.text}"))
     # 两个链接放进一个可换行的横向容器：窄屏时折到下一行，而不是各占一列被截成半个词。
     with links.container(horizontal=True, horizontal_alignment="right"):
         st.page_link(ui.page_ref("signals"), label="去看扫描结果",
@@ -387,7 +400,7 @@ def _manual_step_strip() -> None:
 def page_console() -> None:
     _check_roster()
     ui.page_head("任务控制台")
-    # 互斥这件事不在这里常驻预告：页头已有一句，而按钮被禁用时 view.start_button_state
+    # 互斥这件事不在这里常驻预告：页名后面的帮助圆点里有一句，而按钮被禁用时 view.start_button_state
     # 的 notice 会当场点名是谁在跑——比预告有用。
     try:
         busy = process.any_running(ui.RUNS_DIR)
@@ -406,7 +419,7 @@ def page_console() -> None:
     card(_PIPELINE[1], busy or "")
 
     # 研究工具：回测是历史检验，不产生今天的信号，不在上面那条链上——所以单独成区
-    # （这句话现在写在回测卡片自己那一句里，区标题下不再重复）。
+    # （这句话写在回测卡片标题旁的帮助圆点与主按钮的悬停说明里，区标题下不再重复）。
     st.html(theme.section("研究工具"))
     for name in _TOOLS:
         card(name, busy or "")

@@ -92,7 +92,9 @@ def _dashboard_section(report: pnl.PnlReport, trades) -> None:
     - 曲线是**累计已实现盈亏（元）**，不是收益率（设计 §2.6）：日志不记本金
       与出入金，任何收益率的分母都只能编造——这条取舍就注在图旁边。
     """
-    st.html(theme.section("仪表盘"))
+    # 口径说明（为什么是元、与回测同口径、没有市价的怎么算）在小标题后面的帮助圆点里：
+    # 2026-11-16 第二轮之前它们是指标块上下常驻的三段灰字。
+    st.html(theme.section("仪表盘", help=guide.JOURNAL_PNL_HINT, help_wide=True))
     prices = {p.symbol: journal_ui.latest_price(p.symbol, ui.CACHE_DIR)
               for p in report.positions}
     metrics, unpriced = journal_ui.dashboard_metrics(report.summary,
@@ -101,10 +103,8 @@ def _dashboard_section(report: pnl.PnlReport, trades) -> None:
         for col, (label, text, color) in zip(st.columns(3), metrics[start:start + 3]):
             col.html(theme.metric(label, text, color))
     if unpriced:
-        st.caption(f"{unpriced} 只持仓无市价，未计入市值与浮动盈亏"
-                   "（本地还没有它们的行情数据——跑一次回测或信号跟踪就有了）；"
-                   "显示的是可算部分，不按 0 计。")
-    st.caption(guide.JOURNAL_PNL_HINT)
+        # 这一句是事实、会影响上面的数怎么读，所以留在明面上；为什么与怎么办在圆点里。
+        st.caption(guide.JOURNAL_UNPRICED.format(n=unpriced))
 
     curve_col, weights_col = st.columns(2)
     with curve_col:
@@ -120,23 +120,21 @@ def _dashboard_section(report: pnl.PnlReport, trades) -> None:
             st.plotly_chart(charts.position_weights_chart(rows), width="stretch")
         else:
             st.caption("当前没有持仓，暂无占比可画。")
-    # 分号后面那半截（路线图 + 内部设计文档编号）删掉：用户看了没有任何可做的事。
-    # 「为什么不做收益率」的完整理由留在本函数的 docstring 里，给下一个改代码的人。
-    st.caption("金额一律是**元**而非收益率：日志不记本金与出入金，"
-               "收益率没有可靠的分母。")
+    # 「为什么是元而不是收益率」在「仪表盘」小标题的帮助圆点里（guide.JOURNAL_PNL_HINT）；
+    # 完整理由留在本函数的 docstring 里，给下一个改代码的人。
 
 
 def _positions_section(report: pnl.PnlReport) -> None:
     ui.data_table(journal_ui.positions_table(report.positions, ui.CACHE_DIR),
                   journal_ui.positions_columns(),
-                  "当前没有持仓（还没记过买入，或者都已经卖光了）。",
-                  hint=guide.TABLE_HINTS["positions"])
+                  "当前没有持仓（还没记过买入，或者都已经卖光了）。")
 
 
 def _matches_section(report: pnl.PnlReport) -> None:
+    # 标签页里的表没有小标题可挂帮助圆点：表格上方一行很短的「读表说明 ?」（ui.data_table 的 help）。
     ui.data_table(journal_ui.matches_table(report.matches),
                   journal_ui.matches_columns(),
-                  "还没有已平仓的交易。", hint=guide.TABLE_HINTS["closings"],
+                  "还没有已平仓的交易。", help=guide.TABLE_HINTS["closings"],
                   color_columns=("盈亏",))
 
 
@@ -149,5 +147,4 @@ def _by_source_section(report: pnl.PnlReport) -> None:
                         width="stretch")
     ui.data_table(journal_ui.by_source_table(report.by_source),
                   journal_ui.by_source_columns(),
-                  "还没有已平仓的交易，暂时无从对比。",
-                  hint=guide.TABLE_HINTS["by_source"])
+                  "还没有已平仓的交易，暂时无从对比。", help=guide.TABLE_HINTS["by_source"])

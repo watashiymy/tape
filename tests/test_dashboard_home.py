@@ -26,7 +26,8 @@ from quant import market
 from quant.market import live, session, sources
 from quant.market.sources import FetchError
 from quant.runner import jobs, process
-from tests.conftest import FIXTURES_MARKET, app_module, copy_app, fixture_http_get
+from tests.conftest import (FIXTURES_MARKET, app_module, copy_app, element_path, element_slot,
+                            fixture_http_get, path_to_element, sits_on_the_right)
 
 HOME = "市场概览"
 TENCENT_QUOTES, SINA_QUOTES = "qt.gtimg.cn/q=", "hq.sinajs.cn"   # 离线替身按这两个片段认 URL
@@ -44,6 +45,16 @@ def _status(at) -> str:
 
 def _captions(at) -> list[str]:
     return [c.value for c in at.caption]
+
+
+def _section_tip(at, title: str) -> str:
+    """title 那个区块小标题后面帮助圆点里的话（没有圆点就是空串）。
+    2026-11-16 起首页的几段说明不再是常驻的灰字，都收在这里。"""
+    heads = [h for h in _htmls(at) if f'class="qd-section">{title}' in h]
+    assert len(heads) == 1, f"「{title}」小标题应恰有一个: {heads}"
+    if 'class="qd-help-tip">' not in heads[0]:
+        return ""
+    return heads[0].split('class="qd-help-tip">', 1)[1].split("</span></span>", 1)[0]
 
 
 def _turnover_lines(at) -> list[str]:
@@ -508,14 +519,19 @@ def test_fenbu_down_falls_back_to_tencent_counts_with_its_own_scope(tmp_path, mo
 
 
 def test_bucket_note_says_sealed_at_close_after_close_and_now_intraday(tmp_path, monkeypatch):
+    """分档规则在「涨跌分布」小标题后面的帮助圆点里；"只计收盘封住的 / 封住涨停跌停的"随时刻换。
+    2026-11-16 之前它是分布图下面常驻的一行灰字——那一行不许再回到图下面。"""
+    g = app_module("guide")
     at = _home(tmp_path)
-    assert "收盘封住" in " ".join(_captions(at))
+    tip = _section_tip(at, g.HOME_DIST_TITLE)
+    assert "收盘封住" in tip and "23 档" in tip, tip
+    assert not [c for c in _captions(at) if "区间按涨跌幅" in c], _captions(at)
     frozen = datetime.combine(_fixture_day(), time(10, 15))
     _freeze(monkeypatch, frozen)
     st.cache_data.clear()
     live.STORE.reset()
     at2 = _home(tmp_path)
-    assert "封住涨停/跌停" in " ".join(_captions(at2))
+    assert "封住涨停/跌停" in _section_tip(at2, g.HOME_DIST_TITLE)
 
 
 def test_bucket_note_follows_the_datas_day_before_the_open(tmp_path, monkeypatch):
@@ -526,8 +542,8 @@ def test_bucket_note_follows_the_datas_day_before_the_open(tmp_path, monkeypatch
     at = _home(tmp_path)
     assert not at.exception, at.exception
     assert "已收盘" not in _status(at)
-    notes = [c for c in _captions(at) if c.startswith("区间按涨跌幅绝对值划分")]
-    assert notes and "收盘封住" in notes[0], _captions(at)
+    tip = _section_tip(at, app_module("guide").HOME_DIST_TITLE)
+    assert "区间按涨跌幅绝对值划分" in tip and "收盘封住" in tip, tip
 
 
 # ---------------------------------------------------------------- 趋势宽度四卡 + 按钮区
@@ -554,13 +570,118 @@ def test_never_prepared_shows_the_explanation_and_a_start_button(tmp_path):
     assert any("第一次准备需要" in c.value for c in at.caption)
 
 
+def test_the_prepare_button_sits_right_of_the_sentence_about_the_wait(tmp_path):
+    """从没准备过：那句"要约一年的数据、第一次要一百多分钟"留在明面上（点下去就是一趟
+    挂机任务，这是空白处唯一的一句指路），按钮在同一行的右端——操作按钮一律靠右。"""
+    at = _home(tmp_path)
+    g = app_module("guide")
+    said, button = element_path(at, "home_breadth_start")[-1].children.values()
+    assert getattr(said, "type", "") == "caption" and said.value == g.HOME_TREND_NEVER
+    assert button.key == "home_breadth_start"
+    assert sits_on_the_right(at, "home_breadth_start")
+    # 一个横向容器（那句话占剩下的地方，按钮是它自己的宽度），不是按比例的分栏：按钮在比例栏里，
+    # 1024 宽时「更新收盘数据」会折成两行（独立审查在真实浏览器里量的）。
+    assert not [n for n in element_path(at, "home_breadth_start") if getattr(n, "type", "") == "column"]
+
+
+def test_stop_never_turns_into_start_under_the_cursor_on_the_home_page(tmp_path):
+    """任务结束（或被停掉）的那一刻，光标底下的按钮不许从「停止」换成「开始」——这一页上停止是
+    被鼓励的动作（"可随时停止、下次接着补"），手快再点一下就把刚停的任务又起了一遍。
+
+    所以运行中是**一行**：进度、停止、然后是那个点不了的开始按钮；开始按钮始终是这一行的最后一个，
+    运行前后这一行在页面上的位置不变。控制台卡片与任务条靠"上下错开"防这件事，这里不行：
+    这一区在页面最底下，任务一停页面变短，浏览器把滚到底的内容整体往下挪，上面那一行的开始按钮
+    就落到停止原来的位置（真实浏览器里量过：错开成两行仍重合 2 px；初稿两个按钮都在第一行右端，
+    独立审查量到完全重合）。AppTest 量不了像素，钉的是这一行的构成与它在元素树里的位置。"""
+    log = "待补 310 天\n[57/310] 2026-06-30 5220 行 用时 18.4s\n"
+    _fake_run(tmp_path, "running", log=log)
+    at = _home(tmp_path)
+    assert not at.exception, at.exception
+    row = element_path(at, "home_breadth_stop")[-1]
+    assert [getattr(e, "key", None) or getattr(e, "type", "") for e in row.children.values()] == \
+        ["progress", "home_breadth_stop", "home_breadth_start"], "一行：进度、停止、开始（点不了）"
+    assert at.button(key="home_breadth_start").disabled, "运行中开始按钮留在原位、点不了"
+    assert not at.button(key="home_breadth_stop").disabled
+    for key in ("home_breadth_stop", "home_breadth_start"):
+        assert sits_on_the_right(at, key), key
+    row_while_running = element_slot(at, "home_breadth_start")[:-1]
+
+    _fake_run(tmp_path, "stopped", log=log, exit_code=-15)      # 用户点了停止
+    at = _home(tmp_path)
+    assert not at.exception, at.exception
+    assert "home_breadth_stop" not in _keys(at)
+    assert not at.button(key="home_breadth_start").disabled
+    assert element_slot(at, "home_breadth_start")[:-1] == row_while_running, \
+        "任务停下前后，开始按钮所在的那一行不许换位置"
+    after = element_path(at, "home_breadth_start")[-1]
+    assert list(after.children.values())[-1].key == "home_breadth_start", "开始按钮仍是那一行的最后一个"
+
+
+def test_a_running_update_keeps_the_update_button_in_place(tmp_path):
+    """补到一半（已经有一些天的数据）时在跑：留在原位的是「更新收盘数据」，不是「开始准备」
+    ——停下之后出现的就是它。"""
+    _breadth_fixture(tmp_path, 70)
+    _fake_run(tmp_path, "running", log="待补 3 天\n[1/3] 2026-09-22 5220 行 用时 18.4s\n")
+    at = _home(tmp_path)
+    assert not at.exception, at.exception
+    assert {"home_breadth_stop", "home_breadth_update"} <= _keys(at) and "home_breadth_start" not in _keys(at)
+    assert at.button(key="home_breadth_update").disabled
+    row = element_path(at, "home_breadth_stop")[-1]
+    assert list(row.children.values())[-1].key == "home_breadth_update"
+
+
+def test_a_failed_start_on_the_home_page_is_reported_outside_the_button_row(tmp_path, monkeypatch):
+    """起任务失败的那句话要占整行，不许挤在按钮那一行里。"""
+    def refuse(*args, **kwargs):
+        raise RuntimeError("另一个任务抢先了")
+    monkeypatch.setattr(process, "start", refuse)
+    at = _home(tmp_path)
+    at = at.button(key="home_breadth_start").click().run()
+    assert not at.exception, at.exception
+    errors = [e for e in at.error if "启动失败" in e.value]
+    assert len(errors) == 1, [e.value for e in at.error]
+    row = element_path(at, "home_breadth_start")[-1]
+    assert not [n for n in path_to_element(at, errors[0]) if n is row], "报错落在了按钮那一行里"
+
+
+def test_the_home_page_keeps_its_notes_in_help_dots_not_in_plain_sight(tmp_path):
+    """首页常驻的灰字只剩会变的东西（成交额那一行、缺多少天数据）。数据从哪来、分布图怎么分档、
+    趋势图怎么读——2026-11-16 之前是页脚与图表下面的三处灰字，现在各在自己小标题的帮助圆点里。"""
+    _breadth_fixture(tmp_path, 70)
+    at = _home(tmp_path)
+    assert not at.exception, at.exception
+    g = app_module("guide")
+    shown = "\n".join(_captions(at))
+    for gone in ("门户网站", "区间按涨跌幅", "上半幅", "把全部股票按涨跌幅"):
+        assert gone not in shown, f"首页又常驻着一句说明：{gone}"
+    assert "延迟" in _section_tip(at, g.HOME_INDEX_TITLE)
+    assert "23 档" in _section_tip(at, g.HOME_DIST_TITLE)
+    assert "上半幅" in _section_tip(at, g.HOME_TREND_TITLE)
+
+
+def test_the_distribution_dot_is_gone_when_there_is_no_chart_to_explain(tmp_path, monkeypatch):
+    """只拿得到涨跌家数、画不出分布图时，小标题后面不带那个讲"二十三档"的圆点——指着空气解释。"""
+    def no_fenbu(url, headers=None):
+        if "getTopicZDFenBu" in url:
+            raise FetchError("down")
+        return fixture_http_get(url, headers)
+    monkeypatch.setattr(live, "HTTP_GET", no_fenbu)
+    at = _home(tmp_path)
+    assert _section_tip(at, app_module("guide").HOME_DIST_TITLE) == ""
+
+
 def test_running_shows_progress_and_stop(tmp_path):
     _fake_run(tmp_path, "running", log="待补 310 天\n[57/310] 2026-06-30 5220 行 用时 18.4s\n")
     at = _home(tmp_path)
-    assert "home_breadth_stop" in _keys(at) and "home_breadth_start" not in _keys(at)
+    # 开始按钮运行中仍在（留在原位、点不了，见上面那条）；停止只在运行中出现
+    assert {"home_breadth_stop", "home_breadth_start"} <= _keys(at)
+    assert at.button(key="home_breadth_start").disabled and not at.button(key="home_breadth_stop").disabled
     # AppTest 没有 progress 访问器；st.progress 落在 UnknownElement，按类型名取，文案在 proto.text
     bars = [e.proto.text for e in at.get("progress")]
     assert any("57/310" in t for t in bars), bars
+    # 进度条下面那一行会变的数（已用多久）照旧写在明面上——改用共用的那一行画法之后，
+    # 这句是调用方自己写的，漏了没人发现（变异自查抓到的）。
+    assert any("已用" in c for c in _captions(at)), _captions(at)
 
 
 def test_failed_first_run_shows_the_error_and_still_offers_start(tmp_path):
@@ -714,7 +835,16 @@ def test_trend_block_has_numbers_only_cards_and_one_chart_with_a_span_switch(tmp
     assert len(el) == 1, "四张卡片下方恰一张图表"
     assert len(json.loads(el[0].proto.spec)["data"][0]["x"]) == 60
     assert "displayModeBar" in el[0].proto.config
-    assert g.HOME_TREND_CHART_NOTE in _captions(at)
+    # 图怎么读、统计范围是什么：在「趋势宽度」小标题后面的帮助圆点里，不常驻在图下面；
+    # 小标题旁的小标签只说数据是哪天的。
+    tip = _section_tip(at, g.HOME_TREND_TITLE)
+    assert "上半幅" in tip and "下半幅" in tip and "不含 ST" in tip, tip
+    assert "qd-help-wide" in [h for h in _htmls(at) if f'class="qd-section">{g.HOME_TREND_TITLE}' in h][0], \
+        "两段话，要用宽档的提示框（窄档 15rem 会折成十几行）"
+    assert not [c for c in _captions(at) if "上半幅" in c], _captions(at)
+    trend_head = [h for h in _htmls(at) if f'class="qd-section">{g.HOME_TREND_TITLE}' in h][0]
+    pill = trend_head.split('class="qd-section-pill">', 1)[1]
+    assert "收盘数据截至" in pill and "不含 ST" not in pill, pill
     at = r.set_value("120").run()
     assert not at.exception, at.exception
     assert len(json.loads(at.get("plotly_chart")[0].proto.spec)["data"][0]["x"]) == 70    # 表只有 70 行 → 画全部

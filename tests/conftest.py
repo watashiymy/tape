@@ -67,6 +67,105 @@ def goto_page(at: AppTest, title: str) -> AppTest:
     return at.run()
 
 
+# ---------------------------------------------------------------- 按钮在哪（2026-11-16）
+# 用户提的要求：操作按钮统一位置——一律靠右（表单的提交按钮在表单右下角）。
+# AppTest 没有像素，但元素树里有排版：一行分栏是 flex_container（子块是 column，带权重），
+# st.container(horizontal=True, horizontal_alignment="right") 是 justify=JUSTIFY_END 的
+# flex_container。下面三个助手让各页的测试能说"这个按钮在右边"，而不是只说"它存在"。
+
+def element_path(at: AppTest, key: str) -> tuple:
+    """从页面根到 key 那个控件，一路经过的块（不含控件自己，最外层在前）。找不到就断言失败。"""
+    def walk(node, trail):
+        for child in getattr(node, "children", {}).values():
+            if getattr(child, "key", None) == key:
+                return (*trail, node)
+            found = walk(child, (*trail, node))
+            if found is not None:
+                return found
+        return None
+    path = walk(at._tree, ())
+    assert path is not None, f"页面上找不到 {key}"
+    return path
+
+
+def path_to_element(at: AppTest, target) -> tuple:
+    """从页面根到 target 那个元素（按对象身份找，给没有 key 的元素用：报错、灰字……），
+    一路经过的块，最外层在前。找不到就断言失败。"""
+    def walk(node, trail):
+        for child in getattr(node, "children", {}).values():
+            if child is target:
+                return (*trail, node)
+            found = walk(child, (*trail, node))
+            if found is not None:
+                return found
+        return None
+    path = walk(at._tree, ())
+    assert path is not None, "页面上找不到那个元素"
+    return path
+
+
+def _is_column_row(block) -> bool:
+    return any(getattr(c, "type", "") == "column" for c in getattr(block, "children", {}).values())
+
+
+def element_slot(at: AppTest, key: str) -> tuple:
+    """key 那个控件在页面上的"位置"：从根往下每一层是第几个孩子、什么类型，最后是它自己。
+    两个控件的这串东西相同，就是同一个槽位——一个消失、另一个出现时，它会落在同一个地方
+    （「停止」变成「开始」的那种事故，比的就是这个）。"""
+    path = element_path(at, key)
+    trail = []
+    for parent, child in zip(path, path[1:]):
+        trail.append((list(parent.children.values()).index(child), getattr(child, "type", "?")))
+    last = next(i for i, c in enumerate(path[-1].children.values())
+                if getattr(c, "key", None) == key)
+    return (*trail, (last, "widget"))
+
+
+def sits_on_the_right(at: AppTest, key: str) -> bool:
+    """key 那个按钮是不是靠在它那一块的右缘。两步都得过：
+
+    1. **自己那一行靠右**：自里向外找到第一个"横着排东西"的块，它得是靠右对齐的横向容器
+       （justify 是 END），或者按钮直接放在一行分栏里很窄的最后一栏（不超过整行的四分之一，
+       按钮撑满它时也算）。竖着排的普通容器、折叠区不算数，继续往外找；**随内容宽**的横向容器
+       也不算数——它只是把几个按钮捆成不拆开的一组，这一组摆在哪由它外面那层说了算。
+    2. **它外面每一层分栏都是最后一栏**：靠右对齐的容器若在左边那一栏里，按钮只到那一栏的右缘，
+       右边还空着大半行（2026-11-16 独立审查举的三个反例都是这一类）。
+    """
+    path = element_path(at, key)
+    aligned_at = None
+    for i in range(len(path) - 1, -1, -1):
+        node = path[i]
+        kind = getattr(node, "type", "")
+        if kind == "column":
+            columns = list(path[i - 1].children.values())
+            if columns[-1] is not node:
+                return False                            # 不在最后一栏：右边还有别的栏
+            if aligned_at is None and i == len(path) - 1:
+                weights = [c.weight for c in columns]
+                if weights[-1] > sum(weights) / 4:
+                    return False                        # 直接放在一个宽栏里：按钮在它的左缘
+                aligned_at = i
+        elif aligned_at is None and kind == "flex_container" and not _is_column_row(node):
+            flex = node.proto.flex_container
+            if flex.direction == flex.Direction.HORIZONTAL:
+                if flex.justify == flex.Justify.JUSTIFY_END:
+                    aligned_at = i
+                elif not node.proto.width_config.use_content:
+                    return False
+    return aligned_at is not None
+
+
+def action_button_keys(at: AppTest) -> list[str]:
+    """页面正文里全部操作按钮（st.button 与下载按钮）的 key，按页面上的先后。
+    表格每行的「＋ / −」是表格的一列，不是按钮元素，不在此列。"""
+    def walk(node):
+        for child in getattr(node, "children", {}).values():
+            if getattr(child, "type", "") in ("button", "download_button"):
+                yield child.key
+            yield from walk(child)
+    return [k for k in walk(at.main) if k]
+
+
 class FakePage:
     """`st.Page` 的测试替身，只在 **bare 模式**（importlib 直接 exec dashboard.py）用。
 
@@ -254,6 +353,20 @@ def fixture_http_get(url: str, headers=None) -> bytes:
         if frag in url:
             return (FIXTURES_MARKET / name).read_bytes()
     raise FetchError(f"离线替身没有这个 URL: {url}")
+
+
+@pytest.fixture(autouse=True)
+def keep_the_main_module(monkeypatch):
+    """每条测试结束后把 `sys.modules["__main__"]` 换回原样。
+
+    AppTest 跑脚本时会把 `__main__` 换成那份脚本，跑完**不换回来**。而用 spawn 起子进程的测试
+    （tests/test_journal_store.py 里两个进程同时写日志那条）在子进程里会先把父进程的 `__main__`
+    按文件路径重跑一遍：前一条 AppTest 留下的若是一份整页面板脚本，子进程就白跑一遍面板；
+    留下的若是 `AppTest.from_function` 的临时脚本（跑完就没了），子进程直接以退出码 1 结束，
+    那条测试红得莫名其妙——2026-11-16 给 conftest 的排版助手加自测时撞上的，与排在它前面的
+    是哪条测试有关，单跑永远是绿的。测试之间不该靠这种残留互相影响。
+    """
+    monkeypatch.setitem(sys.modules, "__main__", sys.modules["__main__"])
 
 
 @pytest.fixture(autouse=True)
