@@ -80,6 +80,15 @@ def test_limit_omitted_when_none():
     assert "--limit" not in build_argv("market_scan", {"limit": None})
 
 
+def test_trial_limit_is_a_legal_limit_and_actually_small():
+    """控制台「试跑」按钮传的那个只数（2026-11-16）。它得过得了 --limit 自己的闸门，
+    而且确实是"小"的——设成几千只就不叫试跑了。"""
+    from quant.runner.jobs import LIMIT_MAX, TRIAL_LIMIT
+
+    assert build_argv("market_scan", {"limit": TRIAL_LIMIT})[-2:] == ["--limit", str(TRIAL_LIMIT)]
+    assert 1 <= TRIAL_LIMIT <= 500 < LIMIT_MAX
+
+
 @pytest.mark.parametrize("bad", [0, -1, 10001, 99999, 3.5, True, False,
                                  "30", "30; rm -rf /", "", "1e3", [30]])
 def test_limit_rejected(bad):
@@ -203,6 +212,8 @@ def test_parse_argv_returns_typed_params():
     [sys.executable, "-u", str(ROOT / "scripts" / "run_market_scan.py"),
      "--date", "2026-13-45"],
     [],
+    None,                                                             # 手工把 argv 改成了 null
+    5,                                                                # 或者别的不是列表的东西
 ])
 def test_parse_argv_rejects_tampered_argv(argv):
     with pytest.raises(ValueError):

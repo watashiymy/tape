@@ -632,6 +632,104 @@ def test_empty_states_cover_exactly_the_three_products():
     assert set(guide.EMPTY_STATES) == set(EMPTY_KINDS)
 
 
+# ================================================================ 控制台改版（2026-11-16）
+#
+# 卡片上常驻的字只有这几样：一句「做什么 / 什么时候跑」、按钮上的字、首次引导。
+# 它们同样是使用者照着做判断的话——时长与时刻必须取自 FACTS，
+# 正文里教人"点哪个按钮"时引的必须是按钮上真正的字。
+
+#: 控制台上有卡片的三个任务（market_breadth 的控件在首页）。
+CONSOLE_CARDS = ("market_scan", "daily_signal", "backtest")
+
+
+def test_trial_limit_fact_is_the_runner_constant():
+    """按钮上写着"试跑 300 只"，传给任务的就得是 300：两处只认 jobs.TRIAL_LIMIT 一个数。"""
+    assert guide.FACTS["trial_limit"] == str(jobs.TRIAL_LIMIT)
+
+
+def test_every_console_card_has_a_lead_and_a_start_label():
+    assert set(guide.CONSOLE_LEAD) == set(CONSOLE_CARDS)
+    assert set(guide.CONSOLE_START) == set(CONSOLE_CARDS)
+    for name in CONSOLE_CARDS:
+        assert guide.CONSOLE_START[name].startswith("开始"), guide.CONSOLE_START[name]
+
+
+@pytest.mark.parametrize("name", CONSOLE_CARDS)
+def test_console_lead_is_short_plain_text(name):
+    """标题下那一句常驻在页面上，所以要短；它走 HTML 转义渲染，写 ** 会原样显示成星号。"""
+    text = guide.CONSOLE_LEAD[name]
+    assert 20 <= len(text) <= 70, f"{name} 的那一句长度不合适（{len(text)} 字）: {text}"
+    assert "**" not in text and "\n" not in text, text
+
+
+def test_console_leads_carry_the_measured_durations_and_the_ready_time():
+    """「多久」与「什么时候跑」是新手最需要、过去只藏在问号里的两件事。"""
+    assert guide.FACTS["scan_minutes"] in guide.CONSOLE_LEAD["market_scan"]
+    assert guide.FACTS["data_ready"] in guide.CONSOLE_LEAD["market_scan"]
+    assert guide.FACTS["data_ready"] in guide.CONSOLE_LEAD["daily_signal"]
+    assert guide.FACTS["backtest_seconds"] in guide.CONSOLE_LEAD["backtest"]
+    assert "不产生今天的信号" in guide.CONSOLE_LEAD["backtest"], \
+        "回测不在每日那条链上——这句是它单独成区的全部理由"
+
+
+def test_trial_copy_names_the_real_limit_and_what_it_leaves_alone():
+    n = guide.FACTS["trial_limit"]
+    assert guide.CONSOLE_TRIAL_LABEL == f"试跑 {n} 只"
+    assert "不会覆盖" in guide.CONSOLE_TRIAL_HELP, "试跑不覆盖同一天的全量结果，这句得说"
+    assert f"「{guide.CONSOLE_TRIAL_LABEL}」" in guide.CONSOLE_FIRST_RUN
+
+
+def test_copy_that_tells_you_what_to_click_quotes_the_real_button_labels():
+    """正文里教人点哪个按钮，引的必须是按钮上真正的字——按钮改了名，这里会红。"""
+    workflow = guide.section("workflow").body
+    assert f"「{guide.CONSOLE_START['market_scan']}」" in workflow
+    assert f"「{guide.CONSOLE_TRIAL_LABEL}」" in workflow
+    assert f"「{guide.CONSOLE_TRIAL_LABEL}」" in guide.EMPTY_STATES["scan"]
+    assert f"「{guide.CONSOLE_TRIAL_LABEL}」" in guide.PARAM_HELP[("market_scan", "limit")]
+    for name in CONSOLE_CARDS:
+        assert f"「{guide.CONSOLE_RESULT}」" in guide.JOB_HELP[name], \
+            f"{name} 的说明没指到卡片里那个结果折叠区"
+
+
+def test_no_copy_still_tells_you_to_type_the_trial_size_by_hand():
+    """试跑已经是一个按钮了。还教人"把只数填进输入框"，就是让新手绕远路。"""
+    for name, text in _user_copy().items():
+        assert "填 300" not in text, f"{name} 还在教人手填试跑只数"
+
+
+def test_copy_quotes_buttons_by_their_words_not_by_glyphs():
+    """按钮上的 ▶ ⏹ ↻ ↶ 2026-11-16 起换成了图标（icon=），文字里不再有这些字符。
+    文案引用按钮时引的是按钮上的**字**——还写着「▶ 开始」的话，页面上已经找不到这个东西了。
+    （表格每行的「＋ 记一笔」不在此列：那是表格列的文字，原样保留。）"""
+    for name, text in _user_copy().items():
+        for glyph in ("▶", "⏹", "↻", "↶"):
+            assert glyph not in text, f"{name} 里还在用字符 {glyph} 指代按钮"
+
+
+def test_scan_lead_admits_the_first_run_takes_much_longer():
+    """「全量约 18 分钟」是行情已在本地时的实测；第一次要按 0.5–2 小时准备。
+    常驻在卡片上的那一句只说前半截，第一次用的人就会守着进度条等它十八分钟。"""
+    assert "第一次" in guide.CONSOLE_LEAD["market_scan"], guide.CONSOLE_LEAD["market_scan"]
+
+
+def test_copy_that_says_it_is_explained_in_the_log_says_where_the_log_is():
+    """成功之后日志收在卡片的「运行日志」里（2026-11-16）。"会在日志里说明"得说清日志在哪——
+    过去日志尾部一直摊在卡片上，这句话不用解释；现在不说，人就找不到那行说明。"""
+    where = f"「{guide.CONSOLE_LOG}」"
+    for name, text in (("workflow", guide.section("workflow").body),
+                       ("job_help", guide.JOB_HELP["daily_signal"]),
+                       ("param_help", guide.PARAM_HELP[("daily_signal", "date")])):
+        assert f"{where}里说明" in text, f"{name} 没说清日志在哪: {text}"
+        assert "在日志里说明" not in text, f"{name} 还是只说「在日志里」: {text}"
+
+
+def test_the_console_keeps_no_second_copy_of_the_flow():
+    """控制台顶上那条流程图与"三步频率不一样"那句随改版拿掉了（卡片自上而下就是流程，
+    频率写进了每张卡片自己那一句）。常量一并删掉——留着没人用的文案会慢慢过期。"""
+    for gone in ("CONSOLE_FLOW", "CONSOLE_FLOW_NOTE", "CONSOLE_TOOLS_NOTE"):
+        assert not hasattr(guide, gone), f"{gone} 已经没有任何页面在用"
+
+
 # ================================================================ 面向使用者（2026-09-05）
 
 #: 正常状态的页面文字里不许出现的实现细节（正则）。路径前缀、文件后缀、命令行开关、

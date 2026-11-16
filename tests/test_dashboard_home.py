@@ -864,6 +864,14 @@ def test_the_start_button_carries_the_job_help(tmp_path):
     assert at.button(key="home_breadth_start").help == app_module("guide").JOB_HELP["market_breadth"]
 
 
+def test_the_start_button_is_words_plus_a_material_icon(tmp_path):
+    """按钮文字就是 guide 里那几个字，图标走 icon=，不再把 ▶ 拼在前面（2026-11-16）。"""
+    at = _home(tmp_path)
+    btn = at.button(key="home_breadth_start")
+    assert (btn.label, btn.proto.icon) == (app_module("guide").HOME_BTN_START,
+                                           ":material/play_arrow:")
+
+
 def test_the_update_button_carries_the_job_help(tmp_path):
     _breadth_fixture(tmp_path, 22)              # 夹具日自己的快照还没有 → 「更新收盘数据」
     at = _home(tmp_path)

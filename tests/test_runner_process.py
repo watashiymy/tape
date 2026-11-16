@@ -491,3 +491,18 @@ def test_has_ever_run_ignores_the_logs_dir_and_counts_any_state_file(tmp_path):
     (runs / "backtest.json").write_text('{"script": "backtest", "pid":', encoding="utf-8")
     assert process.has_ever_run(runs) is True
 
+
+
+def test_has_ever_run_can_be_asked_about_particular_jobs(tmp_path):
+    """控制台的首次引导只该看**控制台上的任务**跑没跑过（2026-11-16 审查发现）：
+    首页那个收盘数据任务跑过之后，新手在控制台就再也看不到那条引导了。
+    点名的任务同样只看文件在不在——坏掉的状态文件也算跑过。"""
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    (runs / "market_breadth.json").write_text("{}", encoding="utf-8")
+    console_jobs = ("market_scan", "daily_signal", "backtest")
+    assert process.has_ever_run(runs) is True
+    assert process.has_ever_run(runs, console_jobs) is False
+    (runs / "backtest.json").write_text('{"script": "backtest", "pid":', encoding="utf-8")
+    assert process.has_ever_run(runs, console_jobs) is True
+    assert process.has_ever_run(tmp_path / "nowhere", console_jobs) is False

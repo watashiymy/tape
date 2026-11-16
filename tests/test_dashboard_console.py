@@ -35,9 +35,53 @@ def _htmls(at: AppTest) -> list[str]:
             if not (b := e.proto.body).lstrip().startswith("<style>")]
 
 
-def _sections(at: AppTest) -> list[str]:
-    """三张卡片的标题（衬线小标题 + 状态 pill），取代 v0.2.0 的 st.subheader。"""
+def _zone_heads(at: AppTest) -> list[str]:
+    """两个区标题（衬线 + 发丝线）：「每日流水线」与「研究工具」。"""
     return [h for h in _htmls(at) if 'class="qd-section"' in h]
+
+
+def _card_titles(at: AppTest) -> list[str]:
+    """三张任务卡片的标题行：标题 + 帮助圆点 + 状态 pill（2026-11-16 起是 .qd-task-title，
+    不再借用带发丝线的区标题——卡片自己有边框）。"""
+    return [h for h in _htmls(at) if 'class="qd-task-title"' in h]
+
+
+def _card_metas(at: AppTest) -> list[str]:
+    """标题下那两行：一句「做什么 / 什么时候跑」+ 一行「最新结果」。"""
+    return [h for h in _htmls(at) if 'class="qd-task-lead"' in h]
+
+
+def _expanders(at: AppTest, label: str) -> list:
+    return [e for e in at.expander if e.label == label]
+
+
+def _descend(block):
+    """元素树按**页面上的先后**展开（AppTest 只给顶层容器，卡片 / 列 / 折叠区要自己走下去）。"""
+    yield block
+    for child in getattr(block, "children", {}).values():
+        yield from _descend(child)
+
+
+def _keys_under(block) -> set[str]:
+    return {k for e in _descend(block) if (k := getattr(e, "key", None))}
+
+
+def _guide():
+    """面板这一轮 import 进来的 app/guide.py（文案只认它，不在测试里再抄一遍按钮上的字）。"""
+    return app_module("guide")
+
+
+def _log_tails(at: AppTest) -> list[str]:
+    """**摊在卡片上**的日志尾部：定高、自动滚到底的那个容器里的代码块。
+    折叠区里的日志全文不算——只数 at.code 分不清两者（审查抓到过一条因此空转的测试）。"""
+    return [el.value for block in _descend(at.main)
+            if getattr(block, "type", "") == "flex_container" and block.proto.autoscroll
+            for el in _descend(block) if getattr(el, "type", "") == "code"]
+
+
+def _kinds(at: AppTest) -> list[str]:
+    """页面上各元素的类型，按先后。用来断言"谁在谁上面"。"""
+    return [getattr(e, "type", "") for e in _descend(at.main)]
 
 
 def _console(tmp_path: Path) -> AppTest:
@@ -50,7 +94,7 @@ def _console(tmp_path: Path) -> AppTest:
 
 def _fake_run(root: Path, job: str, status: str, *, log: str = "", exit_code=None,
               argv: list[str] | None = None, minutes_ago: float = 3.0,
-              pid: int | None = None) -> Path:
+              pid: int | None = None, finished_days_ago: float = 0.0) -> Path:
     """伪造一次运行的状态文件 + 日志。
 
     status=running 时 pid 必须是**活着**的进程，否则 read_state 的僵尸清理会
@@ -69,7 +113,8 @@ def _fake_run(root: Path, job: str, status: str, *, log: str = "", exit_code=Non
         "log_path": str(log_path),
         "started_at": started.isoformat(timespec="seconds"),
         "status": status, "exit_code": exit_code,
-        "finished_at": None if status == "running" else datetime.now().isoformat(timespec="seconds"),
+        "finished_at": None if status == "running" else (
+            datetime.now() - timedelta(days=finished_days_ago)).isoformat(timespec="seconds"),
     }
     (runs / f"{job}.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     return log_path
@@ -128,10 +173,10 @@ def test_the_first_run_hint_stays_quiet_when_the_state_file_is_corrupt(tmp_path)
 def test_three_cards_render(tmp_path):
     at = _console(tmp_path)
     assert not at.exception, at.exception
-    text = " ".join(_sections(at))
+    text = " ".join(_card_titles(at))
     for name in CONSOLE_JOBS:
         label = jobs.JOBS[name].label
-        assert f'class="qd-section">{label}<' in text, f"缺少「{label}」卡片，实际: {text}"
+        assert f'class="qd-task-title">{label}<' in text, f"缺少「{label}」卡片，实际: {text}"
     for name in CONSOLE_JOBS:
         assert at.button(f"start_{name}"), name
 
@@ -144,22 +189,27 @@ def test_exactly_one_job_lives_elsewhere(tmp_path):
 
 
 def test_empty_state_when_nothing_ever_ran(tmp_path):
-    """三张卡片都空闲：开始可用、停止与重跑禁用，且明说"尚未运行过"。"""
+    """三张卡片都空闲：主按钮可用、**没有**停止按钮、重跑禁用，且每张都明说"还没跑过"。
+
+    停止按钮 2026-11-16 起只在运行中出现（在进度条旁）：三个永远灰着的「停止」是噪声。"""
     at = _console(tmp_path)
     assert not at.exception
+    keys = [b.key for b in at.button]
     for name in CONSOLE_JOBS:
         assert at.button(f"start_{name}").disabled is False, name
-        assert at.button(f"stop_{name}").disabled is True, name
+        assert f"stop_{name}" not in keys, f"{name} 空闲着却有停止按钮"
         assert at.button(f"rerun_{name}").disabled is True, name
-    assert sum("尚未运行过" in c.value for c in at.caption) == len(CONSOLE_JOBS)
-    # v0.5.0 两区版（设计 §6）：区标题「每日流水线」「研究工具」+ 人工步骤卡片
-    # 「加进信号池」+ 三张任务卡片各一个。带状态 pill 的必须**恰好**是任务卡片：
-    # 人工那一步没有进程，给它挂状态 pill 就是无中生有。
-    with_pill = [h for h in _sections(at) if "qd-pill-" in h]
-    assert len(with_pill) == len(CONSOLE_JOBS), with_pill
-    for head in with_pill:
+    metas = _card_metas(at)
+    assert len(metas) == len(CONSOLE_JOBS), metas
+    assert all("还没跑过" in m for m in metas), metas
+    # 两区：区标题「每日流水线」「研究工具」+ 三张任务卡片。状态 pill **恰好**在任务卡片上：
+    # 区标题与人工那一步都没有进程，给它们挂状态 pill 就是无中生有。
+    titles = _card_titles(at)
+    assert len(titles) == len(CONSOLE_JOBS), titles
+    for head in titles:
         assert "空闲" in head and "qd-pill-idle" in head, head
-    plain = [h for h in _sections(at) if "qd-pill-" not in h]
+    plain = _zone_heads(at)
+    assert not [h for h in plain if "qd-pill-" in h], plain
     assert [h for h in plain if "每日流水线" in h], plain
     assert [h for h in plain if "研究工具" in h], plain
     assert len(plain) == 2, plain     # 只有两个区标题：人工那一步不再是卡片（2026-09-14）
@@ -190,12 +240,25 @@ def test_start_buttons_all_disabled_while_a_job_runs(tmp_path):
     assert any("全市场扫描" in n and "正在运行" in n for n in notices), notices
 
 
-def test_stop_only_enabled_for_the_running_job(tmp_path):
+def test_stop_button_exists_only_on_the_running_card(tmp_path):
+    """停止按钮只属于正在跑的那张卡片，而且**不占主按钮的位置**（它在进度条旁）：
+    任务恰好跑完的那一刻，光标底下的按钮不许从「停止」换成「开始」。"""
     _fake_run(tmp_path, "market_scan", "running", log=SCAN_LOG.split("已保存")[0])
     at = _console(tmp_path)
+    keys = [b.key for b in at.button]
     assert at.button("stop_market_scan").disabled is False
-    assert at.button("stop_backtest").disabled is True
+    assert "stop_backtest" not in keys and "stop_daily_signal" not in keys, keys
+    assert at.button("start_market_scan").disabled is True, "主按钮还在原位，只是禁用"
     assert at.button("rerun_market_scan").disabled is True, "运行中不得重跑（互斥）"
+
+
+def test_the_running_card_does_not_repeat_the_mutex_notice_about_itself(tmp_path):
+    """「全市场扫描」正在运行这句话，是说给**另外两张**卡片的灰按钮听的。
+    正在跑的那张自己就摊着进度条，再说一遍只是重复。"""
+    _fake_run(tmp_path, "market_scan", "running", log=SCAN_LOG.split("已保存")[0])
+    at = _console(tmp_path)
+    notices = [c.value for c in at.caption if "正在运行" in c.value]
+    assert len(notices) == len(CONSOLE_JOBS) - 1, notices
 
 
 # ---------------------------------------------------------------- 状态呈现
@@ -204,15 +267,15 @@ def test_failed_state_shows_exit_code(tmp_path):
               log="login success!\nTraceback (most recent call last):\nValueError: boom\n")
     at = _console(tmp_path)
     assert not at.exception, at.exception
-    assert any("退出码 3" in h and "qd-pill-failed" in h for h in _sections(at)), \
-        _sections(at)
+    assert any("退出码 3" in h and "qd-pill-failed" in h for h in _card_titles(at)), \
+        _card_titles(at)
 
 
 def test_stopped_state_shows_badge_and_reenables_start(tmp_path):
     _fake_run(tmp_path, "market_scan", "stopped", exit_code=-15,
               log=SCAN_LOG.split("已保存")[0])
     at = _console(tmp_path)
-    assert any("已停止" in h and "qd-pill-idle" in h for h in _sections(at)), _sections(at)
+    assert any("已停止" in h and "qd-pill-idle" in h for h in _card_titles(at)), _card_titles(at)
     assert at.button("start_market_scan").disabled is False, "停掉的任务不该继续占着互斥"
 
 
@@ -284,7 +347,8 @@ def test_log_tail_is_30_lines_and_expander_has_everything(tmp_path):
     _fake_run(tmp_path, "daily_signal", "running", log=full)
     at = _console(tmp_path)
     codes = [c.value for c in at.code]
-    assert "\n".join(f"line {i}" for i in range(11, 41)) in codes, "尾部应是最后 30 行"
+    assert _log_tails(at) == ["\n".join(f"line {i}" for i in range(11, 41))], \
+        "摊在卡片上的应是最后 30 行"
     assert full in codes, "expander 里应有完整日志"
     assert any("完整日志" in e.label for e in at.expander)
 
@@ -668,17 +732,18 @@ def test_a_corrupt_scan_meta_does_not_take_the_whole_page_down(tmp_path):
     assert not at.exception, at.exception
     for name in CONSOLE_JOBS:                    # 三个任务的按钮一个都不能少
         assert at.button(f"start_{name}"), f"{name} 的开始按钮不见了"
-        assert at.button(f"stop_{name}"), f"{name} 的停止按钮不见了"
+        assert at.button(f"rerun_{name}"), f"{name} 的重跑按钮不见了"
     warnings = [w.value for w in at.main.warning]
     assert any("损坏" in w for w in warnings), f"没有如实说文件坏了：{warnings}"
 
 
-def test_the_rerun_button_carries_a_help_that_names_the_parameters(tmp_path):
-    """「↻ 重跑」的参数只存在磁盘那份 JSON 里，页面上过去一个字不显示——
-    本机那份 argv 就带着 --date，点一下白扫昨天十几分钟。
+def test_the_rerun_hint_is_plain_sight_text_naming_the_parameters(tmp_path):
+    """「沿用上次参数重跑」的参数只存在磁盘那份 JSON 里——本机那份 argv 就带着 --date，
+    点一下白扫昨天十几分钟。v0.5.0 把"要重跑什么"挂在按钮的悬停提示上；2026-11-16 起它
+    直接写在按钮上方（不悬停也看得见），同一句话就不再往悬停里放第二遍。
 
-    这里钉住"按钮真挂上了 help"这条接线（漏挂不会报错，只是 tooltip 永远不出现），
-    文案本身由 tests/test_runner_view.py 的 rerun_hint 用例覆盖。
+    这里钉的是接线（漏了不会报错，只是那行字不出现），文案本身由
+    tests/test_runner_view.py 的 rerun_hint 用例覆盖。
     """
     _fake_run(tmp_path, "market_scan", "success",
               argv=[sys.executable, "-u", jobs.JOBS["market_scan"].script,
@@ -687,8 +752,469 @@ def test_the_rerun_button_carries_a_help_that_names_the_parameters(tmp_path):
     at = _console(tmp_path)
     assert not at.exception, at.exception
 
-    btn = at.button("rerun_market_scan")
-    assert btn.help, "重跑按钮没挂 help"
-    assert "2026-09-01" in btn.help, f"help 没说清要重跑哪一天：{btn.help}"
-    # 没跑过的那两个任务：也得有句人话，不许是空 tooltip
-    assert at.button("rerun_backtest").help, "没跑过的任务也该有句说明"
+    captions = [c.value for c in at.main.caption]
+    assert any("沿用上次参数" in c and "2026-09-01" in c for c in captions), \
+        f"页面上没写清要重跑哪一天：{captions}"
+    # 没跑过的那两个任务：也得有句人话，不许只剩一个灰按钮
+    assert sum("没有可沿用的参数" in c for c in captions) == len(CONSOLE_JOBS) - 1, captions
+    assert not at.button("rerun_market_scan").help, "同一句话已经写在按钮上方，悬停里不放第二遍"
+
+
+# ================================================================ 2026-11-16 改版
+#
+# 改版要回答的是一个问题：**第一次打开这一页的人，知道先点哪儿吗。** 改之前三个按钮等权重、
+# 两个参数框摆在按钮前面像必填、几个月前那次的日志和 100% 进度条一直占着版面。
+# 下面钉的是新版式的几条骨架：一张卡片一个主按钮、参数与日志收进折叠区、
+# 版面自上而下就是流程、第一次来的人有一条明路。
+
+# ---------------------------------------------------------------- 主按钮与试跑
+def test_each_card_has_exactly_one_primary_button_with_its_own_label(tmp_path):
+    """每张卡片一个主按钮（琥珀色、带图标），字是这个任务自己的——「开始扫描 / 开始跟踪 /
+    开始回测」。三个一模一样的「开始」得先读标题才知道点的是什么。"""
+    at = _console(tmp_path)
+    assert not at.exception, at.exception
+    guide = _guide()
+    for name in CONSOLE_JOBS:
+        btn = at.button(f"start_{name}")
+        assert btn.label == guide.CONSOLE_START[name], btn.label
+        assert btn.proto.type == "primary", f"{name} 的开始不是主按钮"
+        assert btn.proto.icon == ":material/play_arrow:", btn.proto.icon
+    primary = [b.key for b in at.button if b.proto.type == "primary"]
+    assert sorted(primary) == sorted(f"start_{n}" for n in CONSOLE_JOBS), \
+        f"主按钮只该是三个开始: {primary}"
+
+
+def test_only_the_scan_card_offers_a_trial_run(tmp_path):
+    """试跑是全市场扫描独有的：只有它一跑就是十几分钟，值得先小范围确认环境。"""
+    at = _console(tmp_path)
+    trials = [b for b in at.button if b.key.startswith("trial_")]
+    assert [b.key for b in trials] == ["trial_market_scan"]
+    assert trials[0].label == _guide().CONSOLE_TRIAL_LABEL
+    assert trials[0].proto.type == "secondary", "试跑是次按钮：主按钮只有一个"
+    assert trials[0].help == _guide().CONSOLE_TRIAL_HELP
+
+
+def test_trial_button_starts_a_scan_limited_to_the_trial_size(tmp_path, monkeypatch):
+    """说明页一直建议"第一次先扫前 300 只"；过去要自己把 300 敲进输入框，现在点一下。"""
+    started: list[tuple] = []
+    monkeypatch.setattr(process, "start", lambda *a, **k: started.append(a))
+    at = _console(tmp_path)
+    at.button("trial_market_scan").click().run()
+    assert [a[:2] for a in started] == [(
+        "market_scan",
+        [sys.executable, "-u", jobs.JOBS["market_scan"].script,
+         "--limit", str(jobs.TRIAL_LIMIT)])], started
+    assert not at.error, [e.value for e in at.error]
+
+
+def test_trial_button_keeps_the_chosen_date_but_not_a_typed_limit(tmp_path, monkeypatch):
+    """按钮上写着"试跑 300 只"，扫的就得是 300 只——输入框里另填的只数不许悄悄顶掉它；
+    但基准交易日照样带上（补扫历史某天时也想先试跑）。"""
+    started: list[tuple] = []
+    monkeypatch.setattr(process, "start", lambda *a, **k: started.append(a))
+    at = _console(tmp_path)
+    at.number_input("market_scan_limit").set_value(30).run()
+    at.date_input("market_scan_date").set_value(date(2026, 8, 24)).run()
+    at.button("trial_market_scan").click().run()
+    assert [a[1] for a in started] == [
+        [sys.executable, "-u", jobs.JOBS["market_scan"].script,
+         "--limit", str(jobs.TRIAL_LIMIT), "--date", "2026-08-24"]]
+
+
+def test_trial_button_obeys_the_global_mutex(tmp_path):
+    _fake_run(tmp_path, "backtest", "running", log="login success!\n")
+    at = _console(tmp_path)
+    assert at.button("trial_market_scan").disabled is True, "别的任务在跑，试跑也不许点"
+
+
+# ---------------------------------------------------------------- 参数收进折叠区
+def test_params_and_rerun_live_in_a_collapsed_options_expander(tmp_path):
+    """参数框摆在按钮前面，看着像必填——而它们九成的时候都该留空。
+    收进「更多选项」（默认收起）；重跑也在里面：它沿用的是**上一次**的参数，不是主路径。"""
+    at = _console(tmp_path)
+    options = _expanders(at, _guide().CONSOLE_OPTIONS)
+    assert len(options) == len(CONSOLE_JOBS), [e.label for e in at.expander]
+    assert all(e.proto.expanded is False for e in options), "更多选项默认该是收起的"
+    inside = set().union(*(_keys_under(e) for e in options))
+    widgets = {f"{job.name}_{p.name}" for name in CONSOLE_JOBS
+               for job in [jobs.JOBS[name]] for p in job.params}
+    assert widgets <= inside, f"有参数控件露在折叠区外面: {sorted(widgets - inside)}"
+    assert {f"rerun_{n}" for n in CONSOLE_JOBS} <= inside, sorted(inside)
+    assert not {f"start_{n}" for n in CONSOLE_JOBS} & inside, "主按钮不该被藏进折叠区"
+
+
+# ---------------------------------------------------------------- 首次引导
+def _callouts(at: AppTest) -> list[str]:
+    return [h for h in _htmls(at) if 'class="qd-callout"' in h]
+
+
+def _page_links(at: AppTest) -> list[str]:
+    return [el.proto.label for el in at.get("page_link")]
+
+
+def test_first_time_visitors_are_pointed_at_the_trial_button(tmp_path):
+    """从没跑过任何任务：页顶一条引导，点名先点哪个按钮，旁边一条去「使用说明」的链接。"""
+    at = _console(tmp_path)
+    assert not at.exception, at.exception
+    guide = _guide()
+    callouts = _callouts(at)
+    assert len(callouts) == 1, callouts
+    assert guide.CONSOLE_TRIAL_LABEL in callouts[0], callouts[0]
+    assert guide.CONSOLE_FIRST_RUN_LINK in _page_links(at), _page_links(at)
+
+
+def test_the_first_time_callout_is_gone_once_anything_has_run(tmp_path):
+    """跑过一次之后它就消失——常驻的引导等于噪声（同首页那条链接、同侧栏的安全警告）。"""
+    _fake_run(tmp_path, "backtest", "success", log="全部完成: 2 个策略\n", exit_code=0)
+    at = _console(tmp_path)
+    assert not at.exception, at.exception
+    assert _callouts(at) == []
+    assert _guide().CONSOLE_FIRST_RUN_LINK not in _page_links(at)
+
+
+def test_the_first_time_callout_stays_quiet_when_the_state_file_is_corrupt(tmp_path):
+    """状态文件坏了：卡片会报错，这条引导不猜"是不是第一次"，直接不显示。"""
+    runs = tmp_path / "output" / "runs"
+    runs.mkdir(parents=True)
+    (runs / "backtest.json").write_text('{"script": "backtest", "pid":', encoding="utf-8")
+    at = _console(tmp_path)
+    assert not at.exception, at.exception
+    assert _callouts(at) == []
+
+
+# ---------------------------------------------------------------- 标题下那两行
+def test_every_card_says_what_it_does_under_its_title(tmp_path):
+    """做什么、什么时候跑、多久——过去只在问号里，现在常驻在标题下面。"""
+    at = _console(tmp_path)
+    blob = "\n".join(_card_metas(at))
+    for name in CONSOLE_JOBS:
+        assert _guide().CONSOLE_LEAD[name] in blob, f"{name} 的那一句没渲染出来"
+
+
+def test_the_latest_product_line_is_labelled_and_dated(tmp_path):
+    """「最新结果」那一行说的是**产物**（哪天的、什么范围），与上次运行成没成是两件事。"""
+    _finished_scan(tmp_path)
+    at = _console(tmp_path)
+    scan_meta_line = next(m for m in _card_metas(at) if _guide().CONSOLE_LEAD["market_scan"] in m)
+    assert _guide().CONSOLE_STATUS_KEY in scan_meta_line
+    assert "最近一次 2026-08-24" in scan_meta_line, scan_meta_line
+
+
+# ---------------------------------------------------------------- 按状态摊开 / 收起
+def test_a_successful_run_folds_into_one_summary_line(tmp_path):
+    """成功结束之后：不画一条 100% 的进度条、不摊着日志。留一行「上次运行」，
+    日志整个收进「运行日志」。几个月前那次的日志一直占着半屏，正是改版要拿掉的东西。"""
+    _finished_scan(tmp_path)
+    at = _console(tmp_path)
+    assert not at.exception, at.exception
+    guide = _guide()
+    assert at.get("progress") == [], "成功了还画进度条：一条 100% 的琥珀色横杠什么都没说"
+    captions = [c.value for c in at.main.caption]
+    assert any(c.startswith("上次运行：完成") and "已用" in c for c in captions), captions
+    logs = _expanders(at, guide.CONSOLE_LOG)
+    assert len(logs) == 1 and logs[0].proto.expanded is False, [e.label for e in at.expander]
+    assert _expanders(at, guide.CONSOLE_FULL_LOG) == [], "没有摊着的日志尾部，就没有「完整日志」"
+    assert _log_tails(at) == [], "成功了卡片上还摊着日志尾部"
+    # st.code 会吃掉首尾的换行，所以两边都 strip 了再比
+    assert [c.value.strip() for c in at.code] == [SCAN_LOG.strip()], \
+        "日志只该出现一次（全文，在折叠区里）"
+
+
+def test_a_result_from_today_is_open_and_still_a_real_table(tmp_path):
+    """今天跑完的结果默认摊开——人就是来看它的。"""
+    _finished_scan(tmp_path)                       # _fake_run 的结束时刻就是现在
+    at = _console(tmp_path)
+    result = _expanders(at, _guide().CONSOLE_RESULT)
+    assert len(result) == 1 and result[0].proto.expanded is True
+    assert len(at.dataframe) == 1
+
+
+def test_an_older_result_starts_collapsed_but_is_not_thrown_away(tmp_path):
+    """三天前跑完的：结果还在，只是收起——一打开页面就摊着一张旧表，会被当成今天的。"""
+    scan = tmp_path / "output" / "scan"
+    scan.mkdir(parents=True)
+    (scan / "2026-08-24.csv").write_text(
+        "date,symbol,name,strategy,close,pct_chg,amount,amount_ratio_20d\n"
+        "2026-08-24,000020,深华发A,ma_cross,11.74,-5.09,2.9e8,4.22\n", encoding="utf-8")
+    _fake_run(tmp_path, "market_scan", "success", exit_code=0, log=SCAN_LOG,
+              finished_days_ago=3)
+    at = _console(tmp_path)
+    assert not at.exception, at.exception
+    result = _expanders(at, _guide().CONSOLE_RESULT)
+    assert len(result) == 1 and result[0].proto.expanded is False
+    assert len(at.dataframe) == 1, "收起不等于不渲染"
+
+
+def test_a_failed_run_keeps_its_log_tail_in_plain_sight(tmp_path):
+    """没跑成的时候日志尾部必须摊着：那几行 traceback 就是"为什么"。"""
+    _fake_run(tmp_path, "backtest", "failed", exit_code=3,
+              log="login success!\nTraceback (most recent call last):\nValueError: boom\n")
+    at = _console(tmp_path)
+    assert not at.exception, at.exception
+    guide = _guide()
+    tails = _log_tails(at)
+    assert len(tails) == 1 and "ValueError: boom" in tails[0], \
+        f"失败了日志尾部却没摊在卡片上（只在折叠区里不算）: {tails}"
+    assert len(_expanders(at, guide.CONSOLE_FULL_LOG)) == 1
+    assert _expanders(at, guide.CONSOLE_LOG) == [] and _expanders(at, guide.CONSOLE_RESULT) == []
+
+
+def test_the_running_card_says_closing_the_browser_is_safe(tmp_path):
+    """「关掉浏览器也不会中断」只在动作现场说：过去它常驻在页顶，而没有任务在跑时
+    这句话没有任何可做的事。"""
+    note = None
+    at = _console(tmp_path)
+    note = _guide().CONSOLE_BACKGROUND_NOTE
+    assert not [c.value for c in at.caption if note in c.value], "没有任务在跑却在说后台运行"
+    _fake_run(tmp_path, "market_scan", "running", log="\n".join(SCAN_LOG.splitlines()[:20]))
+    at = _console(tmp_path)
+    assert [c.value for c in at.main.caption if note in c.value], \
+        [c.value for c in at.main.caption]
+
+
+# ---------------------------------------------------------------- 版面就是流程
+def _document_order(at: AppTest) -> list[str]:
+    """页面上的先后：带 key 的控件记 key，我们自己包的 HTML 记正文。"""
+    out = []
+    for el in _descend(at.main):
+        if key := getattr(el, "key", None):
+            out.append(key)
+        elif body := getattr(getattr(el, "proto", None), "body", None):
+            out.append(body)
+    return out
+
+
+def _position(order: list[str], needle: str) -> int:
+    hits = [i for i, item in enumerate(order) if needle in item]
+    assert hits, f"页面上找不到 {needle!r}"
+    return hits[0]
+
+
+def test_the_page_reads_top_to_bottom_in_pipeline_order(tmp_path):
+    """整幅宽的卡片自上而下：全市场扫描 → 人工那一步 → 信号跟踪，再是「研究工具」区的回测。
+    顺序由**位置**表达——刻意不加 ①②③ 编号（说明页与 README 各有一套，第三套会互相矛盾）。"""
+    at = _console(tmp_path)
+    assert not at.exception, at.exception
+    order = _document_order(at)
+    marks = ["每日流水线", "start_market_scan", 'class="qd-manual-row"', "start_daily_signal",
+             "研究工具", "start_backtest"]
+    positions = [_position(order, m) for m in marks]
+    assert positions == sorted(positions), dict(zip(marks, positions))
+
+
+def test_two_down_arrows_bracket_the_manual_step_and_the_flow_strip_is_gone(tmp_path):
+    """人工那一步夹在两个向下的箭头之间；页顶那条横着的流程图不再出现——
+    版面本身已经是流程图，同一屏画两遍就是重复。"""
+    at = _console(tmp_path)
+    htmls = _htmls(at)
+    assert not [h for h in htmls if 'class="qd-flow"' in h], "流程条还在页顶"
+    assert len([h for h in htmls if h == '<div class="qd-rail"></div>']) == 2
+    order = _document_order(at)
+    rails = [i for i, item in enumerate(order) if item == '<div class="qd-rail"></div>']
+    manual = _position(order, 'class="qd-manual-row"')
+    assert rails[0] < manual < rails[1], (rails, manual)
+
+
+# ================================================================ 审查后补的（2026-11-16）
+#
+# 独立审查指出三类问题，下面每条测试对应一处：
+#   ① 收进折叠区的参数在卡片上看不见，主按钮却照样按它跑；
+#   ② 点击等卡片渲染完才处理——中间任何一处抛错这次点击就落空，失败提示还落在卡片最底下；
+#   ③ 五种"改坏了测试也不红"的空洞（别的卡片的重跑、没有进度条时的停止、结束后的停止、
+#      失败时摊着的日志尾部、"没有保存任何结果"那句的接线）。
+
+# ---------------------------------------------------------------- ① 看不见的参数
+def test_filled_in_params_are_named_on_the_card_face(tmp_path):
+    """「更多选项」默认收起。上午试跑时填的只数与日期，下午点「开始扫描」时卡片上一个字都
+    看不见，而扫描照样按它跑——以为是全量，其实只扫了 30 只、还是上周那天。
+    所以填了什么要写在卡片上（折叠区外面）；全留空时这一行不出现。"""
+    at = _console(tmp_path)
+    assert not at.exception, at.exception
+    filled = _guide().CONSOLE_PARAMS_SET.split("{")[0]
+    assert not [c.value for c in at.main.caption if filled in c.value], "没填参数却有这一行"
+
+    at.number_input("market_scan_limit").set_value(30).run()
+    at.date_input("market_scan_date").set_value(date(2026, 8, 24)).run()
+
+    lines = [c.value for c in at.main.caption if filled in c.value]
+    assert len(lines) == 1, f"只有扫描那张卡片填了参数: {lines}"
+    assert "只扫前 N 只 = 30" in lines[0] and "基准交易日 = 2026-08-24" in lines[0], lines[0]
+    hidden = {el.value for e in _expanders(at, _guide().CONSOLE_OPTIONS) for el in _descend(e)
+              if getattr(el, "type", "") == "caption"}
+    assert lines[0] not in hidden, "这一行写在了折叠区里面，收起来照样看不见"
+
+
+def test_a_filled_in_strategy_is_named_by_its_display_name(tmp_path):
+    """写在明面上的字按面板文案的规矩来：策略是显示名、不是内部键。"""
+    at = _console(tmp_path)
+    at.selectbox("backtest_strategy").set_value("ma_cross").run()
+    filled = _guide().CONSOLE_PARAMS_SET.split("{")[0]
+    lines = [c.value for c in at.main.caption if filled in c.value]
+    assert len(lines) == 1 and "双均线交叉" in lines[0] and "ma_cross" not in lines[0], lines
+
+
+# ---------------------------------------------------------------- ② 点击与失败提示
+def _boom(*a, **k):
+    raise RuntimeError("「全市场扫描」正在运行，同时只允许一个任务")
+
+
+def test_a_failed_start_is_reported_under_the_buttons_not_below_the_results(tmp_path, monkeypatch):
+    """启动失败的那句话要出现在按钮附近。结果表摊着的时候它要是落在卡片最底下，
+    人看到的就是"点了没反应"。"""
+    _finished_scan(tmp_path)                       # 今天跑完 → 结果表默认摊着
+    monkeypatch.setattr(process, "start", _boom)
+    at = _console(tmp_path)
+    at.button("start_market_scan").click().run()
+    assert any("启动失败" in e.value for e in at.error), [e.value for e in at.error]
+    kinds = _kinds(at)
+    assert kinds.index("error") < kinds.index("dataframe"), "失败提示排在结果表后面"
+    assert kinds.index("error") < kinds.index("expander"), "失败提示排在折叠区后面"
+
+
+def test_a_click_is_acted_on_before_the_rest_of_the_card_renders(tmp_path, monkeypatch):
+    """点击必须在"参数一到手"时就处理。改版初稿是记下点击、等整张卡片渲染完再起任务——
+    中间任何一处抛错（读日志、解析、渲染结果），这次点击就无声无息地丢了，
+    而这张卡片再也没法从页面上重新起任务。"""
+    started: list[tuple] = []
+    monkeypatch.setattr(process, "start", lambda *a, **k: started.append(a))
+    _fake_run(tmp_path, "backtest", "success", exit_code=0, log=BACKTEST_LOG)
+    at = _console(tmp_path)
+
+    def unreadable(state):
+        raise RuntimeError("日志读不出来")
+
+    monkeypatch.setattr(process, "read_log", unreadable)   # 卡片下半截从此渲染不出来
+    at.button("start_backtest").click().run()
+    assert [a[0] for a in started] == ["backtest"], "卡片下半截出错，把这次点击也吞掉了"
+
+
+def test_a_result_file_of_the_wrong_shape_warns_instead_of_crashing(tmp_path):
+    """结果文件被改成了别的形状（不是指标字典）：提示一句，不许把卡片连同后面的整页打没。"""
+    for name in ("ma_cross_20260826_112606", "donchian_20260826_112606"):
+        run = tmp_path / "output" / name
+        run.mkdir(parents=True)
+        (run / "metrics.json").write_text("[1, 2, 3]", encoding="utf-8")
+    _fake_run(tmp_path, "backtest", "success", exit_code=0, log=BACKTEST_LOG)
+    at = _console(tmp_path)
+    assert not at.exception, at.exception
+    assert at.warning, "结果读不懂时应有 st.warning"
+    assert at.button("start_backtest"), "卡片被打没了"
+
+
+def test_a_state_file_with_a_broken_argv_does_not_take_the_page_down(tmp_path):
+    """状态文件是手工改得动的 JSON。argv 被改成 null：重跑会被拒（那句话照样写出来），
+    但卡片与它后面的两张都得照常渲染。"""
+    _fake_run(tmp_path, "market_scan", "success", exit_code=0, log=SCAN_LOG)
+    path = tmp_path / "output" / "runs" / "market_scan.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["argv"] = None
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    at = _console(tmp_path)
+    assert not at.exception, at.exception
+    assert any("改坏" in c.value for c in at.main.caption), [c.value for c in at.main.caption]
+    for name in CONSOLE_JOBS:
+        assert at.button(f"start_{name}"), f"{name} 的卡片没渲染出来"
+
+
+# ---------------------------------------------------------------- ③ 测试空洞
+def test_rerun_is_disabled_on_every_card_while_any_job_runs(tmp_path):
+    """互斥对「重跑」同样成立，而且是对**每一张**卡片：回测跑过、平时可以重跑，
+    但扫描正在跑的时候它也得是灰的。（runner 层还有一道闸，这里钉的是按钮本身。）"""
+    _fake_run(tmp_path, "backtest", "success", exit_code=0, log=BACKTEST_LOG)
+    at = _console(tmp_path)
+    assert at.button("rerun_backtest").disabled is False, "前提：空闲时回测可以重跑"
+    _fake_run(tmp_path, "market_scan", "running", log=SCAN_LOG.split("已保存")[0])
+    at = _console(tmp_path)
+    assert at.button("rerun_backtest").disabled is True, "别的任务在跑，回测的重跑却还能点"
+
+
+@pytest.mark.parametrize("job", ["daily_signal", "backtest"])
+def test_a_running_job_without_a_progress_bar_still_has_its_stop_button(tmp_path, job):
+    """信号跟踪与回测没有可数的总量，运行中是转圈而不是进度条——停止按钮不能跟着进度条一起没了。"""
+    _fake_run(tmp_path, job, "running", log="login success!\n")
+    at = _console(tmp_path)
+    assert not at.exception, at.exception
+    assert at.get("progress") == [], "前提：这两个任务没有进度条"
+    assert at.button(f"stop_{job}").disabled is False
+
+
+@pytest.mark.parametrize("status,code", [("failed", 1), ("stopped", -15), ("success", 0)])
+def test_no_stop_button_once_the_run_is_over(tmp_path, status, code):
+    """任务已经结束了，就没有什么可停的：停止按钮只属于正在跑的那一刻。"""
+    _fake_run(tmp_path, "market_scan", status, exit_code=code,
+              log="\n".join(SCAN_LOG.splitlines()[:20]))
+    at = _console(tmp_path)
+    assert not at.exception, at.exception
+    assert "stop_market_scan" not in [b.key for b in at.button]
+
+
+def test_a_stopped_scan_says_that_nothing_was_saved(tmp_path):
+    """停在半路时细节行还写着「信号 58 条」，而那 58 条一条都没保存。那句说明得真的出现在卡片上
+    ——文案本身由 tests/test_runner_view.py 覆盖，这里钉的是接线。"""
+    _fake_run(tmp_path, "market_scan", "stopped", exit_code=-15,
+              log="\n".join(SCAN_LOG.splitlines()[:20]))
+    at = _console(tmp_path)
+    notes = [c.value for c in at.main.caption if "没有保存任何结果" in c.value]
+    assert len(notes) == 1 and "第 1 只" in notes[0], notes
+
+
+def test_a_failed_backtest_points_at_the_report_page_not_at_scanning(tmp_path):
+    """那句说明按任务各说各的：回测没跑成，不该叫人去「信号」页、更不该说"从第 1 只开始"。"""
+    _fake_run(tmp_path, "backtest", "failed", exit_code=3,
+              log="login success!\nTraceback (most recent call last):\nValueError: boom\n")
+    at = _console(tmp_path)
+    notes = [c.value for c in at.main.caption if "没有保存任何结果" in c.value]
+    assert len(notes) == 1, notes
+    assert "回测报告" in notes[0] and "第 1 只" not in notes[0] and "「信号」页" not in notes[0], notes[0]
+
+
+# ---------------------------------------------------------------- 状态与引导说得准
+def test_the_first_time_callout_survives_a_run_of_the_home_page_job(tmp_path):
+    """首页那个收盘数据任务跑过，不等于控制台上的任务跑过：新手在首页点过「开始准备」之后
+    到了这一页，照样需要那条"先点试跑"的引导。"""
+    _fake_run(tmp_path, "market_breadth", "success", exit_code=0, log="")
+    at = _console(tmp_path)
+    assert not at.exception, at.exception
+    assert len(_callouts(at)) == 1, "只跑过首页的任务，控制台的首次引导就不见了"
+
+
+def _backtest_meta(at: AppTest) -> str:
+    return next(m for m in _card_metas(at) if _guide().CONSOLE_LEAD["backtest"] in m)
+
+
+def test_the_backtest_card_reports_results_on_disk_even_if_the_panel_never_ran_it(tmp_path):
+    """「最新结果」按**结果**说话，不按"面板起没起过它"说话：命令行跑出来的回测也算数。"""
+    run = tmp_path / "output" / "ma_cross_20260826_112606"
+    run.mkdir(parents=True)
+    for name in ("metrics.json", "report.html", "trades.csv"):
+        (run / name).write_text("{}", encoding="utf-8")
+    at = _console(tmp_path)
+    assert not at.exception, at.exception
+    meta = _backtest_meta(at)
+    assert "最近一次" in meta and "双均线交叉" in meta and "共 1 次" in meta, meta
+    assert "还没跑过" not in meta, f"磁盘上明明有回测结果: {meta}"
+
+
+def test_the_backtest_card_keeps_its_latest_result_line_after_the_panel_ran_it(tmp_path):
+    """面板跑过回测之后那一行不该消失（改版初稿里它只在"没跑过"时出现）。"""
+    for name in ("ma_cross_20260826_112606", "donchian_20260826_112606"):
+        run = tmp_path / "output" / name
+        run.mkdir(parents=True)
+        for f in ("metrics.json", "report.html", "trades.csv"):
+            (run / f).write_text("{}", encoding="utf-8")
+    _fake_run(tmp_path, "backtest", "success", exit_code=0, log=BACKTEST_LOG)
+    at = _console(tmp_path)
+    assert "共 2 次" in _backtest_meta(at), _backtest_meta(at)
+
+
+def test_a_corrupt_scan_meta_is_not_reported_as_never_scanned(tmp_path):
+    """扫描的 meta 坏了：如实警告，但别顺手再写一句"还没跑过"——结果文件明明在那儿。"""
+    scan = tmp_path / "output" / "scan"
+    scan.mkdir(parents=True)
+    (scan / "2026-09-01.csv").write_text("date,symbol\n", encoding="utf-8")
+    (scan / "2026-09-01.meta.json").write_text("{ broken json", encoding="utf-8")
+    at = _console(tmp_path)
+    assert not at.exception, at.exception
+    scan_meta_html = next(m for m in _card_metas(at) if _guide().CONSOLE_LEAD["market_scan"] in m)
+    assert "还没跑过" not in scan_meta_html, scan_meta_html
+    assert any("损坏" in w.value for w in at.main.warning)

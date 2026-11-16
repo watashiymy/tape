@@ -5,7 +5,8 @@
 #     退回 st.subheader / st.metric 时排版层级会静默消失（页面照样能跑）；
 #   - 指标卡是 2 行 × 4 列（8 个 1/4 宽列），不是一行 4 列各摞两个；
 #   - 表格必须真的收到 column_config / Styler，否则"配好了"的千分位、红绿永远不出现；
-#   - 控制台三张卡片必须并排（纵向堆叠要滚很久，这是本次要改的痛点之一）。
+#   - 控制台的任务卡片整幅宽、自上而下（2026-11-16 改版；v0.2.0～v0.5.0 是并排的列——
+#     结果表被挤掉最要紧的一列、两栏高度差出几屏，见 app/pages_console.py 的模块说明）。
 # 另有两条回归：半截回测目录仍走友好提示（v0.2.0 的修复），
 # 以及状态文件里的 HTML 必须被转义（st.html 不套 iframe，未转义就能撕开版面）。
 import ast
@@ -501,65 +502,53 @@ def test_scan_block_title_is_a_serif_section_with_the_date(tmp_path):
 
 # ================================================================ 任务控制台
 
-def _card_columns(at: AppTest) -> list:
-    """卡片列 = 恰好含一个 start_* 键、且键不止一个的列。
-    卡片内部那排按钮也是 st.columns(3)，但每列只含一个键，据此区分开。"""
-    starts = {f"start_{n}" for n in CONSOLE_JOBS}
-    return [c for c in at.get("column")
-            if len(_keys_under(c) & starts) == 1 and len(_keys_under(c)) > 1]
+def test_no_column_holds_a_whole_card(tmp_path):
+    """2026-11-16 改版：每张任务卡片**整幅宽**，不再塞进并排的列里。
 
+    v0.5.0 是 columns([1, .14, 1]) 两栏并排（更早的 v0.2.0 是三卡等宽）。真机上的毛病：
+    扫描结果表挤在半幅宽里，说明页说"最该看"的「放量倍数」一列被挤出了可视区；
+    左栏摊着日志与结果、右栏只有几行，高度差出几屏，「研究工具」被推到第三屏。
 
-def test_the_pipeline_puts_the_two_chained_jobs_in_equal_columns(tmp_path):
-    """v0.5.0 §6：控制台改成「每日流水线」+「研究工具」两区。
-
-    流水线区是 columns([1, .14, 1])：链上那两个**可运行**任务各占半幅，中间一条窄轨
-    放箭头；人工那一步 2026-09-14 起是闭环图下面的一行，不再占一列（用户：它在页面
-    正中间却什么都不能操作，布局奇怪）。回测不进这几列——它不在链上。
-
-    改掉的老形态是三卡等宽并排（v0.2.0），当时唯一的理由是"纵向堆叠要滚很久"，
-    列的来源就是 jobs.JOBS 的字典序，语义为零。
+    怎么认"整幅宽"：卡片的主按钮在标题行、重跑在下方的「更多选项」里，是卡片的头和尾。
+    任何一个**列**同时装着这两个，就说明整张卡片被塞进了列里。
     """
     at = _page(tmp_path, "任务控制台")
     assert not at.exception, at.exception
-    card_cols = _card_columns(at)
-    chained = {"market_scan", "daily_signal"}
-    assert len(card_cols) == len(chained), f"流水线上应有两个任务列，实际 {len(card_cols)}"
-    assert {tuple(sorted(_keys_under(c) & {f"start_{n}" for n in CONSOLE_JOBS}))
-            for c in card_cols} == {(f"start_{n}",) for n in chained}, \
-        "两列应分别是扫描与信号跟踪；回测不在链上"
-    weights = sorted(c.proto.weight for c in at.get("column"))
-    # [1, .14, 1] 归一化后：两个 0.4673 与一个 0.0654
-    wide = [w for w in weights if abs(w - 1 / 2.14) < 1e-3]
-    rails = [w for w in weights if abs(w - 0.14 / 2.14) < 1e-3]
-    assert len(wide) == 2 and len(rails) == 1, \
-        f"流水线列宽不对（应两宽一窄轨）: {weights}"
+    for name in CONSOLE_JOBS:          # 前提：卡片确实都在，否则下面的"不在列里"恒真
+        assert at.button(f"start_{name}") and at.button(f"rerun_{name}"), name
+    for col in at.get("column"):
+        keys = _keys_under(col)
+        for name in CONSOLE_JOBS:
+            assert not {f"start_{name}", f"rerun_{name}"} <= keys, \
+                f"「{jobs.JOBS[name].label}」整张卡片被塞进了一个列里: {sorted(keys)}"
 
 
-def test_the_backtest_card_is_out_of_the_pipeline_and_full_width(tmp_path):
-    """回测在「研究工具」区、整幅宽渲染：它是历史检验，不产生今天的信号。
+def test_the_backtest_card_sits_in_its_own_zone_below_the_pipeline(tmp_path):
+    """回测在「研究工具」区：它是历史检验，不产生今天的信号。
     摆回流水线里等于告诉用户"每天还得跑一次回测"。"""
     at = _page(tmp_path, "任务控制台")
-    # 只看**流水线那两个宽列**（权重 1/2.14）。不能查"任不任何列里"——
-    # 每张卡片自己就用 st.columns(3) 摆开始/停止/重跑，那三列谁都躲不开。
-    pipeline_cols = [c for c in at.get("column")
-                     if abs(c.proto.weight - 1 / 2.14) < 1e-3]
-    # 前提断言：2.14 这个常量与 pages_console 的 [1,.14,1] 绑着，改了列宽比例
-    # 而不改这里的话，上面这个筛选会**筛出空集**，下面的 not in 就恒真了。
-    assert len(pipeline_cols) == 2, \
-        f"权重常量 2.14 与 pages_console 对不上了: {sorted(c.proto.weight for c in at.get('column'))}"
-    inside = {k for c in pipeline_cols for k in _keys_under(c)}
-    assert "start_backtest" not in inside, f"回测被摆进流水线的列里了: {sorted(inside)}"
-    assert at.button("start_backtest"), "回测卡片整个不见了"
-    assert "研究工具" in _blob(at), "缺「研究工具」区标题——不说清它不在链上就白摆了"
+    order = [k if (k := getattr(e, "key", None)) else
+             (getattr(getattr(e, "proto", None), "body", None) or "")
+             for e in _descend(at.main)]
+
+    def first(needle: str) -> int:
+        hits = [i for i, item in enumerate(order) if needle in item]
+        assert hits, f"页面上找不到 {needle!r}"
+        return hits[0]
+
+    assert first("start_market_scan") < first("start_daily_signal") < first("研究工具") \
+        < first("start_backtest"), "回测应在「研究工具」区标题之下、两张流水线卡片之后"
 
 
 def test_card_title_carries_a_status_pill(tmp_path):
     """§2.3 第 5 条：状态徽标改成有底色的 pill（emoji 文字扫不到）。"""
     _fake_run(tmp_path, "market_scan", "running", log="[1800/3010] 信号 58 条\n")
     at = _page(tmp_path, "任务控制台")
-    blob = _blob(at)
-    assert 'class="qd-section"' in blob and "qd-pill-running" in blob, blob
-    assert at.subheader == [], "卡片标题已改成 .qd-section，不该再有 st.subheader"
+    titles = [h for h in _htmls(at) if 'class="qd-task-title"' in h]
+    assert len(titles) == len(CONSOLE_JOBS), titles
+    scan = next(t for t in titles if f'>{jobs.JOBS["market_scan"].label}<' in t)
+    assert "qd-pill-running" in scan, scan
+    assert at.subheader == [], "卡片标题是我们自己包的 .qd-task-title，不该再有 st.subheader"
 
 
 def test_failed_card_pill_is_red_and_carries_the_exit_code(tmp_path):
@@ -618,21 +607,65 @@ def test_stopped_run_shows_no_eta_in_any_line(tmp_path):
     assert at.get("status") == [], "已终止的任务不该再转圈"
 
 
+def _fixed_height_containers(tree: ast.AST) -> list[ast.With]:
+    """源码里所有 `with st.container(height=<整数/常量名>, ...)` 语句。"""
+    out = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.With):
+            continue
+        for item in node.items:
+            call = item.context_expr
+            if (isinstance(call, ast.Call) and getattr(call.func, "attr", "") == "container"
+                    and any(kw.arg == "height" and not (isinstance(kw.value, ast.Constant)
+                                                         and isinstance(kw.value.value, str))
+                            for kw in call.keywords)):
+                out.append(node)
+    return out
+
+
 def test_log_boxes_have_a_fixed_height(tmp_path):
     """§2.4：日志区固定高度滚动。高度不进 proto（AppTest 看不见），
-    只能在源码层钉住每个 st.code 都带 height——漏了就是几十行日志把版面顶飞。
+    只能在源码层钉住——漏了就是几十行日志把版面顶飞。
+
+    两种合法写法：
+    - `st.code(..., height=<数>)`：代码块自己定高（折叠区里的日志全文）；
+    - `st.code(..., height="content")` **且**外面包着一个定高的 st.container（2026-11-16 的
+      日志尾部：容器定高并自动滚到底，里面的代码块随内容长）。光写 "content" 而没有定高的
+      容器，就是老毛病换了个写法。
 
     扫整个 app/：日志区自 v0.2.2 M3 起在 app/pages_console.py（设计 §4 的拆分），
     只扫 dashboard.py 会得到空列表，这条断言就变成空跑。"""
-    calls = [node
-             for p in APP_FILES
-             for node in ast.walk(ast.parse(p.read_text(encoding="utf-8")))
-             if isinstance(node, ast.Call)
-             and getattr(node.func, "attr", "") == "code"]
-    assert calls, "面板里没有 st.code 调用？日志区没了"
-    for call in calls:
-        assert "height" in {kw.arg for kw in call.keywords}, \
-            f"L{call.lineno} 的 st.code 没给 height（日志区会无限长）"
+    seen = 0
+    for p in APP_FILES:
+        tree = ast.parse(p.read_text(encoding="utf-8"))
+        boxed = {id(n) for w in _fixed_height_containers(tree) for n in ast.walk(w)}
+        for call in ast.walk(tree):
+            if not (isinstance(call, ast.Call) and getattr(call.func, "attr", "") == "code"):
+                continue
+            seen += 1
+            heights = [kw.value for kw in call.keywords if kw.arg == "height"]
+            assert heights, f"{p.name} L{call.lineno} 的 st.code 没给 height（日志区会无限长）"
+            grows = isinstance(heights[0], ast.Constant) and heights[0].value == "content"
+            assert not grows or id(call) in boxed, \
+                f"{p.name} L{call.lineno} 的 st.code 随内容长，外面却没有定高的容器"
+    assert seen, "面板里没有 st.code 调用？日志区没了"
+
+
+def test_the_log_tail_follows_the_newest_line(tmp_path):
+    """摊在卡片上的日志尾部要**自动滚到底**：改之前它从头显示，30 行里只看得见开头九行，
+    而要看的恰恰是最后一行（运行中是最新进度，没跑成是 traceback 的那句结论）。
+    容器的定高与自动滚动都在元素树里看得见（block.proto），所以在运行时断言。"""
+    _fake_run(tmp_path, "market_scan", "running", log="\n".join(SCAN_LOG.splitlines()[:20]))
+    at = _page(tmp_path, "任务控制台")
+    assert not at.exception, at.exception
+    ui = app_module("ui")
+    followers = [b for b in _descend(at.main)
+                 if getattr(b, "type", "") == "flex_container" and b.proto.autoscroll]
+    assert len(followers) == 1, f"日志尾部应恰好有一个自动滚到底的容器，实际 {len(followers)} 个"
+    assert followers[0].proto.height_config.pixel_height == ui.LOG_BOX_HEIGHT, \
+        "自动滚动只在定高的容器里才生效"
+    codes = [e.value for e in _descend(followers[0]) if getattr(e, "type", "") == "code"]
+    assert len(codes) == 1 and codes[0].endswith("[1800/3010] 信号 58 条，失败 0 只，耗时 673s"), codes
 
 
 def test_console_metric_cards_replace_st_metric(tmp_path):
@@ -779,3 +812,37 @@ def test_page_head_lead_is_plain_text(tmp_path, page):
     at = _page(tmp_path, page)
     head = [h for h in _htmls(at) if 'class="qd-head"' in h][0]
     assert "**" not in head, head
+
+
+# ================================================================ 按钮规范（2026-11-16）
+
+#: 过去拼在按钮文字前面充当图标的那些字符。
+_GLYPHS = "▶⏹■↻↶＋−+"
+
+
+def _leading_text(label: ast.expr) -> str | None:
+    """按钮第一个实参（文字）开头那段**字面量**：纯字符串或 f-string 的首段；别的写法返回 None。"""
+    if isinstance(label, ast.Constant) and isinstance(label.value, str):
+        return label.value
+    if isinstance(label, ast.JoinedStr) and label.values \
+            and isinstance(label.values[0], ast.Constant):
+        return str(label.values[0].value)
+    return None
+
+
+def test_buttons_carry_icons_as_icons_not_as_leading_characters():
+    """按钮上的图标一律走 `icon=`（与侧栏导航同一套 Material 图标），不许再把 ▶ ⏹ ↻ ＋ ↶
+    这类字符拼在文字前面：字符的粗细与基线跟着系统字体走，同一排里有的是字符、有的是图标，
+    就是两套东西。表格里每行的「＋ 加入」「− 移除」不在此列——那是表格列（ButtonColumn）
+    的文字，不是按钮控件，没有 icon 参数可用。"""
+    seen = 0
+    for p in APP_FILES:
+        for call in ast.walk(ast.parse(p.read_text(encoding="utf-8"))):
+            if not (isinstance(call, ast.Call) and getattr(call.func, "attr", "") == "button"
+                    and call.args):
+                continue
+            seen += 1
+            text = _leading_text(call.args[0])
+            assert not (text and text[0] in _GLYPHS), \
+                f"{p.name} L{call.lineno}: 按钮文字以字符图标开头 {text!r}，改用 icon="
+    assert seen >= 10, f"只扫到 {seen} 个按钮调用，像是扫描本身出了问题"

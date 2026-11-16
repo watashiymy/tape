@@ -142,7 +142,7 @@ def _entry_section(report: pnl.PnlReport) -> None:
                                      placeholder="14:35")
     note = extra[1].text_input("备注（可空）", key=journal_ui.NOTE_KEY)
 
-    if st.button("＋ 记这一笔", key=journal_ui.SUBMIT_KEY, type="primary"):
+    if st.button("记这一笔", key=journal_ui.SUBMIT_KEY, type="primary", icon=":material/add:"):
         journal_ui.submit(
             dict(date=day, time=trade_time, symbol=symbol, name=name, kind=kind,
                  shares=shares, price=price, fee=fee, tax=tax, source=source,
@@ -219,7 +219,7 @@ def _other_records(costs, names, today: date) -> None:
                               key=journal_ui.OTHER_SOURCE_KEY)
         reason = st.text_input("理由/说明", key=journal_ui.OTHER_REASON_KEY,
                                placeholder="例如：10送1 / 2025年度分红")
-        if st.button("＋ 记这一笔（其他）", key=journal_ui.OTHER_SUBMIT_KEY):
+        if st.button("记这一笔（其他）", key=journal_ui.OTHER_SUBMIT_KEY, icon=":material/add:"):
             journal_ui.submit(
                 dict(date=day, symbol=symbol, kind=kind,
                      shares=shares if kind == "adjust" else None,
@@ -293,7 +293,7 @@ def _editor(trades, filtered) -> None:
 
 
 def _restore_block() -> None:
-    """「↶ 恢复上一版」：用自动备份换回上一版（2026-09-05）。
+    """「恢复上一版」：用自动备份换回上一版（2026-09-05）。
 
     这是"易用的功能"替代"知道路径"的一例：以前这里写着备份文件叫什么、在哪，
     要使用者自己去文件系统里换文件；现在按钮就在旁边。两步（勾确认 + 点按钮）
@@ -307,7 +307,7 @@ def _restore_block() -> None:
     cols = st.columns([1, 2.2, 2], vertical_alignment="center")
     confirmed = cols[1].checkbox("确认用上一版覆盖当前记录", key=journal_ui.RESTORE_CONFIRM_KEY,
                                  disabled=not has_backup)
-    cols[0].button("↶ 恢复上一版", key=journal_ui.RESTORE_KEY,
+    cols[0].button("恢复上一版", key=journal_ui.RESTORE_KEY, icon=":material/undo:",
                    disabled=not (has_backup and confirmed),
                    help=guide.JOURNAL_RESTORE_HELP if has_backup
                    else "还没有上一版备份：第一次保存之后才会有。",

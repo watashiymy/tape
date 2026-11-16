@@ -247,24 +247,63 @@ CSS = f"""@import url("{FONT_IMPORT}");
   color: var(--qd-primary);
 }}
 
-/* 流水线卡片之间那节箭头轨（v0.5.0：控制台「每日流水线」区）。
-   它落在一个很窄的列里（权重 0.14），要在卡片标题那一行的高度上把箭头居中。
-   窄屏时 streamlit 会把列竖着堆起来，那时箭头朝下才读得通——用 ::after 换字形，
-   而不是另画一个元素（两个元素总有一个要被藏起来，藏错了就是一片空白）。 */
+/* 流水线上下两步之间那节箭头（控制台「每日流水线」区）。
+   2026-11-16 起卡片自上而下排、每张整幅宽，箭头只有朝下这一种：原先横排时的 → 与
+   "窄屏换成 ↓"的媒体查询一并删掉。左缩进与卡片的内边距对齐，读起来是从上一张卡片的
+   标题垂下来的一条线。字形仍在 ::after 里——HTML 里只是个空盒子。 */
 .qd-rail {{
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 2.1rem;
   font-family: var(--qd-mono);
-  font-size: 1.15rem;
+  font-size: 1.05rem;
+  line-height: 1;
   color: var(--qd-primary);
   opacity: 0.75;
+  padding-left: 1.15rem;
 }}
-.qd-rail::after {{ content: "→"; }}
-@media (max-width: 640px) {{
-  .qd-rail {{ min-height: 1.2rem; }}
-  .qd-rail::after {{ content: "↓"; }}
+.qd-rail::after {{ content: "↓"; }}
+
+/* 任务卡片（2026-11-16 控制台改版）。边框是原生 st.container(border=True) 给的——
+   颜色与圆角走 config.toml 的 borderColor / baseRadius，这里一条规则都不用写；
+   我们只管卡片里自己包的那两块：标题行，以及标题下「做什么」与「最新结果」两行。
+   标题不带发丝线（卡片自己有边框，再画一道就是两道线）。 */
+.qd-task-title {{
+  font-family: var(--qd-serif);
+  font-size: 1.12rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--qd-text);
+  line-height: 1.5;
+}}
+.qd-task-lead {{
+  font-family: var(--qd-sans);
+  font-size: 0.84rem;
+  line-height: 1.55;
+  color: var(--qd-muted);
+}}
+.qd-task-status {{
+  font-family: var(--qd-sans);
+  font-size: 0.84rem;
+  line-height: 1.55;
+  color: var(--qd-text);
+  margin-top: 0.3rem;
+}}
+.qd-task-status-key {{
+  display: inline-block;
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  color: var(--qd-muted);
+  margin-right: 0.55rem;
+}}
+
+/* 首次引导那一条（控制台页顶，跑过任何任务后就不再出现）。左缘一道琥珀：
+   它指向的是一个可以点的按钮。 */
+.qd-callout {{
+  font-family: var(--qd-sans);
+  font-size: 0.9rem;
+  line-height: 1.6;
+  color: var(--qd-text);
+  background: {MUTED_DIM};
+  border-left: 2px solid var(--qd-primary);
+  padding: 0.6rem 0.9rem;
 }}
 
 /* 「人工步骤」标记：这一步没有开始按钮，是你自己动手的一环。
@@ -497,12 +536,44 @@ def flow(steps) -> str:
 
 
 def rail() -> str:
-    """流水线卡片之间那节箭头轨（v0.5.0）。
+    """流水线上下两步之间那节向下的箭头（2026-11-16 起卡片自上而下排）。
 
-    箭头字形在 CSS 的 ::after 里（窄屏自动从 → 换成 ↓），不写死在 HTML 里：
-    streamlit 窄屏会把列竖着堆起来，那时横箭头是错的。
+    箭头字形在 CSS 的 ::after 里，不写死在 HTML 里：这里只出一个空盒子。
     """
     return '<div class="qd-rail"></div>'
+
+
+def task_head(title: str, pill_html: str = "", *, help: str = "", help_align: str = "start",
+              help_wide: bool = False) -> str:
+    """任务卡片的标题行：衬线标题 + 帮助圆点 + 状态 pill。
+
+    与 section() 同一个顺序（圆点紧跟标题、在 pill 之前），区别只有一条：**不带发丝线**
+    ——卡片自己有边框（原生 st.container(border=True)），标题下再画一道就是两道线。
+    `pill_html` 是本模块 pill() 的输出（已转义的可信 HTML）。
+    """
+    dot = help_dot(help, align=help_align, wide=help_wide) if help else ""
+    right = f'<span class="qd-section-pill">{pill_html}</span>' if pill_html else ""
+    return f'<div class="qd-task-title">{_esc(title)}{dot}{right}</div>'
+
+
+def task_meta(lead: str, status_key: str = "", status: str = "") -> str:
+    """任务卡片标题下的两行：一句「做什么 / 什么时候跑」，一行带小标签的最新结果。
+
+    `status` 为空时**整行不出**：一个后面什么都没有的「最新结果」标签比没有更糟。
+    两行放进同一个元素，是为了行距由我们定——拆成两个 st.* 元素，中间就是
+    streamlit 的一整格元素间距，标题、说明、状态三行会散开。
+    """
+    out = f'<div class="qd-task-lead">{_esc(lead)}</div>'
+    if status:
+        key = f'<span class="qd-task-status-key">{_esc(status_key)}</span>' if status_key else ""
+        out += f'<div class="qd-task-status">{key}{_esc(status)}</div>'
+    return out
+
+
+def callout(text: str) -> str:
+    """首次引导那一条（控制台页顶）。先整体转义，再只认 `**加粗**`——
+    与帮助圆点的提示框同一个口径（`_tip_inline`），不做通用 Markdown。"""
+    return f'<div class="qd-callout">{_tip_inline(_esc(text))}</div>'
 
 
 def manual_row(tag: str, text: str) -> str:

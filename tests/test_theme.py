@@ -56,6 +56,102 @@ def test_theme_constants_match_config_toml():
     assert theme.TEXT == cfg["textColor"]
 
 
+# ---------------------------------------------------------------- 全局主题（2026-11-16）
+#
+# 原生控件（按钮、输入框、表格、折叠区、侧栏）与我们自己包的 .qd-* 是两套长相：
+# 前者一直是 streamlit 出厂的圆角与无衬线字体。把它们拉齐的**唯一**正路是 config.toml
+# ——它是官方支持面；用 CSS 去改原生控件就得选内部 class，正是本文件开头那条纪律挡的事。
+# 所以这里钉的是：主题项的每个取值都来自色板 / 字体栈，没有一个是就地写的。
+
+def _theme_cfg() -> dict:
+    return tomllib.loads(CONFIG.read_text(encoding="utf-8"))["theme"]
+
+
+def _hex_values(node) -> list[str]:
+    """一段配置里的全部十六进制色值，子表（[theme.sidebar]）也走进去。"""
+    if isinstance(node, dict):
+        return [h for v in node.values() for h in _hex_values(v)]
+    if isinstance(node, (list, tuple)):
+        return [h for v in node for h in _hex_values(v)]
+    return HEX.findall(node) if isinstance(node, str) else []
+
+
+def _families(stack: str) -> list[str]:
+    """字体栈拆成家族名列表。config.toml 里用单引号、theme.py 里用双引号，比的是名字本身。"""
+    return [part.strip().strip("'\"") for part in stack.split(",")]
+
+
+def test_every_color_in_config_toml_comes_from_the_palette():
+    """config.toml 写不了 Python import，色值只能抄一份——所以每一个都得在色板里找得到。
+    就地写一个"差不多的灰"，下次改色板时它就是漂移的那一处。"""
+    known = {v for k, v in vars(palette).items()
+             if k.isupper() and isinstance(v, str) and HEX.fullmatch(v)}
+    used = _hex_values(_theme_cfg())
+    assert len(used) > 4, f"主题里只有基础四色，全局主题没配上: {used}"
+    assert set(used) <= known, f"config.toml 里有色板之外的色值: {sorted(set(used) - known)}"
+
+
+def test_config_toml_fonts_are_the_same_stacks_as_the_css():
+    """原生控件的字体与 .qd-* 的字体必须是同一套栈：正文无衬线、标题衬线、数字与日志等宽。
+    各写一套的话，同一行里的按钮与小标题就是两种字。"""
+    cfg = _theme_cfg()
+    assert _families(cfg["font"]) == _families(theme.SANS)
+    assert _families(cfg["headingFont"]) == _families(theme.SERIF)
+    assert _families(cfg["codeFont"]) == _families(theme.MONO)
+
+
+def test_config_toml_maps_the_builtin_colors_onto_the_palette():
+    """streamlit 的提示框、徽标、行内代码各有一套出厂色（亮红、亮绿、蓝）。全部改指色板：
+    红 = 失败 / 涨、绿 = 成功 / 跌——与状态 pill 同一对红绿；警告用琥珀；
+    提示框（st.info）用中性灰，不为它引入一个色板里没有的蓝。"""
+    cfg = _theme_cfg()
+    assert cfg["redColor"] == palette.UP
+    assert cfg["greenColor"] == palette.DOWN
+    assert cfg["orangeColor"] == cfg["yellowColor"] == palette.PRIMARY
+    assert cfg["blueColor"] == cfg["grayColor"] == palette.NEUTRAL
+    assert cfg["linkColor"] == palette.PRIMARY
+    # 行内代码出厂是绿字——而绿在这个面板里专指「跌」。改成正文色。
+    assert cfg["codeTextColor"] == palette.TEXT
+    assert cfg["codeBackgroundColor"] == palette.SURFACE
+
+
+def test_config_toml_borders_are_hairlines_and_corners_are_small():
+    """发丝线 + 小圆角是这套视觉的骨架（.qd-* 一直如此）；原生控件跟上之后才是一套东西。"""
+    cfg = _theme_cfg()
+    assert cfg["borderColor"] == palette.HAIRLINE
+    assert cfg["dataframeBorderColor"] == palette.HAIRLINE
+    assert cfg["dataframeHeaderBackgroundColor"] == palette.SURFACE
+    assert cfg["showWidgetBorder"] is True
+    assert cfg["baseRadius"] == cfg["buttonRadius"] == "0.25rem"
+
+
+def test_every_theme_key_is_an_option_streamlit_actually_has():
+    """主题项写错一个字母、或者升级后某一项改了名，streamlit 不报错，只是悄悄不生效。
+    所以逐项对一遍它自己的选项表。"""
+    from streamlit import config as st_config
+
+    known = set(st_config.get_config_options())
+
+    def names(node: dict, prefix: str) -> list[str]:
+        out = []
+        for key, value in node.items():
+            out += names(value, f"{prefix}.{key}") if isinstance(value, dict) else [f"{prefix}.{key}"]
+        return out
+
+    used = names(_theme_cfg(), "theme")
+    assert len(used) > 20, used
+    unknown = [n for n in used if n not in known]
+    assert unknown == [], f"config.toml 里有 streamlit 不认识的主题项: {unknown}"
+
+
+def test_config_toml_sidebar_is_one_step_darker_with_a_hairline():
+    """侧栏比页面深一档、右缘一条发丝线：导航退到后面，内容区才是主角。"""
+    cfg = _theme_cfg()
+    assert cfg["showSidebarBorder"] is True
+    assert cfg["sidebar"]["backgroundColor"] == palette.SIDEBAR
+    assert cfg["sidebar"]["borderColor"] == palette.HAIRLINE
+
+
 # ---------------------------------------------------------------- 色值单一来源
 
 def test_direction_colors_come_from_fmt_not_redefined():
@@ -375,12 +471,14 @@ def test_manual_tag_escapes_its_text():
     assert "&lt;img" in theme.manual_tag('<img src=x onerror=alert(1)>')
 
 
-def test_rail_is_a_bare_container_with_the_arrow_in_css():
-    """箭头字形放在 CSS 的 ::after 里，不写死在 HTML 里——窄屏媒体查询要把它从
-    → 换成 ↓（streamlit 窄屏会把列竖着堆起来，那时横箭头是错的）。"""
+def test_rail_is_a_bare_container_with_a_down_arrow_in_css():
+    """流水线两步之间那节箭头。2026-11-16 起控制台的卡片**自上而下**排（整幅宽），
+    箭头只有朝下这一种——原先横排时的 → 与"窄屏换成 ↓"的媒体查询一并不要了。
+    字形仍放在 CSS 的 ::after 里：HTML 里一个空盒子，换字形不必动任何调用方。"""
     assert theme.rail() == '<div class="qd-rail"></div>'
-    assert ".qd-rail::after" in theme.CSS and '"→"' in theme.CSS
-    assert '"↓"' in theme.CSS, "窄屏没有换成下箭头"
+    assert ".qd-rail::after" in theme.CSS and '"↓"' in theme.CSS
+    assert '"→"' not in theme.CSS, "横箭头还留在 CSS 里——卡片已经不横排了"
+    assert "@media" not in theme.CSS, "那条窄屏媒体查询只为换箭头而存在，一并删掉"
 
 
 def test_manual_row_wraps_tag_and_text_and_has_css():
@@ -390,6 +488,74 @@ def test_manual_row_wraps_tag_and_text_and_has_css():
     assert "&lt;b&gt;" in html and "<b>" not in html
     for cls in ("qd-manual-row", "qd-manual-text"):
         assert f".{cls} {{" in theme.CSS
+
+
+# ================================================================ 任务卡片（2026-11-16 控制台改版）
+#
+# 控制台的每个任务是一张整幅宽的卡片：边框由原生 st.container(border=True) 给，
+# 卡片里的标题行与标题下那两行字是我们自己包的。标题不再用 section()——
+# 那是带发丝线的区标题，套在已经有边框的卡片里就是两道线。
+
+def test_task_head_is_title_then_help_dot_then_pill():
+    html = theme.task_head("全市场扫描", theme.pill("成功", "success"), help="做什么。")
+    assert html.startswith('<div class="qd-task-title">全市场扫描<span class="qd-help-dot'), html
+    assert html.index("qd-help-dot") < html.index("qd-pill-success"), "圆点紧跟标题，在状态之前"
+    assert html.endswith("</span></div>")
+
+
+def test_task_head_without_help_or_pill_is_just_the_title():
+    assert theme.task_head("回测") == '<div class="qd-task-title">回测</div>'
+
+
+def test_task_head_passes_the_help_modifiers_through():
+    html = theme.task_head("回测", help="做什么。", help_align="end", help_wide=True)
+    assert "qd-help-end" in html and "qd-help-wide" in html
+
+
+def test_task_head_escapes_its_title():
+    assert "<img" not in theme.task_head("<img src=x>")
+    assert "&lt;img" in theme.task_head("<img src=x>")
+
+
+def test_task_meta_is_a_lead_line_over_a_keyed_status_line():
+    """标题下两行：一句「做什么 / 什么时候跑」（灰），一行带小标签的最新结果（正文色）。"""
+    assert theme.task_meta("做什么。", "最新结果", "最近一次 2026-11-13") == (
+        '<div class="qd-task-lead">做什么。</div>'
+        '<div class="qd-task-status"><span class="qd-task-status-key">最新结果</span>'
+        '最近一次 2026-11-13</div>')
+
+
+def test_task_meta_without_a_status_leaves_no_empty_line():
+    """没有状态可说时不留空行——一个只有小标签的「最新结果」比没有更糟。"""
+    assert theme.task_meta("做什么。") == '<div class="qd-task-lead">做什么。</div>'
+    assert "qd-task-status" not in theme.task_meta("做什么。", "最新结果", "")
+
+
+def test_task_meta_escapes_every_part():
+    html = theme.task_meta("<b>a</b>", "<i>k</i>", "<u>s</u>")
+    assert "<b>" not in html and "<i>" not in html and "<u>" not in html
+
+
+def test_callout_is_a_block_that_only_understands_bold():
+    """首次引导那一条。先整体转义、再只认 **加粗**——与帮助圆点同一个口径。"""
+    html = theme.callout("**第一次用？** 先点 <b>试跑</b>")
+    assert html.startswith('<div class="qd-callout">') and html.endswith("</div>")
+    assert "<b>第一次用？</b>" in html
+    assert "&lt;b&gt;试跑" in html and "<b>试跑" not in html
+
+
+def test_task_css_rules_exist_for_the_new_builders():
+    for cls in (".qd-task-title", ".qd-task-lead", ".qd-task-status", ".qd-task-status-key",
+                ".qd-callout"):
+        assert cls + " {" in theme.CSS, cls
+
+
+def test_task_builders_never_emit_streamlit_internals():
+    blobs = [theme.task_head("a", theme.pill("b", "idle"), help="c"),
+             theme.task_meta("d", "e", "f"), theme.callout("g"), theme.rail()]
+    for html in blobs:
+        for banned in ("st-emotion", "data-testid", "emotion-cache", "st-key"):
+            assert banned not in html
 
 
 # ================================================================ 首页卡片（Task 20）

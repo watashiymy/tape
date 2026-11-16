@@ -13,6 +13,7 @@ import signal
 import subprocess
 import tempfile
 import time
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -180,15 +181,22 @@ def read_state(job_name: str, runs_dir: str | Path) -> RunState | None:
     return state
 
 
-def has_ever_run(runs_dir: str | Path) -> bool:
+def has_ever_run(runs_dir: str | Path, names: Iterable[str] | None = None) -> bool:
     """面板上是否**曾经**起过任何任务：runs/ 下有没有状态文件（2026-09-05）。
 
     给市场概览首页的"第一次用？"引导链接用（2026-09-23 起它在首页，不在控制台）——只看文件存在与否，不读内容：坏掉的状态文件
     也算"跑过"（那一刻该显示的是卡片上的错误，不是新手引导）。刻意不走 read_state：
     那条路径会做僵尸清理、还可能抛错，而这里只需要一个是/否。
+
+    `names` 给出时只问**这几个任务**（2026-11-16）：控制台的首次引导只该看控制台上的任务
+    跑没跑过——首页那个收盘数据任务跑过之后，新手到了控制台照样需要那条引导。
     """
     d = Path(runs_dir)
-    return d.is_dir() and any(d.glob("*.json"))
+    if not d.is_dir():
+        return False
+    if names is None:
+        return any(d.glob("*.json"))
+    return any(_state_path(name, d).exists() for name in names)
 
 
 def any_running(runs_dir: str | Path) -> str | None:

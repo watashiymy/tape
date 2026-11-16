@@ -93,7 +93,7 @@ FILTER_REASON_KEY = "journal_filter_reason"
 
 EDITOR_KEY = "journal_editor"
 SAVE_KEY = "journal_save"
-RESTORE_KEY = "journal_restore"                  # 「↶ 恢复上一版」按钮
+RESTORE_KEY = "journal_restore"                  # 「恢复上一版」按钮
 RESTORE_CONFIRM_KEY = "journal_restore_confirm"  # 它前面那个确认框
 CSV_KEY = "journal_export_csv"
 XLSX_KEY = "journal_export_xlsx"
@@ -416,7 +416,7 @@ def clear_entry_form() -> None:
 
 
 def restore_backup(*, path: str | Path) -> None:
-    """「↶ 恢复上一版」按钮的 on_click：换回上一版备份，结论走 flash 留到下一轮。
+    """「恢复上一版」按钮的 on_click：换回上一版备份，结论走 flash 留到下一轮。
 
     交换语义（store.restore_backup）：当前这版成为新的备份，所以点错了再点一次
     就换回来了——这也是为什么它敢只要一个确认框。确认框在这里复位：回调期间

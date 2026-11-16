@@ -10,8 +10,45 @@
 base = "dark"
 primaryColor = "#C8963E"              # 琥珀金：主按钮、选中态、强调。只给可操作元素
 backgroundColor = "#12141A"           # 近黑石板，非纯黑（纯黑对比过硬伤眼）
-secondaryBackgroundColor = "#1A1D26"  # 卡片/侧栏，与底色只差一档
+secondaryBackgroundColor = "#1A1D26"  # 卡片/输入框/代码块，与底色只差一档
 textColor = "#E8E4DC"                 # 暖白，非纯白
+
+# —— 全局主题（2026-11-16）——
+#
+# 上面四色只管住了底色与强调色；按钮、输入框、表格、折叠区、侧栏这些**原生控件**一直是
+# streamlit 出厂的长相（大圆角、Source Sans、亮红亮绿蓝的提示色），与我们自己包的 .qd-*
+# （发丝线、衬线标题、等宽数字）是两套东西。下面这些项把原生控件拉到同一套语言上。
+# 仍然只走本文件——用 CSS 改原生控件就得选内部 class，升级必挂（见文件开头）。
+#
+# 每个色值都抄自 quant.report.palette、三套字体栈抄自 app/theme.py（单引号写法），
+# 由 tests/test_theme.py 逐项比对：这里不许出现色板之外的颜色。
+font = "'PingFang SC', 'Noto Sans SC', 'Helvetica Neue', sans-serif"   # 正文与控件：同 theme.SANS
+headingFont = "'Songti SC', STSong, 'Noto Serif SC', serif"            # 标题：同 theme.SERIF
+codeFont = "'IBM Plex Mono', Menlo, 'SF Mono', monospace"              # 日志与代码：同 theme.MONO
+baseRadius = "0.25rem"                # 小圆角：与 .qd-pill 的 2px 是一家，出厂的 0.5rem 太圆
+buttonRadius = "0.25rem"
+borderColor = "#2A2E38"               # 发丝线（palette.HAIRLINE）：卡片、折叠区、按钮描边
+showWidgetBorder = true               # 输入框也描一圈发丝线，否则在暗底上只剩一块色
+showSidebarBorder = true
+linkColor = "#C8963E"                 # 链接是可操作元素 → 琥珀金；出厂是蓝，色板里没有蓝
+linkUnderline = false
+codeBackgroundColor = "#1A1D26"       # 日志框底色 = SURFACE
+codeTextColor = "#E8E4DC"             # 行内代码出厂是绿字，而绿在这里专指「跌」→ 用正文色
+dataframeBorderColor = "#2A2E38"
+dataframeHeaderBackgroundColor = "#1A1D26"
+# 提示框 / 徽标的内置色全部改指色板：红 = 失败 / 涨，绿 = 成功 / 跌（与状态 pill 同一对），
+# 警告用琥珀，st.info 用中性灰。警告框是"琥珀只给可操作元素"的唯一例外：它出厂就是黄色，
+# 改指琥珀只是让它落在色板里。提示框实际的字色与底色由 streamlit 从这几个基色派生（字更亮、底是 20% 透明度）。
+redColor = "#D94A4A"
+greenColor = "#3E9E7A"
+orangeColor = "#C8963E"
+yellowColor = "#C8963E"
+blueColor = "#8C8778"
+grayColor = "#8C8778"
+
+[theme.sidebar]
+backgroundColor = "#0E1015"           # 比页面深一档（palette.SIDEBAR）：导航退后，内容区是主角
+borderColor = "#2A2E38"
 
 # —— 以下两条是**安全与隐私默认**（v0.5.0），不是主题设置 ——
 #

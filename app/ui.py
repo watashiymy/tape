@@ -399,9 +399,12 @@ def control_bar(*job_names: str) -> None:
         disabled, notice = view.start_button_state(busy, name)
         head, start_col, stop_col = st.columns([6, 1, 1], vertical_alignment="center")
         head.html(theme.section(job.label, theme.pill(*view.status_pill(state))))
-        if start_col.button("▶ 开始", key=f"bar_start_{name}", disabled=disabled):
+        # 图标走 icon=（与控制台、侧栏同一套 Material 图标），不把 ▶ ⏹ 拼在文字前面（2026-11-16）。
+        if start_col.button("开始", key=f"bar_start_{name}", icon=":material/play_arrow:",
+                            disabled=disabled):
             start_job(name, {})           # 精简条无参数控件：一律默认参数
-        if stop_col.button("⏹ 停止", key=f"bar_stop_{name}", disabled=not running):
+        if stop_col.button("停止", key=f"bar_stop_{name}", icon=":material/stop:",
+                           disabled=not running):
             stop_job(state)
         if notice:
             notices.append(notice)        # 点名是谁在跑，否则灰按钮无从解释
@@ -409,7 +412,7 @@ def control_bar(*job_names: str) -> None:
     for text in dict.fromkeys(notices):
         st.caption(text)
     st.caption(CONSOLE_HINT)
-    # 灰字换成真链接（v0.5.0）：点完 ▶ 之后这一页 15 分钟不会自己动一下，
+    # 灰字换成真链接（v0.5.0）：点完「开始」之后这一页 15 分钟不会自己动一下，
     # 而"该去哪看进度"过去只是一句话。一步到位。
     # market_breadth 的控件不在控制台（app/pages_console.py 的 _ELSEWHERE），
     # 它在跑时指错地方等于把用户送到一个看不到这个任务的页面——改指市场概览。

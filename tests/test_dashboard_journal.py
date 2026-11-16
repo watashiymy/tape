@@ -403,7 +403,10 @@ def test_the_entry_page_keeps_the_form_in_a_card(tmp_path):
     assert len(cards) == 1, f"录入表单应恰好一个卡片容器，实际 {len(cards)} 个"
     inside = list(_walk(cards[0]))
     assert any(getattr(e, "key", None) == jui.SUBMIT_KEY for e in inside), \
-        "「＋ 记这一笔」不在卡片里"
+        "「记这一笔」不在卡片里"
+    submit = at.button(key=jui.SUBMIT_KEY)
+    assert (submit.label, submit.proto.icon) == ("记这一笔", ":material/add:"), \
+        "按钮的图标走 icon=，不拼在文字前面（2026-11-16）"
     editors = [e for e in _walk(at._tree)
                if getattr(e, "type", "") == "dataframe" and e.proto.id]
     assert editors, "找不到日志编辑表"
@@ -626,7 +629,7 @@ def test_the_entry_page_offers_restore_instead_of_naming_the_backup_file(tmp_pat
     assert "trades.csv.bak" not in text, f"记账页还在要求使用者认识备份文件：{text}"
     assert "上一版" in text, f"没说清有「上一版」可以换回：{text}"
     button = at.button(key=jui.RESTORE_KEY)
-    assert button.label == "↶ 恢复上一版"
+    assert (button.label, button.proto.icon) == ("恢复上一版", ":material/undo:")
     assert button.disabled, "没勾确认之前按钮必须是禁用的（两步纪律，同删除）"
     assert not at.checkbox(key=jui.RESTORE_CONFIRM_KEY).disabled
 

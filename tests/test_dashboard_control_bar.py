@@ -318,6 +318,20 @@ def test_readonly_signal_content_survives_the_control_bar(tmp_path):
     assert [df.value["symbol"].tolist() for df in at.dataframe] == [["000333"], ["000020"]]
 
 
+def test_control_bar_buttons_say_it_in_words_with_material_icons(tmp_path):
+    """2026-11-16：按钮文字就是「开始 / 停止」，图标走 icon=（与控制台、侧栏同一套），
+    不再把 ▶ ⏹ 拼在文字前面。"""
+    at = _page(tmp_path, "信号")
+    assert not at.exception, at.exception
+    starts = [b for b in at.button if b.key.startswith("bar_start_")]
+    stops = [b for b in at.button if b.key.startswith("bar_stop_")]
+    assert len(starts) == 2 and len(stops) == 2, _bar_keys(at)
+    for b in starts:
+        assert (b.label, b.proto.icon) == ("开始", ":material/play_arrow:"), (b.label, b.proto.icon)
+    for b in stops:
+        assert (b.label, b.proto.icon) == ("停止", ":material/stop:"), (b.label, b.proto.icon)
+
+
 # ------------------------------------------------------------------ README 一节
 def _readme_section(title: str) -> str:
     """取 README 中某个标题（## 或 ###）到下一个同级/更高级标题之间的正文。"""

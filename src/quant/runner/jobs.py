@@ -23,6 +23,10 @@ SCRIPTS = ROOT / "scripts"
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 LIMIT_MAX = 10000
+#: 控制台「试跑」按钮传给 --limit 的只数（2026-11-16）。README 与说明页一直建议
+#: "第一次先扫前 300 只确认环境正常"——过去要自己把 300 敲进输入框，现在是一个按钮。
+#: 按钮上的字与说明页里的数都取自这里（app/guide.py 的 FACTS["trial_limit"]，有测试钉住）。
+TRIAL_LIMIT = 300
 
 
 @dataclass(frozen=True)
@@ -179,6 +183,10 @@ def parse_argv(job_name: str, argv: list[str]) -> dict:
     job = JOBS.get(job_name)
     if job is None:
         raise ValueError(f"未知任务: {job_name!r}，只能是 {list(JOBS)}")
+    # 状态文件里的 argv 可能根本不是列表（手工改成了 null、一个数……）。list(None) 抛的是
+    # TypeError，而调用方只接 ValueError——那会让整张卡片、乃至它后面的整页都渲染不出来。
+    if not isinstance(argv, (list, tuple)):
+        raise ValueError(f"argv 不是列表（是 {type(argv).__name__}），拒绝重跑")
     argv = list(argv)
     head = _head(job)
     if argv[:3] != head:

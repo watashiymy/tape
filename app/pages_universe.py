@@ -85,7 +85,7 @@ def _add_block(symbols: tuple[str, ...]) -> None:
         st.warning(f"拉不到候选清单（{type(e).__name__}: {e}）。"
                    "「加入」需要这份清单核对标的是否在扫描范围内，暂不可用；"
                    "上面的表格与 − 移除照常可用。")
-        if st.button("↻ 重试", key=pool.RETRY_BUTTON_KEY):
+        if st.button("重试", key=pool.RETRY_BUTTON_KEY, icon=":material/refresh:"):
             pool.scan_pool.clear()     # 失败不进缓存，但清一下更直白
             st.rerun()
         return
@@ -96,7 +96,8 @@ def _add_block(symbols: tuple[str, ...]) -> None:
         return
     picked = st.selectbox("搜索代码或名称", choices, index=None, key=pool.PICK_KEY,
                           placeholder="输入代码或名称筛选，例如 600519 / 茅台")
-    if st.button("＋ 加入信号池", key=pool.ADD_BUTTON_KEY, disabled=picked is None):
+    if st.button("加入信号池", key=pool.ADD_BUTTON_KEY, icon=":material/add:",
+                 disabled=picked is None):
         _do_add(picked, listing)
 
 

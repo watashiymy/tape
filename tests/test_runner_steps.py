@@ -151,3 +151,18 @@ def test_a_trial_run_with_failures_does_not_nest_parentheses(tmp_path):
     text = steps.scan_status(d, DAY).text
     assert "（（" not in text and "））" not in text, text
     assert "7" in text and "试跑 100 只" in text
+
+
+# ---------------------------------------------------------------- 回测（2026-11-16 审查后）
+# 控制台三张卡片标题下都有一行「最新结果」。回测原先没有对应的状态，只在"面板没起过它"时
+# 写一句"还没跑过"——磁盘上明明攒着几十次结果也这么说，跑过之后那一行又整个消失。
+
+def test_backtest_status_names_the_latest_run_and_counts_them():
+    s = steps.backtest_status(["时序动量 2026-09-05 21:21", "双均线交叉 2026-09-05 21:21"])
+    assert s.ready is True
+    assert s.text == "最近一次：时序动量 2026-09-05 21:21，共 2 次", s.text
+
+
+def test_backtest_status_says_never_only_when_there_is_no_result_at_all():
+    s = steps.backtest_status([])
+    assert s.ready is False and steps.UNKNOWN in s.text, s.text

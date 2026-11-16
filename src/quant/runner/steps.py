@@ -16,6 +16,7 @@
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -92,3 +93,17 @@ def signal_status(signal_dir: Path | str, today: date | None = None) -> StepStat
     day = files[0].stem
     fresh = today is not None and day == today.isoformat()
     return StepStatus(f"最新一份是 {day}" + ("" if fresh else "——不是今天的"), ready=True)
+
+
+def backtest_status(runs: Sequence[str]) -> StepStatus:
+    """回测：最近一次是哪个策略、什么时候跑的，一共攒了几次（2026-11-16 审查后）。
+
+    `runs` 是从新到旧的**显示名**（「策略 时间」，页面用 fmt.run_label 从结果目录名换出来）。
+    回测不在每日那条链上，没有"就绪"可言，但控制台三张卡片标题下都有一行「最新结果」：
+    它原先只在"面板没起过回测"时写一句"还没跑过"——磁盘上明明攒着几十次结果也这么说
+    （命令行跑的、或状态文件被清过），而面板跑过一次之后那一行又整个消失。
+    现在与另两张卡片同一个口径：按**结果**说话，不按"面板起没起过它"说话。
+    """
+    if not runs:
+        return StepStatus(f"{UNKNOWN}——还没有任何回测结果", ready=False)
+    return StepStatus(f"最近一次：{runs[0]}，共 {len(runs)} 次", ready=True)

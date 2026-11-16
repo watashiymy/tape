@@ -293,14 +293,13 @@ def test_page_intro_covers_every_page(tmp_path):
 
 #: 控制台上的三张任务卡片（market_breadth 的控件在首页，pages_console._ELSEWHERE）。
 CONSOLE_CARDS = tuple(n for n in jobs.JOBS if n != "market_breadth")
-#: 流水线那一行右栏的卡片：提示框向左展开，免得越出视口右缘（spec §2.2）。
-RIGHT_COLUMN = ("daily_signal",)
 
 
 def _card_section(at: AppTest, name: str) -> str:
     """name 那张卡片的标题 html。**锚定在开头**找：每条 JOB_HELP 都以 **{label}** 开头，渲染成
-    <b>{label}</b> 后同样包含 >{label}<，只查子串的话标题丢了也照样通过。"""
-    anchor = f'class="qd-section">{jobs.JOBS[name].label}<'
+    <b>{label}</b> 后同样包含 >{label}<，只查子串的话标题丢了也照样通过。
+    2026-11-16 起卡片标题是 .qd-task-title（不带发丝线——卡片自己有边框）。"""
+    anchor = f'class="qd-task-title">{jobs.JOBS[name].label}<'
     hits = [h for h in _htmls(at) if anchor in h]
     assert len(hits) == 1, (name, hits)
     return hits[0]
@@ -315,7 +314,8 @@ def test_console_has_no_popover(tmp_path):
 
 @pytest.mark.parametrize("corrupt", [False, True], ids=["normal", "corrupt-state"])
 def test_each_card_title_carries_its_own_job_help(tmp_path, corrupt):
-    """圆点紧跟卡片标题（同一个 qd-section 里），内容是**这个**任务的说明；右栏那张向左展开。
+    """圆点紧跟卡片标题（同一个 qd-task-title 里），内容是**这个**任务的说明。
+    卡片整幅宽、标题都在左侧，提示框一律向右展开（两栏时代右栏那张要向左，2026-11-16 起不需要）。
     状态文件损坏的分支也要有——那时没有按钮，却最需要知道这个任务是干什么的。"""
     if corrupt:
         runs = tmp_path / "output" / "runs"
@@ -324,8 +324,7 @@ def test_each_card_title_carries_its_own_job_help(tmp_path, corrupt):
     at = _page(tmp_path, "任务控制台")
     assert not at.exception, at.exception
     for name in CONSOLE_CARDS:
-        align = "end" if name in RIGHT_COLUMN else "start"
-        want = theme.help_dot(guide.JOB_HELP[name], align=align, wide=True)
+        want = theme.help_dot(guide.JOB_HELP[name], align="start", wide=True)
         assert want in _card_section(at, name), name
 
 

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from quant.runner import view
-from quant.runner.process import RUNNING, STOPPED, SUCCESS, RunState
+from quant.runner.process import FAILED, RUNNING, STOPPED, SUCCESS, RunState
 from quant.runner.progress import Progress, parse_backtest, parse_market_scan
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -259,6 +259,35 @@ def test_elapsed_never_negative():
     assert view.elapsed_seconds(state, now=datetime.fromisoformat("2026-08-25T09:00:00")) == 0.0
 
 
+# ---------------------------------------------------------------- 是不是今天跑完的（2026-11-16）
+# 控制台卡片里「本次结果」那个折叠区默认开不开，就看这一个判断：今天跑完的摊开
+# （你就是来看它的），更早的收起（那是存档）。
+
+def test_finished_on_is_true_for_a_run_that_ended_that_day():
+    state = _state(status="success", exit_code=0, finished_at="2026-08-25T18:21:07")
+    assert view.finished_on(state, date(2026, 8, 25)) is True
+
+
+def test_finished_on_is_false_for_an_older_run():
+    """三天前跑完的结果不该一打开页面就摊着一张表。"""
+    state = _state(status="success", exit_code=0, finished_at="2026-08-22T18:21:07")
+    assert view.finished_on(state, date(2026, 8, 25)) is False
+
+
+def test_finished_on_compares_the_end_not_the_start():
+    """跨零点的任务按**结束**那天算：昨晚起、今天凌晨跑完的，是今天的结果。"""
+    state = _state(status="success", exit_code=0,
+                   started_at="2026-08-24T23:50:00", finished_at="2026-08-25T00:08:00")
+    assert view.finished_on(state, date(2026, 8, 25)) is True
+    assert view.finished_on(state, date(2026, 8, 24)) is False
+
+
+@pytest.mark.parametrize("finished_at", [None, "", "不是时间"])
+def test_finished_on_does_not_guess_when_the_timestamp_is_unusable(finished_at):
+    """还在跑（没有结束时刻）或时间戳读不懂：一律按"不是"，不猜。"""
+    assert view.finished_on(_state(finished_at=finished_at), date(2026, 8, 25)) is False
+
+
 # ---------------------------------------------------------------- 全局互斥
 def test_start_enabled_when_nothing_runs():
     assert view.start_button_state(None, "backtest") == (False, "")
@@ -317,10 +346,42 @@ def test_no_output_note_speaks_up_when_a_stopped_run_left_nothing():
     不补这句，屏幕上唯一的数字就指向一份不存在的文件。"""
     p = Progress(phase="已停止", current=2500, total=3012,
                           extras={"信号": "130 条"}, outputs=())
-    note = view.no_output_note(p, status=STOPPED)
+    note = view.no_output_note(p, status=STOPPED, job_name="market_scan")
     assert "没有保存任何结果" in note
     assert "上一次" in note, "没说清页面上看到的是哪一次的结果"
     assert "第 1 只" in note, "没说清重跑是从头开始（不存在断点续跑）"
+
+
+def test_no_output_note_points_at_the_signals_page_only():
+    """2026-11-16：控制台卡片上的结果只在**成功**后出现（「本次结果」）。没跑成时这句话里
+    原来的"页尾与「信号」页"，"页尾"已经指不到页面上的任何东西——只说「信号」页。"""
+    p = Progress(phase="已停止", current=2500, total=3012,
+                 extras={"信号": "130 条"}, outputs=())
+    note = view.no_output_note(p, status=STOPPED, job_name="market_scan")
+    assert "「信号」页" in note and "页尾" not in note, note
+
+
+def test_no_output_note_for_signal_tracking_does_not_talk_about_scanning():
+    """审查发现：这句话原本只按扫描写（"重跑会从第 1 只开始"），却原样挂在三张卡片上——
+    信号跟踪没跑成时说"从第 1 只开始"是张冠李戴。按任务各说各的。"""
+    p = Progress(phase="异常退出", extras={}, outputs=())
+    note = view.no_output_note(p, status=FAILED, job_name="daily_signal")
+    assert "没有保存任何结果" in note and "「信号」页" in note, note
+    assert "第 1 只" not in note and "整轮" not in note, note
+
+
+def test_no_output_note_for_backtest_points_at_the_report_page():
+    """回测的结果在「回测报告」页，不在「信号」页。"""
+    p = Progress(phase="异常退出", extras={}, outputs=())
+    note = view.no_output_note(p, status=FAILED, job_name="backtest")
+    assert "没有保存任何结果" in note and "「回测报告」" in note, note
+    assert "「信号」页" not in note and "第 1 只" not in note, note
+
+
+def test_no_output_note_of_an_unknown_job_still_says_the_one_true_thing():
+    p = Progress(phase="异常退出", extras={}, outputs=())
+    note = view.no_output_note(p, status=FAILED, job_name="mystery")
+    assert "没有保存任何结果" in note and "页" not in note, note
 
 
 def test_no_output_note_stays_quiet_when_there_is_something_to_show():
@@ -328,12 +389,12 @@ def test_no_output_note_stays_quiet_when_there_is_something_to_show():
     的既有约定：空串 = 面板不渲染这一行）。"""
     done = Progress(phase="完成", current=3012, total=3012, extras={},
                              outputs=("output/scan/2026-09-01.csv",))
-    assert view.no_output_note(done, status=SUCCESS) == ""
-    assert view.no_output_note(done, status=STOPPED) == "", \
+    assert view.no_output_note(done, status=SUCCESS, job_name="market_scan") == ""
+    assert view.no_output_note(done, status=STOPPED, job_name="market_scan") == "", \
         "有产物就不该说「没有产物」"
     running = Progress(phase="扫描中", current=100, total=3012,
                                 extras={}, outputs=())
-    assert view.no_output_note(running, status=RUNNING) == "", \
+    assert view.no_output_note(running, status=RUNNING, job_name="market_scan") == "", \
         "还在跑的时候说这句话等于劝人别等了"
 
 
@@ -364,3 +425,40 @@ def test_rerun_hint_does_not_promise_a_run_that_will_be_refused():
     build_argv(parse_argv(...)) 往返闸门，这里只负责别把话说满。"""
     hint = view.rerun_hint("market_scan", ["随便", "改", "过"])
     assert "改坏" in hint and "沿用" not in hint, hint
+
+
+# ================================================================ 这次会用哪些参数（2026-11-16 审查后）
+# 参数收进了「更多选项」（默认收起）。填过的只数 / 日期在卡片上一个字都看不见，而主按钮照样按它跑
+# ——这正是「重跑」那句提示当初要防的事（看不见的参数，白扫一趟）。所以填了什么要在卡片上写出来。
+
+def test_params_summary_is_empty_when_everything_is_left_at_default():
+    """全留空就一个字都不出：九成的时候都是这样，那一行不该常驻。"""
+    assert view.params_summary("market_scan", {"limit": None, "date": None}) == ""
+    assert view.params_summary("backtest", {"strategy": None, "refresh": False}) == ""
+    assert view.params_summary("daily_signal", {}) == ""
+
+
+def test_params_summary_names_every_value_that_was_filled_in():
+    s = view.params_summary("market_scan", {"limit": 30, "date": date(2026, 8, 24)})
+    assert s == "只扫前 N 只 = 30、基准交易日 = 2026-08-24", s
+
+
+def test_params_summary_speaks_to_users_not_in_internal_values():
+    """策略写显示名（不是内部键），勾选项写它的名字（不是 "= True"）——这行字现在摆在明面上。"""
+    s = view.params_summary("backtest", {"strategy": "ma_cross", "refresh": True})
+    assert "双均线交叉" in s and "ma_cross" not in s, s
+    assert "重新下载全部行情" in s and "True" not in s, s
+
+
+def test_rerun_hint_uses_the_same_wording_as_the_params_summary():
+    """「沿用上次参数」那句 2026-11-16 起也是摆在明面上的字：同样不许出现内部键与 True。"""
+    from quant.runner import jobs
+    values = {"strategy": "ma_cross", "refresh": True}
+    hint = view.rerun_hint("backtest", jobs.build_argv("backtest", values))
+    assert view.params_summary("backtest", values) in hint, hint
+    assert "ma_cross" not in hint and "True" not in hint, hint
+
+
+def test_rerun_hint_survives_a_state_file_whose_argv_is_not_a_list():
+    """状态文件是手工改得动的 JSON：argv 被改成 null 时这句话不许把卡片打没。"""
+    assert "改坏" in view.rerun_hint("market_scan", None)

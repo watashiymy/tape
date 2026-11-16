@@ -408,7 +408,7 @@ def _job_area(ms: MarketStore) -> None:
             st.caption(head)
         if detail:
             st.caption(detail)
-        if st.button(f"⏹ {guide.HOME_BTN_STOP}", key="home_breadth_stop"):
+        if st.button(guide.HOME_BTN_STOP, key="home_breadth_stop", icon=":material/stop:"):
             ui.stop_job(state)
         return
     if bstate is B.BUSY_OTHER:
@@ -431,7 +431,8 @@ def _job_area(ms: MarketStore) -> None:
     else:
         return                                   # UP_TO_DATE：什么都不显示
     # 说明挂在按钮自己身上（原生按钮提示，支持加粗与列表）；不再在旁边另开一个带下拉箭头的「?」。
-    if st.button(f"▶ {label}", key=key, help=guide.JOB_HELP["market_breadth"]):
+    if st.button(label, key=key, icon=":material/play_arrow:",
+                 help=guide.JOB_HELP["market_breadth"]):
         ui.start_job("market_breadth", {})
 
 

@@ -6,12 +6,13 @@
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 from quant.runner import jobs
 from quant.runner.jobs import JOBS
 from quant.runner.process import FAILED, RUNNING, STOPPED, SUCCESS, RunState
 from quant.runner.progress import CRASHED, DONE, Progress
+from quant.strategy import strategy_label
 
 # 状态 pill 的四个类目（§2.3 第 5 条：运行中琥珀 / 成功绿 / 失败红 / 已停止灰）。
 # 这里只给类目字符串，配色在 app/theme.py 的 .qd-pill-* 里——纯函数不该知道十六进制。
@@ -148,6 +149,25 @@ def elapsed_seconds(state: RunState, now: datetime | None = None) -> float | Non
     return max(0.0, ((end or now or datetime.now()) - start).total_seconds())
 
 
+def finished_on(state: RunState, day: date) -> bool:
+    """这次运行是不是在 `day` 那天**结束**的（2026-11-16）。
+
+    控制台卡片里「本次结果」那个折叠区默认开不开，就看它：今天跑完的摊开（人就是来看
+    它的），更早的收起（那是存档——三天前的一张表不该一打开页面就占掉半屏）。
+    按结束时刻算而不是开始时刻：昨晚起、今天凌晨跑完的，是今天的结果。
+    还在跑（没有结束时刻）或时间戳读不懂，一律返回 False——不猜。
+
+    口径要说老实：`finished_at` 是面板**第一次发现**任务结束的时刻（process._finish），
+    不是进程退出的那一秒。面板开着时两者差不到一个轮询周期；可要是昨晚起了任务就关掉
+    页面、今天早上才再打开，它记的就是今天早上——那份结果会被当成"今天的"摊开。
+    这正合用：你确实还没看过它。
+    """
+    try:
+        return datetime.fromisoformat(state.finished_at).date() == day
+    except (TypeError, ValueError):
+        return False
+
+
 def job_label(name: str) -> str:
     """任务的中文显示名。JOBS 里没有（runs/ 混进手工实验残留的 json）就原样回显，
     绝不 KeyError 崩页。"""
@@ -178,14 +198,27 @@ def start_button_state(busy: str | None, job_name: str) -> tuple[bool, str]:
     return True, f"「{job_label(busy)}」正在运行，同时只能跑一个任务"
 
 
-def no_output_note(p: Progress, *, status: str) -> str:
+#: 没跑成、也没留下结果时，那句"没有保存任何结果"后面跟的话——**按任务各说各的**
+#: （2026-11-16 审查后）。原先只有扫描那一版，却原样挂在三张卡片上：信号跟踪没跑成时
+#: 说"重跑会从第 1 只开始"、回测没跑成时叫人去「信号」页，都是张冠李戴。
+_NO_OUTPUT_NOTES = {
+    "market_scan": ("本次**没有保存任何结果**：结果要整轮跑完才会写入文件，上面那些计数都没有保存下来。"
+                    "「信号」页看到的仍是上一次的结果（注意标题里的日期）。"
+                    "重跑会从第 1 只开始、不会接着跑，耗时与完整跑一遍相同。"),
+    "daily_signal": "本次**没有保存任何结果**。「信号」页看到的仍是上一次的结果（注意标题里的日期）。",
+    "backtest": "本次**没有保存任何结果**。「回测报告」里看到的仍是上一次的结果。",
+}
+
+
+def no_output_note(p: Progress, *, status: str, job_name: str) -> str:
     """终止且**没有产物**时那句补充说明。没什么要说的就返回空串（同 progress_lines
     的既有约定：空串 = 面板不渲染这一行）。
 
     要补的缺口很具体：扫描跑到 2500/3012 时细节行已经写着「信号 130 条」，这时
     按下 ⏹ 停止 —— 那 130 条**一条都没落盘**（结果整轮跑完才写 CSV），而屏幕上
-    留下的唯一数字正是那个 130，指向一份根本不存在的产物。页尾「信号」显示的
-    是上一次那份（标题里带日期，得自己发现不是今天的）。
+    留下的唯一数字正是那个 130，指向一份根本不存在的产物。「信号」页显示的
+    是上一次那份（标题里带日期，得自己发现不是今天的）。2026-11-16 起控制台卡片上
+    的结果只在成功后出现（「本次结果」），所以这句话只指「信号」页，不再说"页尾"。
 
     顺带纠正一处更早的误解：v0.2.0 设计里写着终止后仍画进度条是为了让用户
     "判断要不要接着补跑"——**不存在断点续跑**，重跑从第 1 只开始，而且热缓存
@@ -194,16 +227,49 @@ def no_output_note(p: Progress, *, status: str) -> str:
     """
     if status not in (STOPPED, FAILED) or p.outputs:
         return ""
-    return ("本次**没有保存任何结果**：结果要整轮跑完才会写入文件，上面那些计数都没有保存下来。"
-            "页尾与「信号」页看到的是上一次的结果（注意标题里的日期）。"
-            "重跑会从第 1 只开始、不会接着跑，耗时与完整跑一遍相同。")
+    # `job_name` 是必填的关键字参数（同 progress_lines 的 status：给默认值就等于默认说错话）。
+    # 不认识的任务名只说那一句千真万确的，不替它编"去哪一页看"。
+    return _NO_OUTPUT_NOTES.get(job_name, "本次**没有保存任何结果**。")
+
+
+def _param_parts(job_name: str, values: dict) -> list[str]:
+    """填了的参数逐项写成给人看的字；留空 / 没勾的不出现。
+
+    这些字 2026-11-16 起摆在卡片明面上（不再是悬停提示），所以按面板文案的规矩来：
+    策略写**显示名**不写内部键；勾选项写它的名字，不写 "= True"。
+    名字取参数标题里括号之前那截（"只扫前 N 只（留空=全量）" → "只扫前 N 只"）。
+    """
+    parts = []
+    for spec in JOBS[job_name].params:
+        got = values.get(spec.name)
+        if got is None or got is False:
+            continue
+        name = spec.label.split("（")[0].strip()
+        if spec.kind == "flag":
+            parts.append(name)
+        elif spec.kind == "choice":
+            parts.append(f"{name} = {strategy_label(got)}")
+        else:
+            parts.append(f"{name} = {got}")
+    return parts
+
+
+def params_summary(job_name: str, values: dict) -> str:
+    """「更多选项」里填了什么，一行写出来；全留空就返回空串（那一行不渲染）。
+
+    2026-11-16 审查发现的缺口：参数收进了默认收起的折叠区，填过的只数 / 日期在卡片上
+    一个字都看不见，而主按钮照样按它跑——上午试跑时填的 30 只，下午点「开始扫描」
+    以为是全量。这与「重跑」那句提示当初要防的是同一件事：看不见的参数，白扫一趟。
+    """
+    return "、".join(_param_parts(job_name, values))
 
 
 def rerun_hint(job_name: str, argv: list[str]) -> str:
-    """「↻ 重跑」按钮的 tooltip：它到底要重跑什么。
+    """「沿用上次参数重跑」到底要重跑什么（2026-11-16 起直接写在那个按钮上方，
+    不再是悬停提示）。
 
-    三个按钮并排，前两个的行为看得见（参数控件就在上面，留空 = 全量 / 最近交易日），
-    而**第三个的参数只存在磁盘上那份 JSON 里**，页面上一个字不显示。
+    开始按钮的行为看得见（参数控件就在同一个折叠区里，留空 = 全量 / 最近交易日），
+    而**重跑的参数只存在磁盘上那份 JSON 里**，不写出来页面上就一个字不显示。
     真实后果不是理论：本机 `output/runs/market_scan.json` 的 argv 带着
     `--date 2026-09-01`（那趟是次日上午补扫的），今天点一下就是花十几分钟
     重扫昨天——而屏幕上没有任何东西提示过这件事。
@@ -218,10 +284,4 @@ def rerun_hint(job_name: str, argv: list[str]) -> str:
         values = jobs.parse_argv(job_name, argv)
     except ValueError:
         return "上次那条命令行已被改坏（点下去会被拒绝）。用上面的控件重新起一次。"
-    parts = []
-    for spec in job.params:
-        got = values.get(spec.name)
-        if got is None or got is False:
-            continue
-        parts.append(f"{spec.label.split('（')[0].strip()} = {got}")
-    return "沿用上次参数：" + ("、".join(parts) if parts else "全部留空（默认）")
+    return "沿用上次参数：" + (params_summary(job_name, values) or "全部留空（默认）")
