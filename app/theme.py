@@ -51,11 +51,15 @@ DOWN_DIM = palette.DOWN_DIM
 PRIMARY_DIM = palette.PRIMARY_DIM
 MUTED_DIM = palette.MUTED_DIM
 
+# 琥珀由亮到暗的五档（持仓占比的环形图按大小排队用，第一档就是 PRIMARY）。
+PRIMARY_RAMP = palette.PRIMARY_RAMP
+
 PALETTE = {
     "PRIMARY": PRIMARY, "BACKGROUND": BACKGROUND, "SURFACE": SURFACE, "TEXT": TEXT,
     "MUTED": MUTED, "HAIRLINE": HAIRLINE, "UP": UP, "DOWN": DOWN,
     "UP_DIM": UP_DIM, "DOWN_DIM": DOWN_DIM, "PRIMARY_DIM": PRIMARY_DIM,
     "MUTED_DIM": MUTED_DIM,
+    **{f"PRIMARY_RAMP_{i}": color for i, color in enumerate(PRIMARY_RAMP)},
 }
 
 # ---------------------------------------------------------------- 字体
@@ -362,6 +366,113 @@ CSS = f"""@import url("{FONT_IMPORT}");
   left: 0.95rem;
   max-width: calc(100% - 0.95rem);
   margin-top: 0.25rem;
+}}
+
+/* 持仓占比（2026-11-18，「持仓与盈亏」页的仪表盘）：一个小标题 + 右端的画法切换，下面是两种画法之一。
+   两种都是普通的 HTML，不是 plotly：字是页面自己的字，窄了自己让，不存在"标注画到图外被裁"这回事。
+   小标题比区块标题（.qd-section）低一级，不带发丝线。 */
+.qd-minihead {{
+  font-family: var(--qd-sans);
+  font-size: 0.95rem;
+  font-weight: 600;
+  line-height: 1.6;
+  color: var(--qd-text);
+}}
+/* 占比条：一行一只票——名称、条、百分比、金额、标记。五栏是一张网格（每行的五个格子都是它的直接子元素），
+   所以名称左对齐成一列、两列数字右对齐成两列，条占剩下的宽度。
+   条的满格是 100%（后面那道灰是"全部持仓"），不是最大的那一只：45% 就是不到一半。
+   「按成本」单独一栏：跟在金额后面写成一串的话，带标记的那几行会把金额那一栏撑宽，
+   别的行的金额就离百分比老远、个位也对不齐（真机上看到的）。 */
+.qd-weights {{
+  display: grid;
+  grid-template-columns: max-content minmax(3rem, 1fr) max-content max-content max-content;
+  column-gap: 0.8rem;
+  row-gap: 0.6rem;
+  align-items: center;
+  margin: 0.2rem 0 0.5rem;
+  font-family: var(--qd-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  color: var(--qd-text);
+}}
+.qd-weights-track {{
+  height: 0.6rem;
+  background: var(--qd-hairline);
+}}
+.qd-weights-fill {{
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  background: var(--qd-primary);
+}}
+.qd-weights-pct {{
+  text-align: right;
+  white-space: nowrap;
+}}
+.qd-weights-value {{
+  text-align: right;
+  white-space: nowrap;
+  color: var(--qd-muted);
+}}
+.qd-weights-flag {{
+  white-space: nowrap;
+  font-family: var(--qd-sans);
+  font-size: 0.72rem;
+  color: var(--qd-muted);
+}}
+/* 环形图：左边圆环（img，SVG 的 data URI），右边一行一块的清单——色块、名称、百分比、金额。
+   两样合起来居中摆；放不下时清单折到圆环下面。圆环里不写字（img 里的 SVG 用不了页面的字体）。
+   色块用同一个琥珀由亮到暗的五档（按大小排队，不是类别色），并出来的「其他」用灰。 */
+.qd-donut {{
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.8rem 2.2rem;
+  margin: 0.2rem 0 0.5rem;
+}}
+.qd-donut-img {{
+  flex: none;
+  width: 10rem;
+  height: 10rem;
+}}
+.qd-donut-list {{
+  display: grid;
+  grid-template-columns: max-content max-content max-content max-content max-content;
+  column-gap: 0.7rem;
+  row-gap: 0.5rem;
+  align-items: center;
+  font-family: var(--qd-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  color: var(--qd-text);
+}}
+.qd-donut-key {{
+  width: 0.65rem;
+  height: 0.65rem;
+  background: var(--qd-muted);
+}}
+.qd-donut-key-0 {{ background: {PRIMARY_RAMP[0]}; }}
+.qd-donut-key-1 {{ background: {PRIMARY_RAMP[1]}; }}
+.qd-donut-key-2 {{ background: {PRIMARY_RAMP[2]}; }}
+.qd-donut-key-3 {{ background: {PRIMARY_RAMP[3]}; }}
+.qd-donut-key-4 {{ background: {PRIMARY_RAMP[4]}; }}
+.qd-donut-pct {{
+  text-align: right;
+  white-space: nowrap;
+}}
+.qd-donut-value {{
+  text-align: right;
+  white-space: nowrap;
+  color: var(--qd-muted);
+}}
+.qd-donut-flag {{
+  white-space: nowrap;
+  font-family: var(--qd-sans);
+  font-size: 0.72rem;
+  color: var(--qd-muted);
 }}
 
 /* 「人工步骤」标记：这一步没有开始按钮，是你自己动手的一环。
@@ -678,6 +789,51 @@ def notice(text: str, *, help: str = "") -> str:
     return f'<div class="qd-notice">{_tip_inline(_esc(text))}{dot}</div>'
 
 
+def subhead(title: str, *, help: str = "") -> str:
+    """区块里面的小标题（比 section 低一级，不带发丝线），后面可以跟一个帮助圆点。"""
+    dot = help_dot(help, wide=True) if help else ""
+    return f'<div class="qd-minihead">{_esc(title)}{dot}</div>'
+
+
+def weight_bars(rows) -> str:
+    """持仓占比的「占比条」：`rows` 是 [(名称, 占比 0~1, 百分比文字, 金额文字, 标记)]，一行一只。
+    标记是金额后面那一小格（「按成本」），没有就给空串——格子照出，网格才不会错位。
+
+    条的宽度就是占比本身——满格是全部持仓，不是最大的那一只。宽度是这里算出来的数，
+    不接受调用方给的样式串（内联 style 是个注入口子）。没有行时返回空串。
+    """
+    cells = []
+    for name, share, pct, value, flag in rows:
+        width = min(max(float(share), 0.0), 1.0) * 100
+        cells.append(
+            f'<span class="qd-weights-name">{_esc(name)}</span>'
+            f'<span class="qd-weights-track"><span class="qd-weights-fill" style="width: {width:.1f}%"></span></span>'
+            f'<span class="qd-weights-pct">{_esc(pct)}</span>'
+            f'<span class="qd-weights-value">{_esc(value)}</span>'
+            f'<span class="qd-weights-flag">{_esc(flag)}</span>')
+    return f'<div class="qd-weights">{"".join(cells)}</div>' if cells else ""
+
+
+def weight_donut(uri: str, rows) -> str:
+    """持仓占比的「环形图」：左边圆环，右边清单。`uri` 是 minicharts.donut 的输出；
+    `rows` 是 [(第几档颜色, 名称, 百分比文字, 金额文字, 标记)]，顺序与圆环上从十二点起顺时针的顺序一致。
+    颜色档是 0 起的下标（PRIMARY_RAMP 的第几档）；None，或者超出了色板的档数，都用灰——
+    并出来的「其他」和排在第六的那一只就是这样。没有行时返回空串。
+    """
+    if not rows:
+        return ""
+    items = []
+    for step, name, pct, value, flag in rows:
+        ramp = isinstance(step, int) and 0 <= step < len(PRIMARY_RAMP)
+        key = f"qd-donut-key qd-donut-key-{step}" if ramp else "qd-donut-key"
+        items.append(f'<span class="{key}"></span><span class="qd-donut-name">{_esc(name)}</span>'
+                     f'<span class="qd-donut-pct">{_esc(pct)}</span>'
+                     f'<span class="qd-donut-value">{_esc(value)}</span>'
+                     f'<span class="qd-donut-flag">{_esc(flag)}</span>')
+    return (f'<div class="qd-donut">{_img(uri, "qd-donut-img")}'
+            f'<div class="qd-donut-list">{"".join(items)}</div></div>')
+
+
 def manual_row(tag: str, text: str) -> str:
     """一行式的人工步骤（控制台「每日流水线」区，2026-09-14）：灰标签 + 一句说明。
     取代 v0.5.0 的整张人工卡片——那张卡在页面正中间却什么都不能操作。"""
@@ -783,10 +939,10 @@ def help_dot(text: str, *, align: str = "start", wide: bool = False) -> str:
             f'<span class="qd-help-tip">{_tip_markup(text)}</span></span>')
 
 
-def _img(uri: str) -> str:
+def _img(uri: str, cls: str = "qd-card-img") -> str:
     if not uri.startswith("data:image/svg+xml;base64,"):
         raise ValueError("小图只接受 SVG 的 data URI（st.html 会删内联 svg，外链更不许）")
-    return f'<img class="qd-card-img" src="{uri}" alt="">'
+    return f'<img class="{cls}" src="{uri}" alt="">'
 
 
 def stat_card(label: str, value: str, *, sub: str | tuple[str, ...] = "", color: str | None = None,

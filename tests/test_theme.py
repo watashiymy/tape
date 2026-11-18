@@ -906,3 +906,103 @@ def test_a_notice_anchors_its_tip_to_the_row_not_to_the_dot():
     assert "position: relative" in rules[".qd-help-dot"]
     heads = [h for h, _ in _css_rule_pairs()]
     assert heads.count(".qd-notice .qd-help-tip") == 1 and heads.count(".qd-notice .qd-help-dot") == 1
+
+
+# ================================================================ 持仓占比的两种画法（2026-11-18）
+# 用户问「用饼图会不会更直观」，最后要的是占比条与环形图两种都留、自己选。两种都是页面自己的 HTML：
+# 字是页面的字、窄了自己让，不存在"标注画到图外被裁"这回事（上一轮 plotly 那张图栽在这上面）。
+
+_URI = "data:image/svg+xml;base64,PHN2Zy8+"
+
+
+def test_subhead_is_a_plain_title_with_an_optional_dot():
+    assert theme.subhead("持仓占比（按市值）") == '<div class="qd-minihead">持仓占比（按市值）</div>'
+    with_dot = theme.subhead("持仓占比", help="一句话。")
+    assert with_dot == '<div class="qd-minihead">持仓占比' + theme.help_dot("一句话。", wide=True) + "</div>"
+    assert "&lt;b&gt;" in theme.subhead("<b>x</b>")
+
+
+def test_weight_bars_width_is_the_share_itself_not_relative_to_the_largest():
+    """条的满格是全部持仓。原先那张图的条长按最大的那只比，最长的一根永远顶满整行——
+    占 45% 的那只看着像 100%，读不出"不到一半"。"""
+    html = theme.weight_bars([("000333 美的集团", 0.45, "45.0%", "12,000 元", ""),
+                              ("600519 贵州茅台", 0.305, "30.5%", "6,005 元", "按成本")])
+    assert html.startswith('<div class="qd-weights">') and html.endswith("</div>")
+    assert re.findall(r'class="qd-weights-fill" style="width: ([\d.]+)%"', html) == ["45.0", "30.5"]
+    assert html.count('class="qd-weights-track"') == 2, "每根条后面都有那道表示全部持仓的底"
+    assert '<span class="qd-weights-name">000333 美的集团</span>' in html
+    assert '<span class="qd-weights-pct">45.0%</span><span class="qd-weights-value">12,000 元</span>' in html
+
+
+def test_weight_bars_keep_the_cost_flag_in_its_own_cell():
+    """「按成本」单独一格，没有也出一个空格子：跟在金额后面写成一串的话，带标记的行会把金额那一栏
+    撑宽，别的行的金额就离百分比老远、个位也对不齐（真机上看到的）；少出一个格子则整张网格错位。"""
+    html = theme.weight_bars([("甲", 0.6, "60.0%", "600 元", ""), ("乙", 0.4, "40.0%", "400 元", "按成本")])
+    assert html.count('class="qd-weights-flag"') == 2
+    assert '<span class="qd-weights-value">600 元</span><span class="qd-weights-flag"></span>' in html
+    assert '<span class="qd-weights-value">400 元</span><span class="qd-weights-flag">按成本</span>' in html
+    cells = re.findall(r'<span class="(qd-weights-(?:name|track|pct|value|flag))"', html)
+    assert cells == ["qd-weights-name", "qd-weights-track", "qd-weights-pct", "qd-weights-value",
+                     "qd-weights-flag"] * 2, "每行五个格子，顺序与网格的五栏一致"
+    assert "repeat" not in _css_rules()[".qd-weights"]
+    assert _css_rules()[".qd-weights"].count("max-content") == 4, "名称、百分比、金额、标记四栏随内容宽，条占剩下的"
+
+
+def test_weight_bars_clamp_the_width_and_escape_the_text():
+    html = theme.weight_bars([("<b>甲</b>", 1.7, "170%", "1 元", ""), ("乙", -0.2, "-20%", "1 元", "")])
+    assert re.findall(r'style="width: ([\d.]+)%"', html) == ["100.0", "0.0"], "宽度只在 0 到 100% 之间"
+    assert "&lt;b&gt;甲" in html and "<b>甲" not in html
+    assert theme.weight_bars([]) == "", "没有持仓时连元素都不放"
+
+
+def test_weight_donut_puts_the_ring_beside_a_list_in_the_same_order():
+    html = theme.weight_donut(_URI, [(0, "000333 美的集团", "60.0%", "600 元", ""),
+                                    (1, "600519 贵州茅台", "30.0%", "300 元", "按成本"),
+                                    (None, "其他 3 只", "10.0%", "100 元", "")])
+    assert html.startswith(f'<div class="qd-donut"><img class="qd-donut-img" src="{_URI}" alt="">')
+    names = re.findall(r'class="qd-donut-name">([^<]*)<', html)
+    assert names == ["000333 美的集团", "600519 贵州茅台", "其他 3 只"], "清单的顺序就是圆环上顺时针的顺序"
+    keys = re.findall(r'<span class="(qd-donut-key[^"]*)"></span>', html)
+    assert keys == ["qd-donut-key qd-donut-key-0", "qd-donut-key qd-donut-key-1", "qd-donut-key"]
+    assert '<span class="qd-donut-value">300 元</span><span class="qd-donut-flag">按成本</span>' in html
+    assert html.count('class="qd-donut-flag"') == 3
+
+
+def test_weight_donut_falls_back_to_gray_beyond_the_ramp():
+    """色板只有五档。排到第六的那一只（正好六只时不并）与并出来的「其他」都用灰，不许冒出一个没有规则的类名。"""
+    html = theme.weight_donut(_URI, [(5, "第六只", "5.0%", "5 元", ""), (-1, "怪", "1.0%", "1 元", ""),
+                                    ("0", "字符串", "1.0%", "1 元", "")])
+    assert re.findall(r'<span class="(qd-donut-key[^"]*)"></span>', html) == ["qd-donut-key"] * 3
+    rules = _css_rules()
+    for i, color in enumerate(theme.PRIMARY_RAMP):
+        assert color in rules[f".qd-donut-key-{i}"], f"第 {i} 档的色块要用色板里的第 {i} 档"
+    assert f".qd-donut-key-{len(theme.PRIMARY_RAMP)}" not in rules
+    assert "var(--qd-muted)" in rules[".qd-donut-key"], "没有档位的色块是灰的"
+
+
+def test_weight_donut_refuses_anything_but_an_svg_data_uri_and_escapes_text():
+    with pytest.raises(ValueError):
+        theme.weight_donut("https://example.com/x.svg", [(0, "甲", "1%", "1 元", "")])
+    html = theme.weight_donut(_URI, [(0, "<i>甲</i>", "1%", "1 元", "")])
+    assert "&lt;i&gt;甲" in html and "<i>甲" not in html
+    assert theme.weight_donut(_URI, []) == ""
+
+
+def test_the_two_weight_forms_are_laid_out_to_give_way_not_to_clip():
+    """占比条：条那一栏吃剩下的宽度、有个下限；环形图：圆环与清单居中，放不下时清单折到下面。"""
+    rules = _css_rules()
+    assert "minmax(3rem, 1fr)" in rules[".qd-weights"]
+    assert "var(--qd-hairline)" in rules[".qd-weights-track"] and "var(--qd-primary)" in rules[".qd-weights-fill"]
+    assert "min-width" in rules[".qd-weights-fill"], "占比再小的一只也留一丝，不让它彻底看不见"
+    donut = rules[".qd-donut"]
+    assert "flex-wrap: wrap" in donut and "justify-content: center" in donut
+    img = rules[".qd-donut-img"]
+    assert "flex: none" in img and "width: 10rem" in img and "height: 10rem" in img, "圆环定宽定高，不被挤扁"
+    for cls in (".qd-weights-pct", ".qd-weights-value", ".qd-donut-pct", ".qd-donut-value"):
+        assert "text-align: right" in rules[cls] and "nowrap" in rules[cls], cls
+
+
+def test_the_ramp_colors_are_part_of_the_palette_the_css_may_use():
+    for i, color in enumerate(theme.PRIMARY_RAMP):
+        assert theme.PALETTE[f"PRIMARY_RAMP_{i}"] == color
+    assert theme.PRIMARY_RAMP[0] == theme.PRIMARY

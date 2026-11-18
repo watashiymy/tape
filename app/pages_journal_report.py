@@ -3,8 +3,8 @@
 「记账」页管**写**，本页管**读**：整本日志算出来的当前持仓、已实现盈亏与来源对比。
 页面函数从 app/pages_journal.py 原样搬来（M1 的拆页**逻辑不改只挪**）；排版按
 设计 §1：三张表收进 st.tabs（当前持仓 / 平仓明细 / 来源对比），不再纵向全部铺开。
-顶部是 M2 的仪表盘（设计 §2）：指标块 2×3 + 曲线与占比两张图（各占一整行，
-2026-11-18），来源对比图在来源 tab 里。数字口径全在 journal_ui.dashboard_metrics 与 quant.journal.analytics
+顶部是 M2 的仪表盘（设计 §2）：指标块 2×3 + 累计盈亏曲线 + 持仓占比（各占一整行，
+2026-11-18；持仓占比可以在占比条与环形图之间切换），来源对比图在来源 tab 里。数字口径全在 journal_ui.dashboard_metrics 与 quant.journal.analytics
 （纯函数，手算单测钉住），本页只做排版与转述。
 
 两条纪律沿自 v0.3.0 §5：
@@ -32,7 +32,7 @@ import pool
 import theme
 import ui
 from quant.journal import analytics, pnl, store
-from quant.report import charts
+from quant.report import charts, minicharts
 
 
 def page_journal_report() -> None:
@@ -152,26 +152,72 @@ def _dashboard_section(report: pnl.PnlReport, trades) -> None:
         # 这一句是事实、会影响上面的数怎么读，所以留在明面上；为什么与怎么办在圆点里。
         st.caption(guide.JOURNAL_UNPRICED.format(n=unpriced))
 
-    # 两张图各占一整行，有哪张画哪张（2026-11-18）。原先固定两栏并排：还没有平仓记录时左半边
-    # 只有一句话，下面空着三百多像素——用户截图圈出来问「为什么左边要空出一大块」。
-    # 初稿是"两张都有才并排"，独立审查在 1024 宽下量出来不行：占比图的类目标签加条外标注要两百多
-    # 像素的固定边距，半幅宽的一栏里留给条的地方只剩十几像素；持仓一多它还比曲线高，曲线下面又是一块空。
+    # 曲线与持仓占比各占一整行，有哪样画哪样（2026-11-18）。原先固定两栏并排：还没有平仓记录时
+    # 左半边只有一句话，下面空着三百多像素——用户截图圈出来问「为什么左边要空出一大块」。
+    # 初稿是"两样都有才并排"，独立审查在 1024 宽下量出来不行（半幅宽的一栏里留给条的地方只剩十几像素）。
     # 曲线在上（历史）、占比在下（紧挨着下面的持仓表，说的都是眼下手里有什么）。
     # 空态不画空图（设计 §2.2）：一张空坐标系没有任何信息量，还像出了错。
-    # 缺曲线时留一句话（它说的事别处没说）；缺占比图时什么都不留——没有持仓这件事，
-    # 紧挨着的「当前持仓」标签页里已经写着，同一屏不说两遍。
-    # 占比图里无市价的标的按成本顶上并打「按成本」标（与指标卡刻意相反：
-    # 占比漏一只会让其余标的虚高，见 analytics 的模块 docstring）。
+    # 缺曲线时留一句话（它说的事别处没说）；没有持仓时什么都不留——紧挨着的「当前持仓」标签页里
+    # 已经写着，同一屏不说两遍。
     points = analytics.cumulative_realized(trades)
     rows = analytics.position_weights(report.positions, prices)
     if points:
         st.plotly_chart(charts.journal_cum_pnl_chart(points), width="stretch")
     if rows:
-        st.plotly_chart(charts.position_weights_chart(rows), width="stretch")
+        _weights_block(rows)
     if not points:
         st.caption(guide.JOURNAL_NO_CURVE)
     # 「为什么是元而不是收益率」在「仪表盘」小标题的帮助圆点里（guide.JOURNAL_PNL_HINT）；
     # 完整理由留在本函数的 docstring 里，给下一个改代码的人。
+
+
+def _weights_block(rows: list[dict]) -> None:
+    """持仓占比：小标题 + 右端的画法切换，下面是占比条或环形图（2026-11-18）。
+
+    用户先问「用饼图会不会更直观」。对"看占比"来说确实是：原先那张条形图的条长是按最大的那只比的，
+    最长的一根永远顶满整行，占 45% 的那只看着像 100%。但环形图持仓一多就不好读，所以两种都留、让人自己选：
+    - **占比条**（默认）：一行一只，条的满格是全部持仓；持仓再多也只是多几行。
+    - **环形图**：整圈是全部持仓；最多单独画五只（同一个琥珀只分得出五档深浅），排在后面的并成「其他」。
+
+    两种都是页面自己的 HTML（theme.weight_bars / weight_donut），不是 plotly——字是页面的字、窄了自己让，
+    不会再有"标注画到图外被裁"。无市价的持仓按成本顶上并标「按成本」（与指标卡刻意相反：
+    占比漏一只会让其余标的虚高，见 analytics 的模块 docstring）。
+
+    选了哪种记在这次会话里（`persist_state="session"`）：去别的页转一圈回来还是它，
+    刷新页面才回到默认。标题与切换是一个横向容器：标题的字短，占剩下的地方，切换是它自己的宽度、靠右。
+    """
+    forms = guide.JOURNAL_WEIGHTS_FORMS
+    with st.container(horizontal=True, horizontal_alignment="right", vertical_alignment="center"):
+        st.html(theme.subhead(guide.JOURNAL_WEIGHTS_TITLE, help=guide.JOURNAL_WEIGHTS_HELP))
+        form = st.radio(guide.JOURNAL_WEIGHTS_FORM_LABEL, list(forms), format_func=forms.get,
+                        horizontal=True, label_visibility="collapsed", width="content",
+                        key=journal_ui.WEIGHTS_FORM_KEY, persist_state="session")
+    # 必须是 if/else 语句：裸三元会被 streamlit 的 magic 整条包进 st.write。
+    if form == "donut":
+        ramp = theme.PRIMARY_RAMP
+        slices = analytics.fold_weights(rows, journal_ui.WEIGHTS_DONUT_KEEP)
+        # 颜色档 = 按大小排在第几；并出来的「其他」与排到色板之外的那一只交回 None，画成灰。
+        steps = journal_ui.weight_steps(slices, len(ramp))
+        uri = minicharts.donut([(s["weight"], theme.MUTED if step is None else ramp[step])
+                                for s, step in zip(slices, steps)])
+        st.html(theme.weight_donut(uri, [(step, *_weight_texts(s)) for s, step in zip(slices, steps)]))
+    else:
+        lines = []
+        for row in rows:
+            name, pct, value, flag = _weight_texts(row)
+            lines.append((name, row["weight"], pct, value, flag))
+        st.html(theme.weight_bars(lines))
+
+
+def _weight_texts(row: dict) -> tuple[str, str, str, str]:
+    """占比的一行写成字：名称、百分比、金额、标记。并出来的那一块叫「其他 n 只」；
+    按成本顶上的（或者并进去的里面有这样的）标「按成本」，否则标记是空串。"""
+    if row.get("others"):
+        name = guide.JOURNAL_WEIGHTS_OTHERS.format(n=row["others"])
+    else:
+        name = f"{row['symbol']} {row['name']}".strip()
+    flag = guide.JOURNAL_WEIGHTS_BY_COST if row["by_cost"] else ""
+    return name, f"{row['weight']:.1%}", f"{row['value']:,.0f} 元", flag
 
 
 def _positions_section(report: pnl.PnlReport) -> None:

@@ -15,8 +15,10 @@
 # 塞一条 WidgetState（{"edited_rows": ...}），于是"改一格 + 点保存 → 文件真的变了"
 # 是端到端验证的。注意：AppTest 不会把 data_editor 的状态带到下一次 run，
 # 所以编辑与点按钮必须在**同一次**注入里发生（helper 已经这么做）。
+import base64
 import importlib.util
 import json
+import re
 import shutil
 import sys
 from datetime import date, timedelta
@@ -298,14 +300,16 @@ def test_dashboard_shows_the_six_hand_computed_metrics(tmp_path):
     assert ">胜率</div>" in blob and ">盈亏比</div>" in blob
 
 
-def test_dashboard_renders_all_three_charts_when_there_is_data(tmp_path):
-    """曲线 + 占比在仪表盘并排，来源对比图在「来源对比」tab 里——共三张。"""
+def test_dashboard_renders_everything_when_there_is_data(tmp_path):
+    """仪表盘里是累计盈亏曲线与持仓占比，来源对比图在「来源对比」tab 里。曲线与来源对比是 plotly 图；
+    持仓占比 2026-11-18 起是页面自己的 HTML（占比条 / 环形图二选一）。"""
     root = _root(tmp_path)
     _half_closed(root)
     at = _page(root, REPORT_PAGE)
 
     assert not at.exception, at.exception
-    assert len(at.get("plotly_chart")) == 3, "该有曲线/占比/来源对比三张图"
+    assert len(at.get("plotly_chart")) == 2, "该有曲线与来源对比两张 plotly 图"
+    assert len(_weights_html(at)) == 1, "该有一块持仓占比"
 
 
 def test_unpriced_positions_show_dash_and_an_honest_note(tmp_path):
@@ -1487,39 +1491,44 @@ def test_nothing_on_the_report_page_speaks_in_the_engines_words(tmp_path, state)
         assert word not in helps, f"列头说明里还有「{word}」"
 
 
-# ================================================================ 仪表盘：两张图各占一整行（2026-11-18）
+# ================================================================ 仪表盘：曲线与持仓占比各占一整行（2026-11-18）
 #
 # 原先固定两栏。还没有平仓记录时左半边只有一句话，下面空着三百多像素——用户截图圈出来问
-# 「为什么左边要空出一大块空间」。初稿是"两张都有才并排"，独立审查在 1024 宽下量出来不行
-# （占比图的固定边距吃掉了半幅宽的一栏，留给条的地方只剩十几像素）。现在：有哪张画哪张，一张一行。
-# AppTest 没有像素，钉的是：图是不是待在某一栏里。
+# 「为什么左边要空出一大块空间」。初稿是"两样都有才并排"，独立审查在 1024 宽下量出来不行
+# （占比图的固定边距吃掉了半幅宽的一栏，留给条的地方只剩十几像素）。现在：有哪样画哪样，一样一行。
+# AppTest 没有像素，钉的是：东西是不是待在某一栏里。
 
 def _in_a_column(at: AppTest, element) -> bool:
     return any(getattr(n, "type", "") == "column" for n in path_to_element(at, element))
 
 
 def _dashboard_charts(at: AppTest) -> list:
-    """仪表盘里的图（不算「来源对比」标签页里那张）。"""
+    """仪表盘里的 plotly 图（不算「来源对比」标签页里那张）。"""
     tabbed = [e for t in at.get("tab") for e in _walk(t)]
     return [c for c in at.get("plotly_chart") if not any(c is e for e in tabbed)]
 
 
-def test_the_weights_chart_takes_the_whole_row_until_there_is_a_curve(tmp_path):
-    """只有持仓、还没有平仓：占比图独占一行（用它的宽版），曲线的位置不留一栏空着；
-    下面一句话说还缺什么。"""
+def _weights_html(at: AppTest) -> list:
+    """持仓占比那一块的正文：占比条（qd-weights）或环形图（qd-donut）。"""
+    return [e for e in at.get("html") if not e.proto.body.lstrip().startswith("<style>")
+            and ('class="qd-weights"' in e.proto.body or 'class="qd-donut"' in e.proto.body)]
+
+
+def test_the_weights_take_the_whole_row_until_there_is_a_curve(tmp_path):
+    """只有持仓、还没有平仓：持仓占比独占一行，曲线的位置不留一栏空着；下面一句话说还缺什么。"""
     root = _root(tmp_path)
     _journal(root, _buy())
     _cache(root)
     at = _page(root, REPORT_PAGE)
     assert not at.exception, at.exception
-    (chart,) = _dashboard_charts(at)
-    assert not _in_a_column(at, chart), "占比图还待在半幅宽的那一栏里，另一半是空的"
-    spec = json.loads(chart.proto.spec)
-    assert "持仓占比" in spec["layout"]["title"]["text"]
-    assert spec["layout"]["height"] < 200, "一只持仓：高度按行数给，不撑到三百多像素"
+    assert not _dashboard_charts(at), "还没有已平仓的交易，不该有曲线"
+    (weights,) = _weights_html(at)
+    assert not _in_a_column(at, weights), "持仓占比还待在半幅宽的那一栏里，另一半是空的"
     captions = [c.value for c in at.main.caption]
     assert captions == [_guide().JOURNAL_NO_CURVE], captions
     assert not any(_in_a_column(at, c) for c in at.main.caption), "那句话也不许单独占着半栏"
+    order = [e for e in _walk(at.main) if e is weights or e is at.main.caption[0]]
+    assert order[0] is weights, "那句话在持仓占比的下面"
 
 
 def test_an_unmatched_sell_does_not_count_as_a_closed_trade(tmp_path):
@@ -1530,29 +1539,30 @@ def test_an_unmatched_sell_does_not_count_as_a_closed_trade(tmp_path):
     _cache(root)
     at = _page(root, REPORT_PAGE)
     assert not at.exception, at.exception
-    (chart,) = _dashboard_charts(at)
-    assert not _in_a_column(at, chart)
+    assert not _dashboard_charts(at)
     note = _guide().JOURNAL_NO_CURVE
     assert note in [c.value for c in at.main.caption]
     assert "已平仓" in note and "卖出" not in note, note
 
 
 def test_curve_and_weights_each_take_a_whole_row_once_both_exist(tmp_path):
-    """两张都有：曲线在上、占比在下，各占一整行，谁都不许待在半幅宽的一栏里。"""
+    """两样都有：曲线在上、持仓占比在下，各占一整行，谁都不许待在半幅宽的一栏里。"""
     root = _root(tmp_path)
     _half_closed(root)
     at = _page(root, REPORT_PAGE)
     assert not at.exception, at.exception
-    curve, weights = _dashboard_charts(at)
+    (curve,) = _dashboard_charts(at)
+    (weights,) = _weights_html(at)
     assert not _in_a_column(at, curve) and not _in_a_column(at, weights), "又并排了：1024 宽下条会被挤没"
-    titles = [json.loads(c.proto.spec)["layout"]["title"]["text"] for c in (curve, weights)]
-    assert "累计已实现盈亏" in titles[0] and "持仓占比" in titles[1], f"曲线在上、占比在下：{titles}"
+    assert "累计已实现盈亏" in json.loads(curve.proto.spec)["layout"]["title"]["text"]
+    order = [e for e in _walk(at.main) if e is curve or e is weights]
+    assert order == [curve, weights], "曲线在上、持仓占比在下"
     assert _guide().JOURNAL_NO_CURVE not in [c.value for c in at.main.caption]
 
 
 def test_the_curve_takes_the_whole_row_when_everything_is_sold(tmp_path):
     """全部卖光：只有曲线，独占一行。没有持仓这件事，紧挨着的「当前持仓」标签页里已经写着，
-    图表区不再说一遍（同一屏不说两遍）。"""
+    图表区不再说一遍（同一屏不说两遍）；持仓占比连标题和切换都不出。"""
     root = _root(tmp_path)
     _journal(root, _buy(), _sell())
     at = _page(root, REPORT_PAGE)
@@ -1563,6 +1573,183 @@ def test_the_curve_takes_the_whole_row_when_everything_is_sold(tmp_path):
     assert not list(at.main.caption), [c.value for c in at.main.caption]
     assert "当前没有持仓" in _texts(at), "「当前持仓」标签页里那句还在"
     assert _texts(at).count("没有持仓") == 1, "没有持仓这件事同一屏说了两遍"
+    assert not _weights_html(at) and not list(at.radio), "没有持仓：不出一个空的持仓占比"
+    assert _guide().JOURNAL_WEIGHTS_TITLE not in _texts(at)
+
+
+# ================================================================ 持仓占比：占比条 / 环形图（2026-11-18）
+#
+# 用户问「"持仓占比"使用饼图来呈现会不会更直观？」，看过三种画法的对比后要的是：两种都做，自己选。
+# 占比条（默认）：一行一只，条的满格是全部持仓；环形图：整圈是全部持仓，最多单独画五只。
+
+def _holdings(root: Path, *shares: float) -> None:
+    """记若干只持仓（每只 10 元买入），并给它们各备一份行情（收盘 10 元）——市值就是 股数 × 10。"""
+    names = ["美的集团", "贵州茅台", "招商银行", "平安银行", "万科A", "格力电器", "中国平安", "五粮液", "海康威视"]
+    codes = ["000333", "600519", "600036", "000001", "000002", "000651", "601318", "000858", "002415"]
+    _journal(root, *[_buy(symbol=c, name=n, shares=float(s), price=10.0)
+                     for c, n, s in zip(codes, names, shares)])
+    for code in codes[:len(shares)]:
+        _cache(root, code, low=9.5, high=10.5, close=10.0)
+
+
+def _form_radio(at: AppTest):
+    return at.radio(key=jui.WEIGHTS_FORM_KEY)
+
+
+def test_weights_default_to_bars_with_a_toggle_on_the_right_of_the_title(tmp_path):
+    """默认是占比条。标题与切换在同一行：标题（后面跟着帮助圆点）在左，切换靠右。"""
+    root = _root(tmp_path)
+    _holdings(root, 600, 300, 100)
+    at = _page(root, REPORT_PAGE)
+    assert not at.exception, at.exception
+    guide, theme = _guide(), app_module("theme")
+
+    radio = _form_radio(at)
+    assert list(radio.options) == ["占比条", "环形图"], "选项显示中文名，第一个是默认"
+    assert radio.value == "bars"
+    assert radio.label == guide.JOURNAL_WEIGHTS_FORM_LABEL and radio.proto.label_visibility.value != 0, \
+        "切换的名字不显示在页面上（读屏软件照样念得到）"
+    assert radio.horizontal
+
+    title = next(e for e in at.get("html") if 'class="qd-minihead"' in e.proto.body
+                 and not e.proto.body.lstrip().startswith("<style>"))
+    assert title.proto.body == theme.subhead(guide.JOURNAL_WEIGHTS_TITLE, help=guide.JOURNAL_WEIGHTS_HELP)
+    row = path_to_element(at, title)[-1]
+    assert element_path(at, jui.WEIGHTS_FORM_KEY)[-1] is row, "标题与切换要在同一行"
+    flex = row.proto.flex_container
+    assert flex.direction == flex.HORIZONTAL and flex.justify == flex.JUSTIFY_END, "横着排、靠右"
+    order = [e for e in row.children.values()]
+    assert order[0] is title and order[-1] is radio, "标题在左，切换在最右"
+
+    (body,) = _weights_html(at)
+    assert 'class="qd-weights"' in body.proto.body and 'class="qd-donut"' not in body.proto.body
+
+
+def test_bars_are_one_row_per_holding_and_as_wide_as_the_share(tmp_path):
+    """手算：600、300、100 股各 10 元 → 市值 6,000 / 3,000 / 1,000，占 60% / 30% / 10%。
+    条宽就是占比（满格是全部持仓），不是按最大的那只比出来的。"""
+    root = _root(tmp_path)
+    _holdings(root, 600, 300, 100)
+    at = _page(root, REPORT_PAGE)
+    assert not at.exception, at.exception
+    body = _weights_html(at)[0].proto.body
+    assert re.findall(r'class="qd-weights-name">([^<]*)<', body) == \
+        ["000333 美的集团", "600519 贵州茅台", "600036 招商银行"]
+    assert re.findall(r'style="width: ([\d.]+)%"', body) == ["60.0", "30.0", "10.0"]
+    assert re.findall(r'class="qd-weights-pct">([^<]*)<', body) == ["60.0%", "30.0%", "10.0%"]
+    assert re.findall(r'class="qd-weights-value">([^<]*)<', body) == ["6,000 元", "3,000 元", "1,000 元"]
+    assert re.findall(r'class="qd-weights-flag">([^<]*)<', body) == ["", "", ""]
+
+
+def test_switching_to_the_donut_replaces_the_bars(tmp_path):
+    root = _root(tmp_path)
+    _holdings(root, 600, 300, 100)
+    at = _page(root, REPORT_PAGE)
+    _form_radio(at).set_value("donut").run()
+    assert not at.exception, at.exception
+    assert _form_radio(at).value == "donut"
+    (body,) = _weights_html(at)
+    html = body.proto.body
+    assert 'class="qd-donut"' in html and 'class="qd-weights"' not in html
+    assert re.findall(r'class="qd-donut-name">([^<]*)<', html) == \
+        ["000333 美的集团", "600519 贵州茅台", "600036 招商银行"]
+    assert re.findall(r'class="qd-donut-pct">([^<]*)<', html) == ["60.0%", "30.0%", "10.0%"]
+    assert re.findall(r'class="qd-donut-value">([^<]*)<', html) == ["6,000 元", "3,000 元", "1,000 元"]
+    assert re.findall(r'<span class="(qd-donut-key[^"]*)"></span>', html) == \
+        [f"qd-donut-key qd-donut-key-{i}" for i in range(3)], "颜色按大小排：最大的一块用最亮的一档"
+    # 圆环是一张 SVG 的 data URI，弧的颜色与清单里的色块是同一组
+    svg = base64.b64decode(re.search(r'src="data:image/svg\+xml;base64,([^"]+)"', html).group(1)).decode()
+    ramp = app_module("theme").PRIMARY_RAMP
+    assert re.findall(r'stroke="([^"]+)"', svg) == list(ramp[:3])
+    # 换回来
+    _form_radio(at).set_value("bars").run()
+    assert 'class="qd-weights"' in _weights_html(at)[0].proto.body
+
+
+def test_the_donut_folds_everything_past_the_fifth_into_others(tmp_path):
+    """八只：28 / 19 / 14 / 11 / 9 / 8 / 6 / 5（百股）。环形图单独画前五只，后三只（8 + 6 + 5 = 19%）并成
+    「其他 3 只」、用灰；占比条不并，八只都列。"""
+    root = _root(tmp_path)
+    _holdings(root, 2800, 1900, 1400, 1100, 900, 800, 600, 500)
+    at = _page(root, REPORT_PAGE)
+    assert not at.exception, at.exception
+    bars = _weights_html(at)[0].proto.body
+    assert len(re.findall(r'class="qd-weights-name">', bars)) == 8, "占比条要把八只都列出来"
+
+    _form_radio(at).set_value("donut").run()
+    assert not at.exception, at.exception
+    html = _weights_html(at)[0].proto.body
+    names = re.findall(r'class="qd-donut-name">([^<]*)<', html)
+    assert len(names) == 6 and names[-1] == "其他 3 只", names
+    assert re.findall(r'class="qd-donut-pct">([^<]*)<', html)[-1] == "19.0%"
+    assert re.findall(r'class="qd-donut-value">([^<]*)<', html)[-1] == "19,000 元"
+    keys = re.findall(r'<span class="(qd-donut-key[^"]*)"></span>', html)
+    assert keys[:5] == [f"qd-donut-key qd-donut-key-{i}" for i in range(5)] and keys[5] == "qd-donut-key"
+    theme = app_module("theme")
+    svg = base64.b64decode(re.search(r'src="data:image/svg\+xml;base64,([^"]+)"', html).group(1)).decode()
+    assert re.findall(r'stroke="([^"]+)"', svg) == [*theme.PRIMARY_RAMP, theme.MUTED], "「其他」那一段弧是灰的"
+
+
+def test_exactly_six_holdings_are_all_drawn_and_the_sixth_is_gray(tmp_path):
+    """正好多出一只时不并：画一块「其他 1 只」不如画它自己。色板只有五档，第六只用灰。"""
+    root = _root(tmp_path)
+    _holdings(root, 3000, 2000, 1500, 1300, 1200, 1000)
+    at = _page(root, REPORT_PAGE)
+    _form_radio(at).set_value("donut").run()
+    assert not at.exception, at.exception
+    html = _weights_html(at)[0].proto.body
+    names = re.findall(r'class="qd-donut-name">([^<]*)<', html)
+    assert len(names) == 6 and names[-1] == "000651 格力电器" and not any("其他" in n for n in names), names
+    assert re.findall(r'<span class="(qd-donut-key[^"]*)"></span>', html)[-1] == "qd-donut-key"
+
+
+@pytest.mark.parametrize("form", ["bars", "donut"])
+def test_a_holding_without_a_price_is_flagged_in_both_forms(tmp_path, form):
+    """没有本地行情的持仓按成本顶上（漏掉它，其余几只的占比就都虚高了），金额后面那一小格标「按成本」。
+    手算：有价的 600 股 × 10 = 6,000；没价的 400 股按成本 4,000 + 买入佣金 5 = 4,005。"""
+    root = _root(tmp_path)
+    _journal(root, _buy(symbol="000333", shares=600.0, price=10.0),
+             _buy(symbol="600519", name="贵州茅台", shares=400.0, price=10.0))
+    _cache(root, "000333", low=9.5, high=10.5, close=10.0)          # 600519 没有行情
+    at = _page(root, REPORT_PAGE)
+    if form == "donut":
+        _form_radio(at).set_value("donut").run()
+    assert not at.exception, at.exception
+    html = _weights_html(at)[0].proto.body
+    cls = "qd-weights" if form == "bars" else "qd-donut"
+    assert re.findall(rf'class="{cls}-value">([^<]*)<', html) == ["6,000 元", "4,005 元"]
+    assert re.findall(rf'class="{cls}-flag">([^<]*)<', html) == ["", _guide().JOURNAL_WEIGHTS_BY_COST]
+
+
+def test_the_form_choice_is_kept_for_the_session_not_dropped_on_a_page_switch():
+    """选了环形图，去别的页转一圈回来还得是环形图。Streamlit 默认在控件不渲染时就把它的值丢掉；
+    靠 `persist_state="session"` 留住（真机上走过一遍：记账页 → 回来，还是环形图）。
+    AppTest 换不了页，只能在源码层钉住这个参数。"""
+    import ast
+    tree = ast.parse((ROOT / "app" / "pages_journal_report.py").read_text(encoding="utf-8"))
+    radios = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "radio"]
+    assert len(radios) == 1, "这一页只有持仓占比的画法切换这一个单选"
+    kwargs = {k.arg: k.value for k in radios[0].keywords}
+    assert ast.literal_eval(kwargs["persist_state"]) == "session"
+    assert ast.unparse(kwargs["key"]) == "journal_ui.WEIGHTS_FORM_KEY"
+    assert ast.literal_eval(kwargs["horizontal"]) is True
+
+
+def test_color_steps_follow_the_rank_and_leave_two_kinds_of_block_gray():
+    """环形图的颜色档 = 按大小排在第几。并出来的「其他」不参加排队——哪怕它排在色板够得着的位置上
+    （现在的设置下它总在色板之外，这条判断平时碰不到，变异自查里它活下来过，所以单独钉住）；
+    排到色板之外的那一只也是灰的。"""
+    own = {"others": 0}
+    assert jui.weight_steps([own, own, own], ramp=5) == [0, 1, 2]
+    assert jui.weight_steps([own] * 6, ramp=5) == [0, 1, 2, 3, 4, None], "第六只落在色板之外"
+    assert jui.weight_steps([own, own, {"others": 4}], ramp=5) == [0, 1, None], "「其他」在色板够得着的位置上也是灰"
+    assert jui.weight_steps([own] * 5 + [{"others": 3}], ramp=5) == [0, 1, 2, 3, 4, None]
+    assert jui.weight_steps([], ramp=5) == []
+
+
+def test_the_donut_keeps_as_many_holdings_as_the_ramp_has_steps():
+    """环形图单独画几只 = 色板里琥珀有几档。两个数各改各的话，第六只会拿到一个没有规则的色块。"""
+    assert jui.WEIGHTS_DONUT_KEEP == len(app_module("theme").PRIMARY_RAMP) == 5
 
 
 # ================================================================ 记账页改版（2026-11-16）

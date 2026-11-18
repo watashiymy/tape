@@ -106,3 +106,22 @@ def position_weights(positions: Iterable[pnl.Position],
     rows.sort(key=lambda r: (-r["value"], r["symbol"]))
     return [{k: r[k] for k in ("symbol", "name", "value", "weight", "by_cost")}
             for r in rows]
+
+
+def fold_weights(rows: list[dict], keep: int) -> list[dict]:
+    """把占比行压到最多 `keep + 1` 块，给环形图用：前 `keep` 只原样，排在后面的并成一块。
+
+    每行多一个 `others`：0 = 这一行就是一只持仓；n = 这一块是 n 只并起来的。
+    **正好多出一只时不并**——画一块「其他 1 只」不如直接画它自己，块数一样。
+    并出来的那一块：市值与占比相加；只要并进去的有一只是按成本顶的，就带上 by_cost
+    （它的市值里掺着成本价，不能装作全是市价）。`rows` 来自 position_weights，已按市值降序。
+    """
+    if len(rows) <= keep + 1:
+        return [dict(row, others=0) for row in rows]
+    tail = rows[keep:]
+    merged = {"symbol": "", "name": "",
+              "value": round(sum(r["value"] for r in tail), 2),
+              "weight": sum(r["weight"] for r in tail),
+              "by_cost": any(r["by_cost"] for r in tail),
+              "others": len(tail)}
+    return [dict(row, others=0) for row in rows[:keep]] + [merged]

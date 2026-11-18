@@ -125,6 +125,12 @@ RECORD_HELP = ("按这一行预填一笔交易（代码/名称/日期/方向/来
 # 一键删除误点一下就没了，而那次改动可能还没提交进 git。
 DELETE_COLUMN = "删除"
 
+#: 「持仓与盈亏」页「持仓占比」的画法切换（测试按 key 取控件，别改字面量）。
+WEIGHTS_FORM_KEY = "journal_weights_form"
+#: 环形图里最多单独画几只，排在后面的并成「其他」。等于色板里琥珀的档数（palette.PRIMARY_RAMP）：
+#: 同一个色相只分得出这么多档。
+WEIGHTS_DONUT_KEEP = 5
+
 # 持仓表的列名（测试按它取值，别改字面量）。
 SYMBOL_COLUMN = "代码"
 NAME_COLUMN = "名称"
@@ -923,6 +929,16 @@ def summary_metrics(summary: Mapping) -> list[tuple[str, str, str | None]]:
         text = str(closed) if key == "n_trades" else fmt.fmt_metric(key, value)
         out.append((label, text, None))
     return out
+
+
+def weight_steps(slices: Sequence[Mapping], ramp: int) -> list[int | None]:
+    """环形图里每一块用色板的第几档：按大小排在第几就是第几档（0 起），`ramp` 是色板一共几档。
+
+    两种块不参加排队、交回 None（画成灰）：
+    - 并出来的「其他」——它不是一只票，哪怕它排在色板够得着的位置上；
+    - 排到色板之外的那一只（正好多出一只时不并，它就落在这里）。
+    """
+    return [i if not block.get("others") and i < ramp else None for i, block in enumerate(slices)]
 
 
 def dashboard_metrics(summary: Mapping, positions: Iterable, prices: Mapping[str, float]

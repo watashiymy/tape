@@ -1070,7 +1070,7 @@ def test_every_help_text_renders_cleanly_in_a_help_dot():
     texts += [v.format(sealed=guide.HOME_SEALED_CLOSE) for v in guide.HOME_SECTION_HELP.values()]
     texts += list(guide.TABLE_HINTS.values()) + [guide.JOURNAL_PNL_HINT]
     # 2026-11-18：「持仓与盈亏」页名后面的圆点（原先页顶的折叠区）与「不在信号池」那一行的圆点。
-    texts += [guide.JOURNAL_REPORT_INTRO, guide.JOURNAL_OUTSIDE_POOL_HELP]
+    texts += [guide.JOURNAL_REPORT_INTRO, guide.JOURNAL_OUTSIDE_POOL_HELP, guide.JOURNAL_WEIGHTS_HELP]
     for t in texts:
         html = theme.help_dot(t, wide=True)
         assert "**" not in html and "\n" not in html, t[:24]
@@ -1138,3 +1138,24 @@ def test_the_report_page_tips_explain_two_lots_without_the_word_lot():
     assert "买入记录号" in closings, "那一列的名字还得对得上表头"
     assert "页面最上方" in closings, "账上找不到买入的那部分列在哪，要指对地方"
     assert guide.JOURNAL_SAME_PROBLEM.format(message="某句话。", n=2) == "某句话。（这样的记录有 2 笔）"
+
+
+def test_the_weight_forms_are_named_in_chinese_and_bars_come_first():
+    """画法切换的两个选项。键只进会话状态、不显示；第一个是默认——占比条：持仓多少只都列得下。"""
+    assert list(guide.JOURNAL_WEIGHTS_FORMS.items()) == [("bars", "占比条"), ("donut", "环形图")]
+    assert guide.JOURNAL_WEIGHTS_TITLE == "持仓占比（按市值）"
+    assert guide.JOURNAL_WEIGHTS_OTHERS.format(n=3) == "其他 3 只"
+    assert guide.JOURNAL_WEIGHTS_BY_COST == "按成本"
+
+
+def test_the_weights_dot_explains_both_forms_and_the_cost_flag():
+    """两种画法各是什么、环形图什么时候把后面的并成「其他」、「按成本」是什么意思——都在小标题后面的圆点里，
+    页面上只有标题、切换和图。"""
+    tip = guide.JOURNAL_WEIGHTS_HELP
+    for name in guide.JOURNAL_WEIGHTS_FORMS.values():
+        assert f"**{name}**" in tip, name
+    assert "不超过六只时一只一块" in tip and "前五只" in tip and "其他" in tip, \
+        "正好六只时是六块都画（第六只不并），别写成「最多画五只」"
+    assert guide.JOURNAL_WEIGHTS_BY_COST in tip and "成本" in tip and "虚高" in tip
+    html = theme.help_dot(tip, wide=True)
+    assert html.count("<li>") == 2 and "**" not in html

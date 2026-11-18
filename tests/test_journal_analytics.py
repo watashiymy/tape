@@ -201,3 +201,54 @@ def test_a_nonpositive_price_counts_as_missing_not_as_zero_value():
                                       {"000333": 0.0})
     assert rows[0]["by_cost"] is True
     assert rows[0]["value"] == pytest.approx(10005.0)
+
+
+# ================================================================ 并成「其他」（2026-11-18，环形图用）
+
+def _weight_rows(*values: float, by_cost: tuple[int, ...] = ()) -> list[dict]:
+    total = sum(values)
+    return [{"symbol": f"{i:06d}", "name": f"票{i}", "value": float(v), "weight": v / total,
+             "by_cost": i in by_cost} for i, v in enumerate(values)]
+
+
+@pytest.mark.parametrize("n", [0, 1, 3, 5])
+def test_fold_weights_leaves_a_short_list_alone(n):
+    rows = _weight_rows(*range(10, 10 - n, -1))
+    folded = analytics.fold_weights(rows, keep=5)
+    assert [{k: v for k, v in r.items() if k != "others"} for r in folded] == rows
+    assert all(r["others"] == 0 for r in folded)
+
+
+def test_fold_weights_does_not_fold_a_single_leftover():
+    """正好多出一只：并成「其他 1 只」不如直接画它自己——块数一样，名字还在。"""
+    rows = _weight_rows(30, 20, 15, 13, 12, 10)
+    folded = analytics.fold_weights(rows, keep=5)
+    assert len(folded) == 6 and all(r["others"] == 0 for r in folded)
+    assert folded[-1]["symbol"] == "000005"
+
+
+def test_fold_weights_merges_the_tail_and_counts_it():
+    """手算：28 + 19 + 14 + 11 + 9 = 81 留着；8 + 6 + 5 = 19 并成一块，是 3 只。"""
+    rows = _weight_rows(28, 19, 14, 11, 9, 8, 6, 5)
+    folded = analytics.fold_weights(rows, keep=5)
+    assert len(folded) == 6
+    assert [r["symbol"] for r in folded[:5]] == ["000000", "000001", "000002", "000003", "000004"]
+    rest = folded[-1]
+    assert rest["others"] == 3 and rest["symbol"] == "" and rest["name"] == ""
+    assert rest["value"] == 19.0 and rest["weight"] == pytest.approx(0.19)
+    assert sum(r["weight"] for r in folded) == pytest.approx(1.0), "并完之后占比加起来还得是 1"
+
+
+def test_a_folded_block_admits_it_contains_a_cost_estimate():
+    """并进去的几只里有一只是按成本顶的：这一块的市值里就掺着成本价，得带上标记。"""
+    rows = _weight_rows(28, 19, 14, 11, 9, 8, 6, 5, by_cost=(6,))
+    assert analytics.fold_weights(rows, keep=5)[-1]["by_cost"] is True
+    clean = _weight_rows(28, 19, 14, 11, 9, 8, 6, 5, by_cost=(0,))
+    assert analytics.fold_weights(clean, keep=5)[-1]["by_cost"] is False, "标记不许从没并进去的那几只串过来"
+
+
+def test_fold_weights_does_not_touch_its_input():
+    rows = _weight_rows(28, 19, 14, 11, 9, 8, 6, 5)
+    before = [dict(r) for r in rows]
+    analytics.fold_weights(rows, keep=5)
+    assert rows == before

@@ -1,4 +1,5 @@
 import re
+import math
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -8,7 +9,7 @@ import pytest
 from quant.backtest.portfolio import Trade
 from quant.report import charts, palette
 from quant.report.charts import (breadth_chart, equity_chart, journal_cum_pnl_chart, kline_chart,
-                                 position_weights_chart, source_compare_chart)
+                                 source_compare_chart)
 from quant.report.metrics import compute_metrics
 from tests.conftest import make_bars
 
@@ -358,12 +359,6 @@ def test_kline_title_and_no_rangeslider():
 # v0.3.1 仪表盘三图的样例输入（与 test_journal_analytics.py 的手算夹具同形）。
 _CUM_POINTS = [(date(2026, 3, 2), 1988.10), (date(2026, 4, 15), 72.05),
                (date(2026, 5, 20), 144.05)]
-_WEIGHT_ROWS = [
-    {"symbol": "000333", "name": "美的集团", "value": 12000.0,
-     "weight": 12000.0 / 18005.0, "by_cost": False},
-    {"symbol": "600519", "name": "贵州茅台", "value": 6005.0,
-     "weight": 6005.0 / 18005.0, "by_cost": True},
-]
 _BY_SOURCE = {
     "ma_cross": {"total_realized": 1988.10, "win_rate": 0.5},
     "discretionary": {"total_realized": -1916.05, "win_rate": None},
@@ -446,13 +441,12 @@ def _figs() -> dict:
                                    {"HS300": _eq([200.0, 210.0, 190.0])}),
             "kline": kline_chart(_bars(), [], "TEST"),
             "journal_cum": journal_cum_pnl_chart(_CUM_POINTS),
-            "weights": position_weights_chart(_WEIGHT_ROWS),
             "source": source_compare_chart(_BY_SOURCE),
             "breadth": breadth_chart(_breadth_table(), 60)}
 
 
 @pytest.mark.parametrize("kind", ["equity", "kline", "journal_cum",
-                                  "weights", "source", "breadth"])
+                                  "source", "breadth"])
 def test_chart_surfaces_come_from_the_palette(kind):
     """paper 用卡片底色（与面板内嵌它的容器同色），plot 用页面底色（同族、下沉一档）。
     默认模板下这两个值是 white / #E5ECF6。"""
@@ -462,7 +456,7 @@ def test_chart_surfaces_come_from_the_palette(kind):
 
 
 @pytest.mark.parametrize("kind", ["equity", "kline", "journal_cum",
-                                  "weights", "source", "breadth"])
+                                  "source", "breadth"])
 def test_chart_font_is_palette_text_in_mono(kind):
     """暗底上必须显式给字色：默认模板是给浅底配的深灰（#444），暗底上几乎看不见。
     等宽字体是为了数值轴标签对齐（与面板的数字同一套字体栈）。"""
@@ -472,7 +466,7 @@ def test_chart_font_is_palette_text_in_mono(kind):
 
 
 @pytest.mark.parametrize("kind", ["equity", "kline", "journal_cum",
-                                  "weights", "source", "breadth"])
+                                  "source", "breadth"])
 def test_chart_grid_lines_are_the_low_contrast_hairline(kind):
     """默认模板的网格线是白色（浅底上才成立）。暗底上必须换成低对比发丝灰，
     否则一屏白格子比数据还抢眼。两个子图的四条轴都要覆盖到。"""
@@ -485,7 +479,7 @@ def test_chart_grid_lines_are_the_low_contrast_hairline(kind):
 
 
 @pytest.mark.parametrize("kind", ["equity", "kline", "journal_cum",
-                                  "weights", "source", "breadth"])
+                                  "source", "breadth"])
 def test_chart_colorway_avoids_the_direction_colors(kind):
     """线条自动配色不许落到红/绿：那两个色在本项目里专门表示涨跌，
     一条红色的基准线就是个假信号（plotly 默认 colorway 的第 2、3 位正是红和绿）。"""
@@ -546,29 +540,6 @@ def test_cum_pnl_chart_survives_an_empty_journal():
     assert len(fig.data) == 0     # 页面空态显示引导文案，这里只保证不崩
 
 
-def test_weights_chart_is_horizontal_single_amber_desc():
-    """横向条 + 单一琥珀：持仓 3~10 只时条形对比精度远高于饼图扇形角度；
-    颜色不承载身份（§2.5），身份在 y 轴标签上。首行（最大持仓）在最上面。"""
-    fig = position_weights_chart(_WEIGHT_ROWS)
-    assert len(fig.data) == 1
-    bar = fig.data[0]
-    assert bar.orientation == "h"
-    assert bar.marker.color == palette.PRIMARY
-    assert fig.layout.yaxis.autorange == "reversed"
-    assert list(bar.x) == pytest.approx([12000.0, 6005.0])
-    assert list(bar.y) == ["000333 美的集团", "600519 贵州茅台"]
-    assert fig.layout.showlegend is False
-
-
-def test_weights_chart_labels_carry_percent_value_and_cost_flag():
-    """右端直接标注百分比+市值；按成本顶上的那条必须打「按成本」标——
-    不打标的话，一个没有市价的重仓会看着和有市价的一样可信。"""
-    texts = list(position_weights_chart(_WEIGHT_ROWS).data[0].text)
-    assert "66.6%" in texts[0] and "12,000" in texts[0]
-    assert "按成本" not in texts[0]
-    assert "33.4%" in texts[1] and "6,005" in texts[1] and "按成本" in texts[1]
-
-
 # ---------------------------------------------------------------- 条外标注不许被裁（2026-11-18）
 # 横向条形图的直接标注画在绘图区之外。绘图区多宽要到浏览器里才知道，而最长那根条一定顶到绘图区
 # 右端——它的标注能不能完整显示，只看右边距放不放得下这段字。用户的截图里右边只留了 40px，
@@ -583,57 +554,11 @@ def test_label_width_estimate_matches_what_the_browser_measured():
     assert charts._text_px("") == 0
 
 
-def test_weights_chart_leaves_room_for_its_longest_label():
-    """右边距放得下**最长**的那条标注（多一个「（按成本）」的那条），外加一点空。"""
-    fig = position_weights_chart(_WEIGHT_ROWS)
-    longest = max(charts._text_px(t) for t in fig.data[0].text)
-    assert "按成本" in max(fig.data[0].text, key=charts._text_px), "前提：最长的是带「按成本」的那条"
-    assert fig.layout.margin.r >= longest + 8, (fig.layout.margin.r, longest)
-    assert fig.data[0].textposition == "outside" and fig.data[0].cliponaxis is False
-
-
-def test_weights_chart_keeps_its_category_labels_off_the_left_edge():
-    """左边距比最长的类目标签多出一截：不留的话最长的那个代码加名称顶着图的左边缘。"""
-    fig = position_weights_chart(_WEIGHT_ROWS)
-    longest = max(charts._text_px(c) for c in fig.data[0].y)
-    assert fig.layout.margin.l >= longest + 16, (fig.layout.margin.l, longest)
-
-
-def test_weights_chart_needs_a_whole_row_and_that_is_enough_at_1024():
-    """按字数留的边距是**固定**的：图一窄，留给条的地方就没了。所以这张图要独占一整行，
-    页面不许把它放进半幅宽的一栏（tests/test_dashboard_journal.py 钉着）。数是真机上量的：
-    1024 宽、侧边栏展开时正文区 564px，对半分的一栏 274px。"""
-    margin = position_weights_chart(_WEIGHT_ROWS).layout.margin      # 其中一条带「（按成本）」
-    fixed = margin.l + margin.r
-    assert 564 - fixed >= 200, f"整行宽下留给条的地方只有 {564 - fixed}px"
-    assert 274 - fixed < 40, "半幅宽的一栏里本来就放不下：这条断言记的是为什么不许并排"
-
-
 def test_source_compare_leaves_room_for_its_longest_label():
     fig = source_compare_chart(_BY_SOURCE, {"ma_cross": "双均线交叉信号", "discretionary": "自主决策"})
     longest = max(charts._text_px(t) for t in _source_notes(fig).values())
     assert fig.layout.margin.r >= longest + 8, (fig.layout.margin.r, longest)
     assert fig.layout.margin.l >= charts._text_px("双均线交叉信号") + 16
-
-
-def test_weights_chart_treats_a_bare_code_as_a_category_not_a_number():
-    """有一只票没有名称时，它的标签只剩六位代码。不钉成类目轴，plotly 会把整条纵轴猜成数值轴：
-    刻度变成 0.999999M，其余的条全部消失（2026-11-18 真机上试出来的）。"""
-    rows = [{"symbol": "999999", "name": "", "value": 9000.0, "weight": 0.6, "by_cost": True},
-            {"symbol": "000333", "name": "美的集团", "value": 6000.0, "weight": 0.4, "by_cost": False}]
-    fig = position_weights_chart(rows)
-    assert list(fig.data[0].y) == ["999999", "000333 美的集团"]
-    assert fig.layout.yaxis.type == "category"
-    assert fig.layout.yaxis.autorange == "reversed"
-
-
-def test_weights_chart_height_follows_the_number_of_holdings():
-    """高度只按行数给：整行宽的图里三根条撑不起三百多像素，条与条之间全是空。"""
-    two = position_weights_chart(_WEIGHT_ROWS).layout.height
-    five = position_weights_chart(_WEIGHT_ROWS * 2 + _WEIGHT_ROWS[:1]).layout.height
-    assert two < 200, two
-    assert five - two == 44 * 3, "每多一只持仓多 44px"
-    assert position_weights_chart([]).layout.height > 0
 
 
 # ---------------------------------------------------------------- 曲线的横轴（2026-11-18）
@@ -691,10 +616,6 @@ def test_cum_pnl_axis_is_left_to_plotly_once_the_points_span_two_weeks():
     assert journal_cum_pnl_chart([]).layout.xaxis.range is None
     edge = journal_cum_pnl_chart([(date(2026, 9, 1), 1.0), (date(2026, 9, 15), 2.0)])
     assert edge.layout.xaxis.range is None
-
-
-def test_weights_chart_survives_no_positions():
-    assert len(position_weights_chart([]).data) == 0
 
 
 def test_source_compare_bars_are_single_amber_with_axis_labels():
@@ -768,10 +689,62 @@ def test_source_compare_survives_an_empty_grouping():
     assert len(source_compare_chart({}).data) == 0
 
 
-@pytest.mark.parametrize("kind", ["journal_cum", "weights", "source"])
+@pytest.mark.parametrize("kind", ["journal_cum", "source"])
 def test_dashboard_charts_never_color_by_category(kind):
     """零类别配色的总闸：新图任何轨迹的主色都只能是琥珀，尤其不许把红/绿
     当类别色用——那两个色在本项目里专门表示涨跌方向。"""
     for trace in _figs()[kind].data:
         color = (trace.marker.color if trace.type == "bar" else trace.line.color)
         assert color == palette.PRIMARY, (kind, trace)
+
+
+# ================================================================ 琥珀的五档（2026-11-18，持仓占比的环形图）
+# 环形图里每一块都得和旁边那块分得开，又不许用红绿（那两个色专门表示涨跌）——于是用同一个琥珀由亮到暗排五档。
+# 这五个色值是算出来的，不是目测的；下面三条就是当时用的判据，谁改了色值、它们会说话。
+
+def _oklab(hex_color: str) -> tuple[float, float, float]:
+    def lin(c: int) -> float:
+        v = c / 255
+        return v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4
+    r, g, b = (lin(int(hex_color[i:i + 2], 16)) for i in (1, 3, 5))
+    l_ = (0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b) ** (1 / 3)
+    m_ = (0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b) ** (1 / 3)
+    s_ = (0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b) ** (1 / 3)
+    return (0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_,
+            1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_,
+            0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_)
+
+
+def _contrast(a: str, b: str) -> float:
+    def lum(hex_color: str) -> float:
+        def lin(c: int) -> float:
+            v = c / 255
+            return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+        r, g, bl = (lin(int(hex_color[i:i + 2], 16)) for i in (1, 3, 5))
+        return 0.2126 * r + 0.7152 * g + 0.0722 * bl
+    hi, lo = sorted((lum(a), lum(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def test_the_amber_ramp_starts_at_primary_and_has_five_steps():
+    assert palette.PRIMARY_RAMP[0] == palette.PRIMARY
+    assert len(palette.PRIMARY_RAMP) == 5 and len(set(palette.PRIMARY_RAMP)) == 5
+    assert all(HEX.fullmatch(c) for c in palette.PRIMARY_RAMP)
+
+
+def test_neighbouring_steps_of_the_amber_ramp_can_be_told_apart():
+    """由亮到暗，相邻两档的明度（OKLCH 的 L）至少差 0.06——差得再少，挨着的两块就是一块。"""
+    lightness = [_oklab(c)[0] for c in palette.PRIMARY_RAMP]
+    gaps = [a - b for a, b in zip(lightness, lightness[1:])]
+    assert all(gap >= 0.06 for gap in gaps), gaps
+
+
+def test_the_amber_ramp_is_one_hue_and_its_darkest_step_still_shows():
+    """五档是同一个色相（只是深浅不同，不是五种颜色）；最暗的一档对页面底色的对比度不低于 2:1，
+    低了就融进底色里看不见。并出来的「其他」用的灰也要看得见。"""
+    hues = [math.degrees(math.atan2(b, a)) for _, a, b in map(_oklab, palette.PRIMARY_RAMP)]
+    assert max(hues) - min(hues) < 5, hues
+    assert _contrast(palette.PRIMARY_RAMP[-1], palette.BACKGROUND) >= 2.0
+    assert _contrast(palette.NEUTRAL, palette.BACKGROUND) >= 3.0
+    for banned in (palette.UP, palette.DOWN):
+        assert banned not in palette.PRIMARY_RAMP, "红绿专门表示涨跌，不许拿来分块"

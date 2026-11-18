@@ -1,4 +1,5 @@
-"""plotly 图表（spec §9 + v0.3.1 §2）：净值+回撤、K线+买卖点、交易日志仪表盘三图。
+"""plotly 图表（spec §9 + v0.3.1 §2）：净值+回撤、K线+买卖点、交易日志的累计盈亏曲线与来源对比。
+（持仓占比 2026-11-18 起不是 plotly：占比条与环形图都是页面自己的 HTML，见 app/theme.py 的 weight_bars / weight_donut。）
 K 线用原始价（所见即真实价位）。
 
 **暗色是硬要求**：这两个函数的产物（report.html / kline_*.html）会被面板内嵌，
@@ -346,8 +347,6 @@ _LABEL_GAP_PX = 16
 _LABEL_PAD_PX = 14
 #: 类目标签与纵轴之间 plotly 自己留的空（px，量出来的）。
 _TICK_GAP_PX = 10
-#: 持仓占比图里一只持仓占的高度（px）。
-_BAR_ROW_PX = 44
 
 
 def _text_px(text: str) -> float:
@@ -373,42 +372,6 @@ def _bar_margins(categories: list[str], notes: list[str]) -> dict:
     left = max((_text_px(c) for c in categories), default=0.0)
     right = max((_text_px(n) for n in notes), default=0.0)
     return dict(l=round(left) + _TICK_GAP_PX + _LABEL_PAD_PX, r=round(right) + _LABEL_GAP_PX)
-
-
-def position_weights_chart(rows: list[dict]) -> go.Figure:
-    """持仓占比：横向条按市值降序，单一琥珀 + 右端直接标注百分比与市值。
-
-    不做饼图：持仓通常 3~10 只，条形长度的对比精度远高于扇形角度，且降序
-    排完一眼看出集中度。`rows` 来自 analytics.position_weights（已排序）；
-    无市价按成本顶上的行带 by_cost=True，条上打「按成本」标——不打标的话，
-    一个没有市价的重仓会看着和有市价的一样可信。
-
-    **这张图要独占一整行**（2026-11-18）。类目标签加条外标注合起来要两百多像素的固定边距，
-    放进半幅宽的一栏里，1024 宽下留给条的地方只剩十几像素（独立审查量的）。所以高度只按行数给、
-    上下边距收紧：整行宽的图里三根条撑不起三百多像素，条与条之间全是空。
-    """
-    categories = [f"{r['symbol']} {r['name']}".strip() for r in rows]
-    notes = [f"{r['weight']:.1%} · {r['value']:,.0f} 元"
-             + ("（按成本）" if r["by_cost"] else "") for r in rows]
-    fig = go.Figure()
-    if rows:
-        fig.add_trace(go.Bar(
-            x=[r["value"] for r in rows], y=categories,
-            orientation="h", marker_color=palette.PRIMARY,
-            text=notes, textposition="outside", cliponaxis=False,
-            hovertemplate="%{y}<br>%{text}<extra></extra>"))
-    # 左右边距按字数留（_bar_margins）：2026-11-18 之前右边只留 40px，最长那根条的标注
-    # 有一半画在图外被裁掉（真机截图里只剩前面的百分比，后面的金额看不见）。
-    margin = _bar_margins(categories, notes) | dict(t=56, b=40)
-    fig.update_layout(
-        title="持仓占比（按市值）", showlegend=False,
-        height=margin["t"] + margin["b"] + _BAR_ROW_PX * max(len(rows), 1),
-        # 首行（最大持仓）在最上面：plotly 横向条默认把第一条画在最下面。
-        # 纵轴钉成类目轴：有一只票没有名称时它的标签只剩六位代码，plotly 会把整条轴猜成数值轴——
-        # 刻度变成 0.999999M，别的条全部消失（2026-11-18 真机上用一只没有名称的持仓试出来的）。
-        yaxis=dict(autorange="reversed", type="category"),
-        margin=margin)
-    return _apply_dark(fig)
 
 
 def source_compare_chart(by_source: dict, labels: dict | None = None) -> go.Figure:
