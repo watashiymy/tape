@@ -35,6 +35,9 @@ v0.3.0 的「交易日志」把五块（录入/历史/持仓/盈亏/导出）堆
 - 防误删靠确认框与删之前照旧留下的上一版。确认框里另有两句只在适用时出现的话：
   表里别的行上有没保存的改动（会一起保存）；上一版里还有现在已经没有的记录（这次删除之后
   就换不回来了——上一版只留一版）。
+- 确认框从点了按钮起一直在，直到回答或关掉：它一弹出就抢走焦点，页面上敲了字没回车的输入框
+  当场失焦提交、引出一次整页重跑，只开一轮的话框闪一下就没了（独立审查在真实浏览器里抓到的）。
+  删不成时框不关，原因写在框里——页面最上面的红字，人在表格那儿看不到。
 
 这一页与面板其余页面有一个根本差别：**它会写一份不可再生的文件**。其余页面最坏的
 后果是显示错了，重跑一次就好；这里最坏的后果是用户真实的交易记录被改错或删错。
@@ -85,9 +88,8 @@ def page_journal_entry() -> None:
     journal_ui.show_flash()          # 上一轮写盘/校验留下的结论
     # 上一轮记下了一笔：把那张表单清回空值。必须排在任何录入控件创建之前。
     journal_ui.apply_pending_clear()
-    # 刚才若点了历史表某一行的删除按钮，把它取走，等整页画完去问（见 _confirm_delete）。
-    # 在最前面取：这一轮若中途返回，它也不会留到以后某一轮再冒出来。
-    asked = journal_ui.take_delete_request()
+    # 点过历史表某一行的删除按钮、还没回答：等整页画完，在页尾把确认框（再）开出来（见 _confirm_delete）。
+    asked = journal_ui.pending_delete()
     with st.expander("这一页记什么、四种记录类型的含义", expanded=False, key=BOX_HELP_KEY):
         st.markdown(guide.JOURNAL_KINDS)
 
@@ -97,6 +99,8 @@ def page_journal_entry() -> None:
         # 日志文件损坏时整页只剩这一句：这份文件不可再生，自愈办法是 git 找回，
         # 绝不是"删掉重建"（store 抛的那句话已经这么写，原样转述）。
         st.error(str(e))
+        # 这一轮开不了确认框：挂着的那次删除作废，不留到文件修好之后不请自来。
+        journal_ui.forget_delete()
         return
 
     report = pnl.compute_pnl(trades)   # 卖超警告的上下文按整本日志算（见 _held）
@@ -484,28 +488,25 @@ def _log_actions(filtered, edited) -> bool:
 
 
 def _confirm_delete(asked: list[str], trades, edited) -> None:
-    """点了历史表某一行的删除按钮之后：开确认框。**整页画完之后才调用**。
+    """点过历史表某一行的删除按钮、还没回答：把确认框开出来。**整页画完之后才调用**。
 
-    `asked` 是点的那一条的记录号（点击那一轮由 journal_ui.on_delete_click 登记，
-    page_journal_entry 一开头取走）；`trades` 是这一轮读到的整本日志，`edited` 是历史表。
-    要问的东西在这里一次备齐，确认框里只管摆出来：
-    - 要删的是哪一条——从这一轮读到的日志里按记录号取。取不到（另一个标签页刚删过）
-      就不开框，说一句它已经不在了；
-    - 表里**别的行**上没保存的改动——删完表里的内容变了，表格会换成一张新的，它们留不住，
-      所以确认之后一起写进去，框里事先说明；
-    - 上一版里还有、现在已经没有的记录——这次删除会把上一版换掉，它们就换不回来了。
+    `asked` 是点的那一条的记录号（journal_ui.on_delete_click 登记的，一直挂到回答或关掉为止，
+    所以这里每一轮都会被调用一次——确认框开着的时候别处引起的整页重跑，不会把它关掉，
+    框里的话也跟着这一轮的最新情况走）；`trades` 是这一轮读到的整本日志，`edited` 是历史表。
+    框里要摆的三样东西由 journal_ui.delete_plan 备齐：要删的是哪一条；表里别的行上没保存的改动
+    （删完表里的内容变了，表格会换成一张新的，它们留不住，所以确认之后一起写进去，框里事先说明）；
+    上一版里还有、现在已经没有的记录（这次删除会把上一版换掉，它们就换不回来了）。
+    点的那一条已经不在了（另一个标签页刚删过）：不开框，撤掉请求，说一句。
     """
-    rows = trades[trades["trade_id"].isin(asked)].to_dict("records")
-    if len(rows) != len(asked):
+    plan = journal_ui.delete_plan(asked, trades, edited, ui.JOURNAL_PATH)
+    if plan is None:
+        journal_ui.forget_delete()
         st.toast(guide.JOURNAL_DELETE_GONE)
         return
-    pending = None
-    if edited is not None:
-        pending = journal_ui.changed_rows(*edited, skip=asked)
-    _delete_dialog(rows, pending, journal_ui.only_in_backup(trades, ui.JOURNAL_PATH))
+    _delete_dialog(*plan)
 
 
-@st.dialog(guide.JOURNAL_DELETE_TITLE)
+@st.dialog(guide.JOURNAL_DELETE_TITLE, on_dismiss=journal_ui.forget_delete)
 def _delete_dialog(rows: list[dict], pending, fading: list[dict]) -> None:
     """删除的确认框（2026-11-18）。写明要删的是**哪一条**——只写一句「确定删除吗」，
     点的人什么都核对不了。
@@ -513,25 +514,35 @@ def _delete_dialog(rows: list[dict], pending, fading: list[dict]) -> None:
     防误删靠两样：这个确认框，和删之前照旧留下的上一版（「恢复上一版」换得回来）。
     另两句只在适用时出现：表里另有没保存的改动（会一起保存）；上一版里还有现在已经没有的
     记录（这次删除之后就换不回来了——上一版只留一版，连着删第二条时就是这样）。
-    两个按钮靠右、主按钮在最右。点哪个都整页重跑一次：重跑时不再调用本函数，框就关了；
-    从右上角关掉则什么都不发生。删除本身在 journal_ui.delete_trades 里，结论留给下一轮说。
+    两个按钮靠右、主按钮在最右。删成了、或者点了取消：撤掉那次请求、整页重跑一次——重跑时
+    不再调用本函数，框就关了。从右上角关掉（或按 Esc、点框外）同样撤掉请求（on_dismiss）。
+    删除本身在 journal_ui.delete_trades 里：删成了，结论留给下一轮在页面上说；没删成，
+    框留着，原因写在框里。
     """
     st.write(guide.JOURNAL_DELETE_ASK)
     st.html(theme.record_lines([journal_ui.describe_trade(row) for row in rows]))
-    if pending is not None and len(pending):
+    if len(pending):
         st.write(guide.JOURNAL_DELETE_ALSO_SAVES.format(n=len(pending)))
     if fading:
         st.write(guide.JOURNAL_DELETE_FADING.format(n=len(fading)))
         st.html(theme.record_lines([journal_ui.describe_trade(row) for row in fading]))
     st.caption(guide.JOURNAL_DELETE_UNDO)
+    refused = st.container()       # 删不成时，原因写在这里：框里面、两个按钮上面
     with st.container(horizontal=True, horizontal_alignment="right"):
         cancel = st.button(guide.JOURNAL_DELETE_CANCEL, key=journal_ui.DELETE_CANCEL_KEY)
         confirm = st.button(guide.JOURNAL_DELETE_OK, key=journal_ui.DELETE_OK_KEY,
                             type="primary", icon=":material/delete:")
-    if confirm:
-        journal_ui.delete_trades([row["trade_id"] for row in rows], path=ui.JOURNAL_PATH,
-                                 today=date.today(), pending=pending)
+    if confirm and not journal_ui.delete_trades(
+            [row["trade_id"] for row in rows], path=ui.JOURNAL_PATH, today=date.today(),
+            pending=pending):
+        # 没删成（别的行改坏了、那一条刚被别处删了、写盘失败）：框不关，原因当场写在框里。
+        # 别的提示都在页面最上面——人正盯着下面的表格，那里的一句红字等于没说，
+        # 看到的只是"点了删除、框关了、什么都没发生"（独立审查在真实浏览器里量过）。
+        with refused:
+            journal_ui.show_flash()
+        return
     if confirm or cancel:
+        journal_ui.forget_delete()
         st.rerun()
 
 

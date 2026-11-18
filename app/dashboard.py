@@ -165,4 +165,8 @@ ui.bind_pages({"home": HOME_PAGE, **GUIDE_PAGE_OBJS, "journal": ENTRY_PAGE,
                "console": CONSOLE_PAGE, "signals": SIGNALS_PAGE,
                "universe": UNIVERSE_PAGE})
 journal_ui.jump_if_requested(ENTRY_PAGE)
+if nav is not ENTRY_PAGE:
+    # 「记账」页的删除确认框挂着的时候去了别的页（浏览器的后退键办得到）：那次删除作废，
+    # 不留到回来时不请自来（见 journal_ui.pending_delete）。
+    journal_ui.forget_delete()
 nav.run()

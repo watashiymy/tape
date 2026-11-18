@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import math
+import zlib
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import date
 from pathlib import Path
@@ -128,8 +129,8 @@ RECORD_HELP = ("按这一行预填一笔交易（代码/名称/日期/方向/来
 DELETE_COLUMN = "删除"
 DELETE_LABEL = ":material/delete:"
 DELETE_WIDTH = 48                                # 那一列的宽度（像素）：只够放一个图标
-DELETE_CLICK_KEY = "journal_delete_click"        # 那一列的点击：点的是第几行
-DELETE_ASK_KEY = "journal_delete_ask"            # 等着确认的记录号（点击那一轮登记，页面开头取走）
+DELETE_CLICK_KEY = "journal_delete_click"        # 那一列的点击（点的是第几行）的键的前半截，见 delete_click_key
+DELETE_ASK_KEY = "journal_delete_ask"            # 等着确认的记录号（从点击起，到回答或关掉为止）
 DELETE_OK_KEY = "journal_delete_ok"              # 确认框里的「删除」
 DELETE_CANCEL_KEY = "journal_delete_cancel"      # 确认框里的「取消」
 
@@ -548,32 +549,64 @@ def editor_frame(filtered: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def on_delete_click(ids: Sequence[str]) -> None:
+def delete_click_key(ids: Sequence[str]) -> str:
+    """删除按钮那一列的键：跟着这一轮各行的记录号（连同先后）走。
+
+    按钮列是个独立的控件，身份只看它的键。键若是固定的，旧表与新表上的按钮就是同一个控件：
+    后台已经把新的一批行画出去、浏览器还没换上的那几十毫秒里，旧表上的一下点击会被拿去
+    按**新表**的记录号认——回车提交筛选之后紧跟着点垃圾桶，确认框里写的是筛选后同一位置的
+    另一条（独立审查用真实的键盘鼠标事件复现过）。键里带上这一轮记录号的指纹之后，
+    表里换了内容，旧表上的按钮就不再是同一个控件：它的点击要么按旧表自己的记录号认，
+    要么（旧控件已经撤掉）作废。与那张表刻意不带 key 是同一个道理——身份取自内容。
+    """
+    stamp = zlib.crc32("\x1f".join(str(i) for i in ids).encode("utf-8"))
+    return f"{DELETE_CLICK_KEY}_{stamp:08x}"
+
+
+def on_delete_click(ids: Sequence[str], key: str) -> None:
     """删除按钮那一列的 on_click：把"点了第几行"换成记录号，登记下来等这一轮页面去问。
 
-    `ids` 是**画那张表的那一轮**各行的记录号（随列配置一起注册，见 editor_columns）。
-    必须用它，不能等这一轮重新读了文件再按行号去查：表里显示的是筛选后的行；而且另一个标签页
-    若刚删过一条，重新读到的表里每一行都上移了一格——按新表的行号去认，认到的是下面那一条。
+    `ids` 是**画那张表的那一轮**各行的记录号，`key` 是那一列在那一轮的键（都随列配置一起
+    注册，见 editor_columns 与 delete_click_key）。必须用它们，不能等这一轮重新读了文件再按
+    行号去查：表里显示的是筛选后的行；而且另一个标签页若刚删过一条，重新读到的表里每一行都
+    上移了一格——按新表的行号去认，认到的是下面那一条。
     （按钮交回来的行号是原始数据的行号，使用者点表头排序之后也对得上，真实浏览器里验过。）
-    行号对不上一律当没点过。回调跑在重跑之前，这里不画任何东西。
+    行号对不上一律当没点过（clicked_id）。回调跑在重跑之前，这里不画任何东西。
+    登记下来的请求一直挂到回答或关掉为止，见 pending_delete。
     """
-    click = st.session_state.get(DELETE_CLICK_KEY)
-    if click is None:
-        return
-    row = int(click["row"])
-    if 0 <= row < len(ids):
-        st.session_state[DELETE_ASK_KEY] = [str(ids[row])]
+    picked = clicked_id(ids, st.session_state.get(key))
+    if picked is not None:
+        st.session_state[DELETE_ASK_KEY] = [picked]
 
 
-def take_delete_request() -> list[str]:
-    """取走"等着确认删除"的记录号（没有就是空表）。**页面一开头就调用**。
+def clicked_id(ids: Sequence[str], click: Mapping | None) -> str | None:
+    """点了第几行 → 那一行的记录号。`click` 是按钮列交回来的那一下（带 `row`），没有点击时是 None。
 
-    取走而不是留着看：确认框只在点了删除按钮的那一轮打开。留在 session_state 里的话，
-    这一轮若中途出了岔子（文件读不出来、提前返回），它会留到以后某一轮——一个不请自来的
-    「要删除这一条记录吗」。确认框开着的时候不靠它：streamlit 自己记着那一块，
-    框里的按钮只重跑框里的内容。
+    认不出就交回 None（当没点过）：没有点击、行号越界、行号根本不是一个数。
+    宁可不认，不乱认——按错位的行号去认，认到的是别人那一条。
     """
-    return list(st.session_state.pop(DELETE_ASK_KEY, None) or [])
+    row = (click or {}).get("row")
+    if isinstance(row, bool) or not isinstance(row, int) or not 0 <= row < len(ids):
+        return None
+    return str(ids[row])
+
+
+def pending_delete() -> list[str]:
+    """正等着确认删除的记录号（没有就是空表）。
+
+    从点了删除按钮起一直挂着，直到在确认框里回答、或把框关掉（forget_delete）——页面每一轮
+    都照它在页尾把确认框重开一次。**不能只在点击那一轮开**：确认框一弹出就抢走焦点，页面上
+    敲了字还没回车的输入框当场失焦提交、引出一次整页重跑；表格里刚改完没回车的那一格，
+    一百多毫秒后也会引出一次。只开一轮的话，这两种再平常不过的状态下，框闪一下就没了
+    （初稿就是这样，独立审查在真实浏览器里抓到的）。
+    """
+    return list(st.session_state.get(DELETE_ASK_KEY) or [])
+
+
+def forget_delete() -> None:
+    """撤掉"等着确认的删除"。答过了、关掉了、点的那一条不在了、这一页读不出文件、去了别的页
+    ——都要调它。挂着不撤的请求，会在以后某一轮变成一个不请自来的「要删除这一条记录吗」。"""
+    st.session_state.pop(DELETE_ASK_KEY, None)
 
 
 def describe_trade(row: Mapping) -> str:
@@ -621,11 +654,12 @@ def editor_columns(ids: Sequence[str] = ()) -> dict:
     钉了宽度的只有两列：删除按钮（就一个图标），和理由（长文字，给中档：文字被截的是右边，
     一眼看得出没显示完，点进格子能看全——不给的话一句长理由会把后面的列全挤出屏幕）。
     """
+    click_key = delete_click_key(ids)
     columns: dict = {
         # 表头不写字（垃圾桶自己就说清了），宽度只够放一个图标；不描边：一列描了边的按钮太吵。
         DELETE_COLUMN: st.column_config.ButtonColumn(
             "", width=DELETE_WIDTH, pinned=True, type="tertiary",
-            on_click=on_delete_click, args=(tuple(ids),), key=DELETE_CLICK_KEY),
+            on_click=on_delete_click, args=(tuple(ids), click_key), key=click_key),
         "date": st.column_config.DateColumn(LOG_LABELS["date"], format="YYYY-MM-DD", pinned=True),
         "symbol": st.column_config.TextColumn(LOG_LABELS["symbol"], pinned=True),
         "name": st.column_config.TextColumn(LOG_LABELS["name"], pinned=True),
@@ -790,17 +824,38 @@ def only_in_backup(trades: pd.DataFrame, path: str | Path) -> list[dict]:
     给删除的确认框用。上一版只留一版，而每次写盘都会把它换成"写之前的样子"：连着删两条时，
     删第二条的那一下，上一版从"两条都在"换成"只少第一条"——第一条从此没有地方可以换回来。
     这件事得在点「删除」之前说，并写明是哪几条。
-    还没有上一版、或者上一版读不出来，都返回空表：这只是一句提醒，不许因为它连删除都开不了。
+    还没有上一版（读出来是一张空表）、或者上一版读不出来，都返回空表：这只是一句提醒，
+    不许因为它连删除都开不了。
     """
-    backup = store.backup_path(path)
-    if not backup.exists():
-        return []
     try:
-        previous = store.load_trades(backup)
+        previous = store.load_trades(store.backup_path(path))
     except RuntimeError:
         return []
     current = {str(t) for t in trades["trade_id"]}
     return previous[~previous["trade_id"].isin(current)].to_dict("records")
+
+
+def delete_plan(asked: Sequence[str], trades: pd.DataFrame, edited: tuple | None,
+                path: str | Path) -> tuple[list[dict], pd.DataFrame, list[dict]] | None:
+    """删除的确认框要摆出来的三样东西，在这一处备齐：
+
+    1. 要删的是哪几条——按记录号从**整本日志** `trades` 里取；
+    2. 历史表里**别的行**上改过、还没保存的那几行（`edited` 是页面上 _editor 交回的那一对；
+       没有表可改时是 None，那就没有改动可言）——确认之后要和删除一次写进去的就是这一份，
+       框里说"另有几行会一起保存"数的也是它，所以两头对得上；
+    3. 上一版里有、现在已经没有的记录（only_in_backup，同样拿整本日志比）。
+
+    要删的记录里有一条已经不在了（另一个标签页刚删过）：没有可问的，交回 None。
+    """
+    wanted = {str(i) for i in asked}
+    rows = trades[trades["trade_id"].isin(wanted)].to_dict("records")
+    if len(rows) != len(wanted):
+        return None
+    if edited is None:
+        pending = pd.DataFrame(columns=["trade_id"])
+    else:
+        pending = changed_rows(*edited, skip=list(wanted))
+    return rows, pending, only_in_backup(trades, path)
 
 
 def delete_trades(ids: Sequence[str], *, path: str | Path, today: date,

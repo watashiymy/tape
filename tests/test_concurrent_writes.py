@@ -146,6 +146,66 @@ def test_edits_inside_the_lock_see_the_freshest_table(tmp_path):
     assert len(stale) == 1                       # 快照确实是旧的，前提成立
 
 
+# ================================================================ 交易日志：删除（2026-11-18）
+#
+# 「记账」页的删除（每行一个按钮 → 确认框 → app/journal_ui.delete_trades）也是「读回整份 → 改 →
+# 整份重写」。独立审查做变异时发现：把它身上的锁去掉、或者把读文件挪到锁外面，全量测试一条都不红
+# ——上面那几条测的是 store 自己的函数和一段照抄的"形状"，没有哪条真的并发地调过这个函数。
+
+def _load_journal_ui():
+    """单独加载 app/journal_ui.py（它刻意不 import 任何 app 内部模块，同 _load_pool 的做法）。"""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("qd_journal_ui_conc", ROOT / "app" / "journal_ui.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["qd_journal_ui_conc"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_journal_ui = _load_journal_ui()
+
+
+def _seed_trades(path: Path, n: int) -> list[str]:
+    """落一份 n 条记录的日志，返回各条的记录号。"""
+    rows = [_row(i) | {"trade_id": f"T{i:03d}"} for i in range(n)]
+    store.save_trades(pd.DataFrame(rows, columns=list(store.schema.COLUMNS)), path)
+    return [row["trade_id"] for row in rows]
+
+
+def test_concurrent_deletes_all_take_effect(tmp_path, monkeypatch):
+    """八个标签页同时各删一条，八条都得真的删掉。不互斥的话，各自读到同一份旧表、各自整表重写，
+    后写的把先写的那次删除冲掉：删掉的记录又回到账上，而每个标签页都提示"已删除"。"""
+    monkeypatch.setattr(_journal_ui, "flash", lambda level, text: None)   # 线程里没有会话可存提示
+    path = tmp_path / "trades.csv"
+    ids = _seed_trades(path, WORKERS + 1)
+    done: list[bool] = [False] * WORKERS
+
+    def delete(i: int) -> None:
+        done[i] = _journal_ui.delete_trades([ids[i]], path=path, today=date(2026, 9, 3))
+
+    assert _run_together(delete) == []
+    assert done == [True] * WORKERS, "有的标签页没删成"
+    left = list(store.load_trades(path)["trade_id"])
+    assert left == [ids[-1]], f"删掉的记录又回来了 {len(left) - 1} 条: {left}"
+
+
+def test_the_unlocked_delete_really_does_bring_records_back(tmp_path):
+    """**证明上一条测得到东西**：绕开锁做同一件事，删掉的记录必然有回来的。
+    这条一旦变绿，说明并发根本没发生，上面那条也就不再证明任何事。"""
+    path = tmp_path / "trades.csv"
+    ids = _seed_trades(path, WORKERS + 1)
+
+    def unlocked_delete(i: int) -> None:
+        df = store.load_trades(path)                                      # 读
+        merged = store.apply_edits(df, pd.DataFrame(columns=["trade_id"]), delete_ids=[ids[i]])
+        store.save_trades(merged, path)                                   # 写（中间没有互斥）
+
+    assert _run_together(unlocked_delete) == [], \
+        "线程里抛了异常——那不叫'删掉的又回来'，这条对照当场失去意义"
+    assert len(store.load_trades(path)) > 1, \
+        "没加锁却一条没回来——并发没真正发生，上面那条测试是空跑"
+
+
 # ================================================================ 信号池
 
 def test_concurrent_pool_adds_keep_every_symbol(tmp_path):
