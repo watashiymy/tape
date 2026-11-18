@@ -15,6 +15,8 @@ K 线用原始价（所见即真实价位）。
 """
 from __future__ import annotations
 
+import unicodedata
+
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -298,7 +300,79 @@ def journal_cum_pnl_chart(points: list[tuple]) -> go.Figure:
     fig.add_hline(y=0, line_color=palette.HAIRLINE, line_width=1)
     fig.update_layout(title="累计已实现盈亏（元，含分红）", showlegend=False,
                       height=340)
+    # 横轴的日期写成数字（缺省是英文月份缩写），而且要**短**：初稿一律写 2026-09-08，一个刻度 72px，
+    # 图一窄就整排斜过来（独立审查在 1024 宽下看到的）。按刻度的疏密换写法，见 _DATE_TICKS。
+    fig.update_xaxes(tickformatstops=_DATE_TICKS, nticks=6)
+    if points and (span := _padded_span(points[0][0], points[-1][0])) is not None:
+        fig.update_xaxes(range=list(span))
     return _apply_dark(fig)
+
+
+#: 日期轴的刻度怎么写，按相邻两个刻度隔多远分三档（plotly 的 tickformatstops）：
+#: 不到一个月 → 「09-08」，年份另起一行、只在第一个刻度和跨年的地方写（格式串里 \n 后面那半截，
+#: plotly 只在它变了的时候才画）；按月 → 「2026-09」；按年 → 「2026」。最宽的一档也只有五十来像素。
+_DATE_TICKS = [
+    dict(dtickrange=[None, "M1"], value="%m-%d\n%Y"),
+    dict(dtickrange=["M1", "M12"], value="%Y-%m"),
+    dict(dtickrange=["M12", None], value="%Y"),
+]
+
+#: 累计盈亏曲线的横轴最少铺开这么多天。
+_CUM_MIN_SPAN_DAYS = 14
+
+
+def _padded_span(first, last):
+    """曲线的点挤在两周以内时，横轴向两边各让出一些，凑满两周；本来就够宽返回 None（交给 plotly）。
+
+    只有一个点（刚平掉第一笔）时横轴的自动范围是零宽的，plotly 会把刻度标成
+    23:59:59.9995 / 00:00:00.0005 这样的毫秒——看着像坏了（2026-11-18 真机上看到的）。
+
+    两边至少各让一天：范围是我们钉死的，plotly 不会再替点留边，不让的话首尾两个点正好压在图框上。
+    用时间戳算而不是日期：日期加减半天会把那半天丢掉（隔 1 天的两个点只凑出 13 天，
+    隔 13 天的一点都没让——独立审查指出的）。
+    """
+    spread = (last - first).days
+    if spread >= _CUM_MIN_SPAN_DAYS:
+        return None
+    pad = pd.Timedelta(days=max(1.0, (_CUM_MIN_SPAN_DAYS - spread) / 2))
+    return pd.Timestamp(first) - pad, pd.Timestamp(last) + pad
+
+
+#: 条外标注与类目标签的字号：没另设时 plotly 用的就是 12px（layout.font.size 的缺省）。
+_LABEL_FONT_PX = 12
+#: 条的末端到条外标注之间、标注到图的右缘之间各留的一点空（px）。
+_LABEL_GAP_PX = 16
+#: 类目标签左边到图的左缘留的空（px）：不留的话最长的那个标签顶着图的边。
+_LABEL_PAD_PX = 14
+#: 类目标签与纵轴之间 plotly 自己留的空（px，量出来的）。
+_TICK_GAP_PX = 10
+#: 持仓占比图里一只持仓占的高度（px）。
+_BAR_ROW_PX = 44
+
+
+def _text_px(text: str) -> float:
+    """一段标注在等宽字体下大约多宽（px）：汉字与全角标点一个字宽，其余 0.6 个字宽。
+
+    用来给横向条形图**留边**：条外的直接标注画在绘图区之外，绘图区多宽要到浏览器里才知道，
+    而最长的那根条一定顶到绘图区的右端——它的标注能不能完整显示，只看右边距够不够放下这段字。
+    真浏览器里量过两种写法（「百分比 · 金额 元」十五个半角字符加一个汉字：120px；六位代码加四个汉字的名称：98px），
+    与这里算的差不到 1px。
+    """
+    wide = sum(unicodedata.east_asian_width(ch) in ("W", "F") for ch in text)
+    return _LABEL_FONT_PX * (wide + 0.6 * (len(text) - wide))
+
+
+def _bar_margins(categories: list[str], notes: list[str]) -> dict:
+    """横向条形图的左右边距：左边放得下最长的类目标签（外侧再留一点空），右边放得下最长的条外标注。
+
+    右边距按**最长的标注**留，不按最长那根条的标注留：短一些的条标注可能更长（多一个「（按成本）」），
+    而它离右端有多远取决于图有多宽——按最坏情况留，标注就不会被裁。
+    代价是这两段边距是固定的：图太窄时留给条的地方就没了，所以用它的图都要独占一整行。
+    左边距只是给外侧留空：算少了 plotly 会自己撑开（标签不会被裁，只是又顶到边上）。
+    """
+    left = max((_text_px(c) for c in categories), default=0.0)
+    right = max((_text_px(n) for n in notes), default=0.0)
+    return dict(l=round(left) + _TICK_GAP_PX + _LABEL_PAD_PX, r=round(right) + _LABEL_GAP_PX)
 
 
 def position_weights_chart(rows: list[dict]) -> go.Figure:
@@ -308,24 +382,32 @@ def position_weights_chart(rows: list[dict]) -> go.Figure:
     排完一眼看出集中度。`rows` 来自 analytics.position_weights（已排序）；
     无市价按成本顶上的行带 by_cost=True，条上打「按成本」标——不打标的话，
     一个没有市价的重仓会看着和有市价的一样可信。
+
+    **这张图要独占一整行**（2026-11-18）。类目标签加条外标注合起来要两百多像素的固定边距，
+    放进半幅宽的一栏里，1024 宽下留给条的地方只剩十几像素（独立审查量的）。所以高度只按行数给、
+    上下边距收紧：整行宽的图里三根条撑不起三百多像素，条与条之间全是空。
     """
+    categories = [f"{r['symbol']} {r['name']}".strip() for r in rows]
+    notes = [f"{r['weight']:.1%} · {r['value']:,.0f} 元"
+             + ("（按成本）" if r["by_cost"] else "") for r in rows]
     fig = go.Figure()
     if rows:
         fig.add_trace(go.Bar(
-            x=[r["value"] for r in rows],
-            y=[f"{r['symbol']} {r['name']}".strip() for r in rows],
+            x=[r["value"] for r in rows], y=categories,
             orientation="h", marker_color=palette.PRIMARY,
-            text=[f"{r['weight']:.1%} · {r['value']:,.0f} 元"
-                  + ("（按成本）" if r["by_cost"] else "") for r in rows],
-            textposition="outside", cliponaxis=False,
+            text=notes, textposition="outside", cliponaxis=False,
             hovertemplate="%{y}<br>%{text}<extra></extra>"))
+    # 左右边距按字数留（_bar_margins）：2026-11-18 之前右边只留 40px，最长那根条的标注
+    # 有一半画在图外被裁掉（真机截图里只剩前面的百分比，后面的金额看不见）。
+    margin = _bar_margins(categories, notes) | dict(t=56, b=40)
     fig.update_layout(
         title="持仓占比（按市值）", showlegend=False,
-        height=max(340, 120 + 44 * len(rows)),
+        height=margin["t"] + margin["b"] + _BAR_ROW_PX * max(len(rows), 1),
         # 首行（最大持仓）在最上面：plotly 横向条默认把第一条画在最下面。
-        yaxis=dict(autorange="reversed"),
-        # 右侧留白给条外的直接标注；margin 挤掉标注是这种图最常见的翻车点。
-        margin=dict(r=40))
+        # 纵轴钉成类目轴：有一只票没有名称时它的标签只剩六位代码，plotly 会把整条轴猜成数值轴——
+        # 刻度变成 0.999999M，别的条全部消失（2026-11-18 真机上用一只没有名称的持仓试出来的）。
+        yaxis=dict(autorange="reversed", type="category"),
+        margin=margin)
     return _apply_dark(fig)
 
 
@@ -339,18 +421,28 @@ def source_compare_chart(by_source: dict, labels: dict | None = None) -> go.Figu
     names = labels or {}
     rows = sorted(by_source.items(),
                   key=lambda kv: -(kv[1].get("total_realized") or 0.0))
+    categories = [names.get(source, source) or "—" for source, _ in rows]
+    values = [summary.get("total_realized") or 0.0 for _, summary in rows]
+    notes = [_source_note(summary) for _, summary in rows]
     fig = go.Figure()
     if rows:
         fig.add_trace(go.Bar(
-            x=[summary.get("total_realized") or 0.0 for _, summary in rows],
-            y=[names.get(source, source) or "—" for source, _ in rows],
+            x=values, y=categories,
             orientation="h", marker_color=palette.PRIMARY,
-            text=[_source_note(summary) for _, summary in rows],
-            textposition="outside", cliponaxis=False,
-            hovertemplate="%{y}<br>%{text}<extra></extra>"))
+            # 亏损的条向左伸，条外标注跟着画到条的左边——正好压在类目标签上，两行字叠成一团
+            # （2026-11-18 真机上看到的）。所以亏损那几行条上不写字，标注放到零线右侧（下面那几条注记）：
+            # 那一行零线右边本来就是空的。悬停读 customdata，两种行说的是同一句话。
+            text=[note if value >= 0 else "" for value, note in zip(values, notes)],
+            customdata=notes, textposition="outside", cliponaxis=False,
+            hovertemplate="%{y}<br>%{customdata}<extra></extra>"))
+    for value, category, note in zip(values, categories, notes):
+        if value < 0:
+            fig.add_annotation(x=0, y=category, text=note, showarrow=False,
+                               xanchor="left", xshift=6)
     fig.add_vline(x=0, line_color=palette.HAIRLINE, line_width=1)
     fig.update_layout(title="按来源对比：总已实现（元，含分红）", showlegend=False,
-                      height=max(300, 140 + 44 * len(rows)), margin=dict(r=40))
+                      height=max(300, 140 + 44 * len(rows)),
+                      margin=_bar_margins(categories, notes))
     return _apply_dark(fig)
 
 

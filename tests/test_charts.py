@@ -1,5 +1,5 @@
 import re
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -569,6 +569,130 @@ def test_weights_chart_labels_carry_percent_value_and_cost_flag():
     assert "33.4%" in texts[1] and "6,005" in texts[1] and "按成本" in texts[1]
 
 
+# ---------------------------------------------------------------- 条外标注不许被裁（2026-11-18）
+# 横向条形图的直接标注画在绘图区之外。绘图区多宽要到浏览器里才知道，而最长那根条一定顶到绘图区
+# 右端——它的标注能不能完整显示，只看右边距放不放得下这段字。用户的截图里右边只留了 40px，
+# 最长那根条的标注只剩前面的百分比、后面的金额被裁掉。这里钉的是"边距按字数留"，像素在真机上量。
+
+def test_label_width_estimate_matches_what_the_browser_measured():
+    """估算要跟真浏览器对得上，不然"按字数留边距"就是自己骗自己。这两种写法的字 2026-11-18 在
+    Chrome 里量过（等宽 12px：汉字一个字宽，其余 0.6 个字宽）：「百分比 · 金额 元」十五个半角字符加一个汉字
+    是 120px，六位代码加四个汉字的名称是 98px。等宽字体下只看字数，这里用夹具里的票来写。"""
+    assert charts._text_px("66.6% · 12,000 元") == pytest.approx(120, abs=1)
+    assert charts._text_px("000333 美的集团") == pytest.approx(98, abs=1)
+    assert charts._text_px("") == 0
+
+
+def test_weights_chart_leaves_room_for_its_longest_label():
+    """右边距放得下**最长**的那条标注（多一个「（按成本）」的那条），外加一点空。"""
+    fig = position_weights_chart(_WEIGHT_ROWS)
+    longest = max(charts._text_px(t) for t in fig.data[0].text)
+    assert "按成本" in max(fig.data[0].text, key=charts._text_px), "前提：最长的是带「按成本」的那条"
+    assert fig.layout.margin.r >= longest + 8, (fig.layout.margin.r, longest)
+    assert fig.data[0].textposition == "outside" and fig.data[0].cliponaxis is False
+
+
+def test_weights_chart_keeps_its_category_labels_off_the_left_edge():
+    """左边距比最长的类目标签多出一截：不留的话最长的那个代码加名称顶着图的左边缘。"""
+    fig = position_weights_chart(_WEIGHT_ROWS)
+    longest = max(charts._text_px(c) for c in fig.data[0].y)
+    assert fig.layout.margin.l >= longest + 16, (fig.layout.margin.l, longest)
+
+
+def test_weights_chart_needs_a_whole_row_and_that_is_enough_at_1024():
+    """按字数留的边距是**固定**的：图一窄，留给条的地方就没了。所以这张图要独占一整行，
+    页面不许把它放进半幅宽的一栏（tests/test_dashboard_journal.py 钉着）。数是真机上量的：
+    1024 宽、侧边栏展开时正文区 564px，对半分的一栏 274px。"""
+    margin = position_weights_chart(_WEIGHT_ROWS).layout.margin      # 其中一条带「（按成本）」
+    fixed = margin.l + margin.r
+    assert 564 - fixed >= 200, f"整行宽下留给条的地方只有 {564 - fixed}px"
+    assert 274 - fixed < 40, "半幅宽的一栏里本来就放不下：这条断言记的是为什么不许并排"
+
+
+def test_source_compare_leaves_room_for_its_longest_label():
+    fig = source_compare_chart(_BY_SOURCE, {"ma_cross": "双均线交叉信号", "discretionary": "自主决策"})
+    longest = max(charts._text_px(t) for t in _source_notes(fig).values())
+    assert fig.layout.margin.r >= longest + 8, (fig.layout.margin.r, longest)
+    assert fig.layout.margin.l >= charts._text_px("双均线交叉信号") + 16
+
+
+def test_weights_chart_treats_a_bare_code_as_a_category_not_a_number():
+    """有一只票没有名称时，它的标签只剩六位代码。不钉成类目轴，plotly 会把整条纵轴猜成数值轴：
+    刻度变成 0.999999M，其余的条全部消失（2026-11-18 真机上试出来的）。"""
+    rows = [{"symbol": "999999", "name": "", "value": 9000.0, "weight": 0.6, "by_cost": True},
+            {"symbol": "000333", "name": "美的集团", "value": 6000.0, "weight": 0.4, "by_cost": False}]
+    fig = position_weights_chart(rows)
+    assert list(fig.data[0].y) == ["999999", "000333 美的集团"]
+    assert fig.layout.yaxis.type == "category"
+    assert fig.layout.yaxis.autorange == "reversed"
+
+
+def test_weights_chart_height_follows_the_number_of_holdings():
+    """高度只按行数给：整行宽的图里三根条撑不起三百多像素，条与条之间全是空。"""
+    two = position_weights_chart(_WEIGHT_ROWS).layout.height
+    five = position_weights_chart(_WEIGHT_ROWS * 2 + _WEIGHT_ROWS[:1]).layout.height
+    assert two < 200, two
+    assert five - two == 44 * 3, "每多一只持仓多 44px"
+    assert position_weights_chart([]).layout.height > 0
+
+
+# ---------------------------------------------------------------- 曲线的横轴（2026-11-18）
+
+def _span(fig) -> tuple[pd.Timestamp, pd.Timestamp]:
+    lo, hi = fig.layout.xaxis.range
+    return pd.Timestamp(lo), pd.Timestamp(hi)
+
+
+def test_cum_pnl_axis_spreads_out_when_there_is_only_one_point():
+    """刚平掉第一笔时曲线只有一个点，横轴的自动范围是零宽的——plotly 把刻度标成
+    23:59:59.9995 / 00:00:00.0005，看着像坏了（真机上看到的）。向两边各让出一周。"""
+    fig = journal_cum_pnl_chart([(date(2026, 9, 8), 1500.0)])
+    assert _span(fig) == (pd.Timestamp("2026-09-01"), pd.Timestamp("2026-09-15"))
+
+
+@pytest.mark.parametrize("gap", [1, 3, 4, 7, 12])
+def test_cum_pnl_axis_pads_a_short_run_up_to_exactly_two_weeks(gap):
+    """隔多少天都凑满两周、两边让出的一样多。隔奇数天时两边各要让出带半天的数——
+    拿日期去加减会把那半天丢掉，只凑出 13 天（独立审查指出的）。"""
+    first, last = date(2026, 9, 8), date(2026, 9, 8) + timedelta(days=gap)
+    lo, hi = _span(journal_cum_pnl_chart([(first, 100.0), (last, 250.0)]))
+    assert hi - lo == pd.Timedelta(days=14), (lo, hi)
+    assert pd.Timestamp(first) - lo == hi - pd.Timestamp(last), "两边让出的一样多"
+
+
+def test_cum_pnl_axis_never_leaves_an_end_point_on_the_frame():
+    """隔 13 天：凑满两周只差一天，对半分每边只有半天——范围是我们钉死的，plotly 不会再替点留边，
+    首尾两个点就压在图框上。两边至少各让一天。"""
+    first, last = date(2026, 9, 8), date(2026, 9, 21)
+    lo, hi = _span(journal_cum_pnl_chart([(first, 100.0), (last, 250.0)]))
+    assert pd.Timestamp(first) - lo >= pd.Timedelta(days=1)
+    assert hi - pd.Timestamp(last) >= pd.Timedelta(days=1)
+
+
+def test_cum_pnl_ticks_are_short_dates_in_digits():
+    """日期写成数字（缺省是英文月份缩写），而且要短：一律写 2026-09-08 的话一个刻度 72px，
+    图一窄就整排斜过来（独立审查在 1024 宽下看到的）。按刻度的疏密分三档，最宽的五十来像素；
+    年份在第一档里另起一行（\\n 后面那半截，plotly 只在它变了的时候才画）。"""
+    fig = journal_cum_pnl_chart(_CUM_POINTS)
+    assert fig.layout.xaxis.tickformat is None, "不要再钉一个固定的长格式"
+    stops = list(fig.layout.xaxis.tickformatstops)
+    assert [tuple(s.dtickrange) for s in stops] == [(None, "M1"), ("M1", "M12"), ("M12", None)]
+    day = pd.Timestamp("2026-09-08")
+    shown = [day.strftime(s.value.split("\n")[0]) for s in stops]
+    assert shown == ["09-08", "2026-09", "2026"], shown
+    assert max(charts._text_px(t) for t in shown) < 52, "最宽的一档（2026-09）是 50.4px"
+    assert stops[0].value.split("\n")[1] == "%Y", "不到一个月一格时年份要另起一行写出来"
+    assert fig.layout.xaxis.nticks == 6
+
+
+def test_cum_pnl_axis_is_left_to_plotly_once_the_points_span_two_weeks():
+    """本来就够宽的不动：钉死范围会把之后新增的点挤到图外。"""
+    assert journal_cum_pnl_chart(_CUM_POINTS).layout.xaxis.range is None
+    assert journal_cum_pnl_chart([]).layout.xaxis.range is None
+    edge = journal_cum_pnl_chart([(date(2026, 9, 1), 1.0), (date(2026, 9, 15), 2.0)])
+    assert edge.layout.xaxis.range is None
+
+
 def test_weights_chart_survives_no_positions():
     assert len(position_weights_chart([]).data) == 0
 
@@ -586,16 +710,51 @@ def test_source_compare_bars_are_single_amber_with_axis_labels():
     assert fig.layout.showlegend is False
 
 
+def _source_notes(fig) -> dict[str, str]:
+    """每个来源那一行写在图上的那句话，不管它画在条的右端还是零线右侧。"""
+    notes = dict(zip(fig.data[0].y, fig.data[0].text))
+    notes |= {a.y: a.text for a in fig.layout.annotations}
+    return notes
+
+
 def test_source_compare_annotates_pnl_and_win_rate_without_nan():
-    """右端直接标注已实现盈亏与胜率；某组还没有平仓交易时胜率是"算不出来"，
+    """每一行直接标注已实现盈亏与胜率；某组还没有平仓交易时胜率是"算不出来"，
     必须显示 —，渲染出 None/nan 是甩到用户脸上的乱码。"""
     fig = source_compare_chart(_BY_SOURCE)
-    by_label = dict(zip(fig.data[0].y, fig.data[0].text))
+    by_label = _source_notes(fig)
     assert "1,988" in by_label["ma_cross"] and "50%" in by_label["ma_cross"]
     assert "-1,916" in by_label["discretionary"]
     assert "—" in by_label["discretionary"]
     blob = "".join(by_label.values())
     assert "None" not in blob and "nan" not in blob.lower()
+
+
+def test_source_compare_keeps_a_losing_rows_note_off_the_category_labels():
+    """亏损的条向左伸。条外标注跟着画在条的左边，正好压在类目标签上——真机上是两行字叠成一团
+    （2026-11-18）。所以亏损那一行条上不写字，那句话改成一条注记：锚在零线上、向右排
+    （那一行零线右边是空的）。悬停照样读得到。"""
+    fig = source_compare_chart(_BY_SOURCE)
+    bar = fig.data[0]
+    on_bar = dict(zip(bar.y, bar.text))
+    assert on_bar["discretionary"] == "", "亏损那一行的条上还写着字，会压住左边的类目标签"
+    assert on_bar["ma_cross"], "盈利那一行的标注还是在条的右端"
+    notes = [a for a in fig.layout.annotations if a.y == "discretionary"]
+    assert len(notes) == 1, fig.layout.annotations
+    note = notes[0]
+    assert "-1,916" in note.text
+    assert note.x == 0 and note.xanchor == "left" and note.xshift > 0, "注记要锚在零线上、向右排"
+    assert note.showarrow is False
+    assert not [a for a in fig.layout.annotations if a.y == "ma_cross"], "盈利的行不该再多一条注记"
+    assert dict(zip(bar.y, bar.customdata)) == _source_notes(fig), "悬停与图上写的是同一句话"
+    assert "customdata" in bar.hovertemplate
+
+
+def test_source_compare_keeps_the_note_of_a_row_that_broke_even():
+    """正好不赚不亏的那一组：条长为零，那句话照样要写在零线右侧（条外标注）。
+    把"亏损才挪走"写成"不盈利就挪走"的话，它既不在条上、也没有注记——整行没有字。"""
+    fig = source_compare_chart({"ma_cross": {"total_realized": 0.0, "win_rate": 0.0}})
+    assert fig.data[0].text[0] and "0 元" in fig.data[0].text[0], fig.data[0].text
+    assert not fig.layout.annotations
 
 
 def test_source_compare_values_are_the_total_realized():

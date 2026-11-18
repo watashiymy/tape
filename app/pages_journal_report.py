@@ -3,18 +3,26 @@
 「记账」页管**写**，本页管**读**：整本日志算出来的当前持仓、已实现盈亏与来源对比。
 页面函数从 app/pages_journal.py 原样搬来（M1 的拆页**逻辑不改只挪**）；排版按
 设计 §1：三张表收进 st.tabs（当前持仓 / 平仓明细 / 来源对比），不再纵向全部铺开。
-顶部是 M2 的仪表盘（设计 §2）：指标块 2×3 + 曲线/占比两图并排，来源对比图在
-来源 tab 里。数字口径全在 journal_ui.dashboard_metrics 与 quant.journal.analytics
+顶部是 M2 的仪表盘（设计 §2）：指标块 2×3 + 曲线与占比两张图（各占一整行，
+2026-11-18），来源对比图在来源 tab 里。数字口径全在 journal_ui.dashboard_metrics 与 quant.journal.analytics
 （纯函数，手算单测钉住），本页只做排版与转述。
 
 两条纪律沿自 v0.3.0 §5：
 
 1. **持仓与盈亏永远按整本日志算，不受「记账」页筛选的影响**。拆页把这条从约定
    变成了结构：本页根本不读筛选控件的 session_state。
-2. **警告显眼、持续可见**（设计 §3）：一致性告警每轮重算并列在所有数字**之前**，
-   不是记完就沉没的 toast——卖超/读不懂的行意味着下面每个数都可能是错的。
+2. **账上对不上的地方持续可见**（设计 §3）：每轮重算、列在所有数字**之前**，补齐了才消失，
+   不是记完就沉没的 toast——卖出找不到买入、读不出来的行，意味着下面的数少算了一块。
+   2026-11-18 起它们是一块安静的正文色的字（theme.notice）而不是黄框：用户看着两条黄框问
+   「这两句话啥意思？还搞得那么显眼」——句子不说是哪只票、全是算盈亏那一层自己的词，
+   框又比下面的数字还抢眼。"持续可见"留着，"显眼"换成"看得懂、知道去哪处理"。
+
+页面上不再有常驻的说明（2026-11-18）：原先页顶那个折叠区「这些数字怎么算的、已知局限」
+并进了页名后面的帮助圆点（guide.JOURNAL_REPORT_INTRO）。
 """
 from __future__ import annotations
+
+from collections import Counter
 
 import streamlit as st
 
@@ -29,9 +37,6 @@ from quant.report import charts
 
 def page_journal_report() -> None:
     ui.page_head("持仓与盈亏")
-    with st.expander("这些数字怎么算的、已知局限", expanded=False):
-        st.markdown(guide.JOURNAL_LIMITS)
-
     try:
         trades = store.load_trades(ui.JOURNAL_PATH)
     except RuntimeError as e:
@@ -41,11 +46,7 @@ def page_journal_report() -> None:
         return
 
     report = pnl.compute_pnl(trades)   # 永远按整本日志算（见模块 docstring 第 1 条）
-    # 告警排在所有数字**之前**：设计 §3 要求"错误必须显眼、持续可见"，
-    # 收进某个 tab 就会被藏起来。同一句话去重后只说一次，别刷屏。
-    for message in dict.fromkeys(i.message for i in report.inconsistencies):
-        st.warning(message)
-    _orphan_positions_warning(report)
+    _ledger_notices(report)
     _dashboard_section(report, trades)
     positions_tab, matches_tab, source_tab = st.tabs(["当前持仓", "平仓明细", "来源对比"])
     with positions_tab:
@@ -56,15 +57,41 @@ def page_journal_report() -> None:
         _by_source_section(report)
 
 
-# ---------------------------------------------------------------- 仪表盘（v0.3.1 §2）
+# ---------------------------------------------------------------- 要你看一眼的两种话（2026-11-18）
 
-def _orphan_positions_warning(report) -> None:
-    """持仓里有票**不在信号池**时提醒一句。
+def _ledger_notices(report: pnl.PnlReport) -> None:
+    """账上对不上的地方：一块带边框的区域，左边一条一句、右端一个去「记账」的链接。
 
-    项目自己把这件事称为"最容易踩的坑"（说明页原话：不加进 universe 的票没有任何人
-    管它的卖出），而唯一能发现它的页面——这一页知道你持着什么——之前从不看信号池。
-    典型剧本：扫描报了 BUY，你买了、记了账，但忘了点 ＋ 加进池子；此后「信号跟踪」
+    排在所有数字**之前**（模块 docstring 第 2 条）：收进某个 tab 就被藏起来了。
+    句子由算盈亏的那一层给（pnl 的一致性标记，点名哪只票、哪一天、怎么办），这里只管摆。
+    几条共用一个链接：它们的去处是同一页，一条一个就是一列一模一样的按钮。
+    没有对不上的地方时整块不出。
+
+    **一模一样的句子只写一次，但要说有几笔**。句子里已经有票、日期和股数，还一模一样就是
+    两笔不同的记录碰巧长得一样（同一天两笔同样股数的卖出）。只写一次而不说几笔的话，
+    补上其中一笔之后那句话原样留着，看着像补了没用（独立审查在真机上试出来的）。
+    """
+    counts = Counter(i.message for i in report.inconsistencies)     # 按第一次出现的先后
+    if not counts:
+        return
+    lines = [message if n == 1 else guide.JOURNAL_SAME_PROBLEM.format(message=message, n=n)
+             for message, n in counts.items()]
+    with st.container(border=True):
+        _notice_row("".join(theme.notice(line) for line in lines), page="journal",
+                    label=guide.JOURNAL_FIX_LINK, icon=":material/edit_note:")
+
+
+def _pool_notice(report: pnl.PnlReport) -> None:
+    """持仓里有票**不在信号池**时，在持仓表上面提醒一句。
+
+    项目自己把这件事称为"最容易踩的坑"（说明页原话：不加进信号池的票没有任何人管它的卖出），
+    而唯一能发现它的页面——这一页知道你持着什么——之前从不看信号池。
+    典型剧本：扫描报出买入信号，你买了、记了账，但忘了点 ＋ 加进池子；此后「信号跟踪」
     每天替你盯的是**另一批**标的，而它不会报错。
+
+    **在持仓表上面，不在页顶**（2026-11-18）：它说的是持仓，不影响这一页的任何数字；
+    自己拿主意买的票不在池子里是常态，页顶天天亮一条等于没有。为什么与要不要管在圆点里。
+    只看**手里真有的**（股数 > 0）：pnl 为了挂一致性标记会留一行 0 股的空壳，那不是持仓。
 
     配置读不到时**不提示**（不猜、也不在盈亏页上再报一次配置错，与
     pages_signals 里那条降级同一个路子）。跳转用 ui.page_ref 而不是 import
@@ -74,18 +101,37 @@ def _orphan_positions_warning(report) -> None:
         in_pool = set(pool.current(ui.CONFIG_PATH))
     except pool.CONFIG_ERRORS:
         return
-    orphans = [p.symbol for p in report.positions if p.symbol not in in_pool]
-    if not orphans:
+    outside = [f"{p.name}（{p.symbol}）" if p.name else p.symbol
+               for p in report.positions if p.shares > 0 and p.symbol not in in_pool]
+    if not outside:
         return
-    st.warning(f"持仓里的 {'、'.join(orphans)} **不在信号池里**——"
-               f"「信号跟踪」不会盯它们的卖出。")
-    st.page_link(ui.page_ref("universe"), label="去「信号池」把它们加进去",
-                 icon=":material/list:")
+    names = "、".join(outside)
+    if not names.endswith("）"):
+        names += " "        # 全角括号自己带着空；以代码结尾时与后面的字之间补一个空格
+    _notice_row(theme.notice(guide.JOURNAL_OUTSIDE_POOL.format(names=names),
+                             help=guide.JOURNAL_OUTSIDE_POOL_HELP),
+                page="universe", label=guide.JOURNAL_OUTSIDE_POOL_LINK, icon=":material/list:")
 
+
+def _notice_row(html: str, *, page: str, label: str, icon: str) -> None:
+    """一行「要你看一眼」的话 + 右端去处理它的链接。
+
+    按比例的两栏（与各页顶部任务条的行同一个做法），不用靠右的横向容器：那种容器里文字元素
+    按自己的内容要宽度，一句话长到要折行时会独占整行，把链接挤到下一行（真机上看到的）。
+    右栏窄屏时只有一百来像素，所以链接的字要短——只说去哪一页，做什么在左边那句话里。
+    竖直居中：左边折成两三行时链接不贴着顶。
+    """
+    body, action = st.columns([4, 1], vertical_alignment="center")
+    body.html(html)
+    with action.container(horizontal=True, horizontal_alignment="right"):
+        st.page_link(ui.page_ref(page), label=label, icon=icon)
+
+
+# ---------------------------------------------------------------- 仪表盘（v0.3.1 §2）
 
 def _dashboard_section(report: pnl.PnlReport, trades) -> None:
-    """指标块 2×3 + 曲线/占比两图并排。留在 tabs 之外：这几个数是本页的结论，
-    收进某个 tab 就得多点一下才看得到。
+    """指标块 2×3 + 曲线与占比两张图（各占一整行，有哪张画哪张）。留在 tabs 之外：
+    这几个数是本页的结论，收进某个 tab 就得多点一下才看得到。
 
     两条口径纪律（数字本身在 journal_ui / analytics 里，有手算单测）：
     - 无市价的持仓**不按 0 计入**市值与浮动，如实注明有几只没算进来；
@@ -106,25 +152,30 @@ def _dashboard_section(report: pnl.PnlReport, trades) -> None:
         # 这一句是事实、会影响上面的数怎么读，所以留在明面上；为什么与怎么办在圆点里。
         st.caption(guide.JOURNAL_UNPRICED.format(n=unpriced))
 
-    curve_col, weights_col = st.columns(2)
-    with curve_col:
-        # 空态不画空图（设计 §2.2）：一张空坐标系没有任何信息量，还像出了错。
-        if points := analytics.cumulative_realized(trades):
-            st.plotly_chart(charts.journal_cum_pnl_chart(points), width="stretch")
-        else:
-            st.caption("还没有平仓记录——第一笔卖出后这里会出现你的已实现盈亏曲线。")
-    with weights_col:
-        # 占比图里无市价的标的按成本顶上并打「按成本」标（与指标卡刻意相反：
-        # 占比漏一只会让其余标的虚高，见 analytics 的模块 docstring）。
-        if rows := analytics.position_weights(report.positions, prices):
-            st.plotly_chart(charts.position_weights_chart(rows), width="stretch")
-        else:
-            st.caption("当前没有持仓，暂无占比可画。")
+    # 两张图各占一整行，有哪张画哪张（2026-11-18）。原先固定两栏并排：还没有平仓记录时左半边
+    # 只有一句话，下面空着三百多像素——用户截图圈出来问「为什么左边要空出一大块」。
+    # 初稿是"两张都有才并排"，独立审查在 1024 宽下量出来不行：占比图的类目标签加条外标注要两百多
+    # 像素的固定边距，半幅宽的一栏里留给条的地方只剩十几像素；持仓一多它还比曲线高，曲线下面又是一块空。
+    # 曲线在上（历史）、占比在下（紧挨着下面的持仓表，说的都是眼下手里有什么）。
+    # 空态不画空图（设计 §2.2）：一张空坐标系没有任何信息量，还像出了错。
+    # 缺曲线时留一句话（它说的事别处没说）；缺占比图时什么都不留——没有持仓这件事，
+    # 紧挨着的「当前持仓」标签页里已经写着，同一屏不说两遍。
+    # 占比图里无市价的标的按成本顶上并打「按成本」标（与指标卡刻意相反：
+    # 占比漏一只会让其余标的虚高，见 analytics 的模块 docstring）。
+    points = analytics.cumulative_realized(trades)
+    rows = analytics.position_weights(report.positions, prices)
+    if points:
+        st.plotly_chart(charts.journal_cum_pnl_chart(points), width="stretch")
+    if rows:
+        st.plotly_chart(charts.position_weights_chart(rows), width="stretch")
+    if not points:
+        st.caption(guide.JOURNAL_NO_CURVE)
     # 「为什么是元而不是收益率」在「仪表盘」小标题的帮助圆点里（guide.JOURNAL_PNL_HINT）；
     # 完整理由留在本函数的 docstring 里，给下一个改代码的人。
 
 
 def _positions_section(report: pnl.PnlReport) -> None:
+    _pool_notice(report)
     ui.data_table(journal_ui.positions_table(report.positions, ui.CACHE_DIR),
                   journal_ui.positions_columns(),
                   "当前没有持仓（还没记过买入，或者都已经卖光了）。")

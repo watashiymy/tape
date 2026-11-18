@@ -325,6 +325,45 @@ CSS = f"""@import url("{FONT_IMPORT}");
   padding: 0.6rem 0.9rem;
 }}
 
+/* 「要你看一眼」的一行（2026-11-18，「持仓与盈亏」页）：账上对不上的地方、持仓不在信号池。
+   正文色、不带底色：这种话要一直留到处理完为止，天天亮着一个黄框，要么吓人、要么再也没人看。
+   句首一个琥珀小点——这一行的右端有一个可以点的去处（琥珀在本主题里只给可操作元素）。
+   几条摞在一起时条与条之间留一点空。 */
+.qd-notice {{
+  position: relative;
+  padding-left: 0.95rem;
+  font-family: var(--qd-sans);
+  font-size: 0.86rem;
+  line-height: 1.6;
+  color: var(--qd-text);
+}}
+.qd-notice::before {{
+  content: "";
+  position: absolute;
+  left: 0.1rem;
+  top: 0.58rem;
+  width: 0.36rem;
+  height: 0.36rem;
+  border-radius: 50%;
+  background: var(--qd-primary);
+}}
+.qd-notice + .qd-notice {{
+  margin-top: 0.35rem;
+}}
+/* 这一行里的帮助圆点：提示框锚在**这一行**的左缘、出在这一行的下面，不锚在圆点上。
+   圆点跟在句子末尾，句子多长它就在多靠右的地方——照别处那样从圆点向右展开，1024 宽下提示框
+   有一百多像素伸到视口外面，悬停时页面还会冒出横向滚动条（独立审查量的）。
+   做法是让圆点不再当定位的参照（static），参照就落到这一行自己身上；宽度不超过这一行。 */
+.qd-notice .qd-help-dot {{
+  position: static;
+}}
+.qd-notice .qd-help-tip {{
+  top: 100%;
+  left: 0.95rem;
+  max-width: calc(100% - 0.95rem);
+  margin-top: 0.25rem;
+}}
+
 /* 「人工步骤」标记：这一步没有开始按钮，是你自己动手的一环。
    刻意用灰而不是琥珀——琥珀在本主题里只给**可操作**元素（config.toml 的
    primaryColor 就是这个约定），给一个没有按钮的卡片上琥珀等于在骗手。 */
@@ -623,6 +662,20 @@ def callout(text: str) -> str:
     """首次引导那一条（控制台页顶）。先整体转义，再只认 `**加粗**`——
     与帮助圆点的提示框同一个口径（`_tip_inline`），不做通用 Markdown。"""
     return f'<div class="qd-callout">{_tip_inline(_esc(text))}</div>'
+
+
+def notice(text: str, *, help: str = "") -> str:
+    """「要你看一眼」的一行：一句会变的话，后面可以跟一个帮助圆点（为什么、要不要管）。
+
+    给"一直留到处理完为止"的提醒用（「持仓与盈亏」页：账上对不上的地方、持仓不在信号池）。
+    不用 st.warning：那是一整条黄框，这类话天天亮着，黄框就没人看了。
+    与帮助圆点的提示框同一个口径：先整体转义，再只认 `**加粗**`。空串返回空串
+    （`st.html("")` 也占一个元素位，由调用方据此连元素都不放）。
+    """
+    if not text.strip():
+        return ""
+    dot = help_dot(help, wide=True) if help else ""
+    return f'<div class="qd-notice">{_tip_inline(_esc(text))}{dot}</div>'
 
 
 def manual_row(tag: str, text: str) -> str:

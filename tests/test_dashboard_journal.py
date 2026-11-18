@@ -209,15 +209,33 @@ def test_realized_pnl_matches_the_hand_computed_number(tmp_path):
     assert "3,425.87" in _texts(at), _texts(at)
 
 
+def _notices(at: AppTest) -> list:
+    """页面上「要你看一眼」的那几块（theme.notice）。一块里可以摞着几句。"""
+    return [e for e in at.get("html") if 'class="qd-notice"' in e.proto.body
+            and not e.proto.body.lstrip().startswith("<style>")]
+
+
+def _notice_texts(at: AppTest) -> str:
+    return "\n".join(e.proto.body for e in _notices(at))
+
+
+def _links(at: AppTest) -> dict[str, str]:
+    """页面正文里的链接：{链接上的字: 去哪一页}。页头那个「帮助中心」不算——它每页都有。"""
+    return {el.proto.label: el.proto.page for el in at.main.get("page_link")
+            if "帮助中心" not in el.proto.label}
+
+
 def test_oversell_warning_is_visible_and_does_not_break_the_page(tmp_path):
-    """卖超（漏记了买入）：设计 §3 要求"警告并在持仓页持续标红"，但不阻断、不崩页。"""
+    """卖超（漏记了买入）：设计 §3 要求在持仓页**持续可见**，但不阻断、不崩页。
+    2026-11-18 起它是一行点名哪只票的话（下面几条细钉），不再是不说是谁的黄框。"""
     root = _root(tmp_path)
     _journal(root, _buy(shares=100.0), _sell(shares=500.0))
     at = _page(root, REPORT_PAGE)
 
     assert not at.exception, at.exception
-    warnings = "\n".join(str(w.value) for w in at.warning)
-    assert "卖出" in warnings and "配得上" in warnings, warnings
+    text = _notice_texts(at)
+    assert "美的集团（000333）" in text and str(D_SELL) in text, text
+    assert "卖出 500 股" in text and "那时手里只有 100 股" in text, text
 
 
 def test_a_row_the_engine_cannot_read_is_reported_not_swallowed(tmp_path):
@@ -311,8 +329,8 @@ def test_empty_journal_dashboard_offers_guidance_not_an_empty_chart(tmp_path):
     at = _page(_root(tmp_path), REPORT_PAGE)
     assert not at.exception, at.exception
     assert len(at.get("plotly_chart")) == 0, "空日志不该画任何图"
-    text = _texts(at)
-    assert "还没有平仓记录——第一笔卖出后这里会出现你的已实现盈亏曲线" in text, text
+    assert [c.value for c in at.main.caption] == [_guide().JOURNAL_NO_CURVE], \
+        [c.value for c in at.main.caption]
 
 
 def test_the_page_admits_why_it_is_yuan_not_percent(tmp_path):
@@ -1218,11 +1236,15 @@ def _set_pool(tmp_path: Path, symbols: tuple[str, ...]) -> None:
     write_local_universe(tmp_path / "config" / "settings.yaml", symbols)
 
 
+def _tab(at: AppTest, label: str):
+    return next(t for t in at.get("tab") if t.label == label)
+
+
 def test_positions_page_warns_about_holdings_outside_the_pool(tmp_path):
-    """项目自己把这件事称为「最容易踩的坑」（不加进 universe 的票没有任何人管它的
+    """项目自己把这件事称为「最容易踩的坑」（不加进信号池的票没有任何人管它的
     卖出），而唯一知道你持着什么的这一页之前从不看信号池。
 
-    典型剧本：扫描报了 BUY，买了、记了账，但忘了点 ＋ 加进池子；此后「信号跟踪」
+    典型剧本：扫描报出买入信号，买了、记了账，但忘了点 ＋ 加进池子；此后「信号跟踪」
     每天替你盯的是另一批标的，而它不会报错。
     """
     _root(tmp_path)
@@ -1232,15 +1254,13 @@ def test_positions_page_warns_about_holdings_outside_the_pool(tmp_path):
     at = _page(tmp_path, REPORT_PAGE)
 
     assert not at.exception, at.exception
-    warns = [w.value for w in at.main.warning]
-    assert any("000333" in w and "不在信号池" in w for w in warns), warns
-    assert not any("600519" in w and "不在信号池" in w for w in warns), \
-        "池子里的那只被误报了"
+    text = _notice_texts(at)
+    assert "美的集团（000333）不在信号池里" in text, text
+    assert "600519" not in text and "贵州茅台" not in text, "池子里的那只被误报了"
 
 
 def test_positions_page_stays_quiet_when_everything_is_tracked(tmp_path):
-    """全在池内就一个字都不说——这一页的告警区排在所有数字之前，
-    到处都是黄框等于没有黄框。"""
+    """全在池内就一个字都不说。"""
     _root(tmp_path)
     _journal(tmp_path, _buy(symbol="600519", name="贵州茅台"))
     _set_pool(tmp_path, ("600519",))
@@ -1248,8 +1268,301 @@ def test_positions_page_stays_quiet_when_everything_is_tracked(tmp_path):
     at = _page(tmp_path, REPORT_PAGE)
 
     assert not at.exception, at.exception
-    assert not any("不在信号池" in w.value for w in at.main.warning), \
-        [w.value for w in at.main.warning]
+    assert not _notices(at), _notice_texts(at)
+    assert not _links(at), _links(at)
+
+
+def test_the_pool_reminder_sits_above_the_positions_table_not_at_the_top(tmp_path):
+    """它说的是持仓，不影响这一页的任何数字；自己拿主意买的票不在池子里是常态。2026-11-18 之前
+    它是页顶的一个黄框，用户看着它问「这句话啥意思？还搞得那么显眼」。现在是「当前持仓」
+    标签页里、表格上面的一行：一句会变的话 + 圆点里的为什么 + 右端去信号池的链接。"""
+    _root(tmp_path)
+    _journal(tmp_path, _buy(symbol="000333"))
+    _set_pool(tmp_path, ("600519",))
+    at = _page(tmp_path, REPORT_PAGE)
+    assert not at.exception, at.exception
+    guide, theme = _guide(), app_module("theme")
+
+    (notice,) = _notices(at)
+    assert notice.proto.body == theme.notice(
+        guide.JOURNAL_OUTSIDE_POOL.format(names="美的集团（000333）"),
+        help=guide.JOURNAL_OUTSIDE_POOL_HELP)
+    tab = _tab(at, "当前持仓")
+    inside = list(_walk(tab))
+    assert any(e is notice for e in inside), "提醒不在「当前持仓」标签页里"
+    table = next(e for e in inside if any(e is t for t in at.get("dataframe")))
+    order = [e for e in inside if e is notice or e is table]
+    assert order[0] is notice, "提醒应该在持仓表的上面"
+    assert not at.main.warning, [w.value for w in at.main.warning]
+    assert _links(at) == {guide.JOURNAL_OUTSIDE_POOL_LINK: "universe"}, _links(at)
+    # 为什么与要不要管，只在圆点里
+    tip = notice.proto.body.split('class="qd-help-tip">', 1)[1]
+    assert "只给" in tip and "可以不管" in tip, tip
+    shown = notice.proto.body.split('<span class="qd-help-dot', 1)[0]
+    assert "可以不管" not in shown and len(shown) < 90, shown
+
+
+def test_the_pool_reminder_names_every_stray_holding_once(tmp_path):
+    """几只都不在池子里：一行说完，用顿号连。没有名称的只说代码，后面补一个空格。"""
+    _root(tmp_path)
+    _journal(tmp_path, _buy(symbol="000333"), _buy(symbol="600519", name="贵州茅台"),
+             _buy(symbol="601318", name=""))
+    _set_pool(tmp_path, ("000001",))
+    at = _page(tmp_path, REPORT_PAGE)
+    assert not at.exception, at.exception
+    (notice,) = _notices(at)
+    assert "美的集团（000333）、贵州茅台（600519）、601318 不在信号池里" in notice.proto.body, \
+        notice.proto.body
+
+
+def test_a_sold_out_stock_is_not_reported_as_a_stray_holding(tmp_path):
+    """账上对不上的票会在持仓表里留一行 0 股的空壳（为了挂那个标记）。手里一股都没有的票，
+    没有什么卖出可盯——不许因为它不在池子里就提醒。"""
+    _root(tmp_path)
+    _journal(tmp_path, _buy(symbol="600519", name="贵州茅台"),
+             _sell(symbol="600036", name="招商银行"))        # 只有卖出：0 股的空壳
+    _set_pool(tmp_path, ("600519",))                        # 600036 不在池子里
+    at = _page(tmp_path, REPORT_PAGE)
+    assert not at.exception, at.exception
+    assert "不在信号池" not in _notice_texts(at), _notice_texts(at)
+    assert "universe" not in _links(at).values(), _links(at)
+    assert "招商银行（600036）" in _notice_texts(at), "前提：那行空壳确实在（页顶说了它的卖出对不上）"
+
+
+def test_the_pool_reminder_is_skipped_when_the_pool_cannot_be_read(tmp_path):
+    """配置读不到时不提示：不猜，也不在盈亏页上再报一次配置错。"""
+    _root(tmp_path)
+    _journal(tmp_path, _buy(symbol="000333"))
+    (tmp_path / "config" / "settings.yaml").write_text("universe: [\n", encoding="utf-8")
+    at = _page(tmp_path, REPORT_PAGE)
+    assert not at.exception, at.exception
+    assert not _notices(at), _notice_texts(at)
+
+
+# ================================================================ 账上对不上的地方（2026-11-18）
+#
+# 用户看着页顶两条黄框问：「这两句话啥意思？还搞得那么显眼」。句子点名哪只票、哪一天、怎么办，
+# 是 quant.journal.pnl 的事（tests/test_journal_pnl.py 钉着）；这里钉页面怎么摆：
+# 排在所有数字之前、一直留到补齐为止，但不再是黄框；右端一个去「记账」的链接。
+
+def _cards(at: AppTest) -> list:
+    return [n for n in _walk(at._tree) if getattr(n, "type", "") == "flex_container"
+            and n.proto.flex_container.border]
+
+
+def test_ledger_problems_are_listed_before_every_number(tmp_path):
+    root = _root(tmp_path)
+    _journal(root, _buy(), _sell(symbol="600036", name="招商银行"))
+    at = _page(root, REPORT_PAGE)
+    assert not at.exception, at.exception
+
+    order = _page_order(at)
+    notice = next(i for i, b in enumerate(order) if 'class="qd-notice"' in b)
+    dashboard = next(i for i, b in enumerate(order) if 'class="qd-section">仪表盘' in b)
+    first_metric = next(i for i, b in enumerate(order) if 'class="qd-metric"' in b)
+    assert notice < dashboard < first_metric, "账上对不上的地方要排在所有数字之前"
+    tabs = [e for t in at.get("tab") for e in _walk(t)]
+    assert not any(e is n for n in _notices(at) for e in tabs), "不许收进某个标签页里"
+
+
+def test_ledger_problems_are_a_quiet_card_with_one_way_out(tmp_path):
+    """一块带边框的区域：左边一条一句，右端**一个**去「记账」的链接（几条的去处是同一页，
+    一条一个就是一列一模一样的按钮）。不用 st.warning：那是一整条黄框。"""
+    root = _root(tmp_path)
+    _journal(root, _buy(shares=100.0), _sell(shares=500.0),           # 卖出比买入多
+             _sell(symbol="600036", name="招商银行"))                  # 卖出找不到买入
+    at = _page(root, REPORT_PAGE)
+    assert not at.exception, at.exception
+    guide = _guide()
+
+    assert not at.main.warning, [w.value for w in at.main.warning]
+    (card,) = _cards(at)
+    (block,) = _notices(at)
+    assert any(e is block for e in _walk(card)), "那几句话不在带边框的那一块里"
+    assert block.proto.body.count('class="qd-notice"') == 2, block.proto.body
+    assert "美的集团（000333）" in block.proto.body and "招商银行（600036）" in block.proto.body
+    links = [el for el in _walk(card) if getattr(el, "type", "") == "page_link"]
+    assert [(el.proto.label, el.proto.page) for el in links] == [(guide.JOURNAL_FIX_LINK, "journal")]
+    # 链接在右边那一栏里、靠右；那一栏窄，所以字要短（1024 宽时只有一百来像素）
+    row = path_to_element(at, links[0])
+    column = next(n for n in reversed(row) if getattr(n, "type", "") == "column")
+    columns = list(row[row.index(column) - 1].children.values())
+    assert columns[-1] is column and column.weight <= 0.25, [c.weight for c in columns]
+    assert row[-1].proto.flex_container.justify == row[-1].proto.flex_container.JUSTIFY_END
+    assert len(guide.JOURNAL_FIX_LINK) <= 4 and len(guide.JOURNAL_OUTSIDE_POOL_LINK) <= 4
+    # 两栏竖直居中：左边的话折成两三行时，链接不贴在第一行的顶上
+    assert all("vertical_alignment: CENTER" in str(c.proto) for c in columns), [str(c.proto) for c in columns]
+
+
+def test_identical_sentences_are_written_once_with_a_count(tmp_path):
+    """两行一模一样的坏记录：那句话只写一次（别刷屏），但要说有两笔——不说的话，改好其中一行之后
+    那句话原样留着，看着像改了没用。"""
+    root = _root(tmp_path)
+    path = _journal(root, _buy(), _buy(), _sell())
+    text = path.read_text(encoding="utf-8-sig").replace(",1000.0,71.5,", ",,,", 2)
+    path.write_text("\ufeff" + text, encoding="utf-8")
+    at = _page(root, REPORT_PAGE)
+    assert not at.exception, at.exception
+    (block,) = _notices(at)
+    assert block.proto.body.count('class="qd-notice"') == 2, block.proto.body      # 坏买入一句 + 卖出对不上一句
+    assert block.proto.body.count("股数或成交价是空的或者不是正数") == 1, block.proto.body
+    assert "（这样的记录有 2 笔）" in block.proto.body, block.proto.body
+    assert block.proto.body.count("这样的记录有") == 1, "只有一笔的那句后面不许带这半句"
+
+
+def test_two_look_alike_sells_do_not_hide_behind_one_line(tmp_path):
+    """同一天两笔同样股数、都找不到买入的卖出，是两笔不同的记录。初稿把它们并成一句、不说几笔：
+    补上其中一笔的买入之后，那句「账上没有它的买入记录」原样留着（独立审查在真机上试出来的）。
+    现在：两笔时说有两笔；补上一笔之后剩下的那句说的是真话——买过，但在这之前已经卖完了。"""
+    root = _root(tmp_path)
+    stray = dict(symbol="600036", name="招商银行", shares=1000.0, price=50.0)
+    _journal(root, _sell(**stray), _sell(**stray))
+    at = _page(root, REPORT_PAGE)
+    assert not at.exception, at.exception
+    (block,) = _notices(at)
+    assert block.proto.body.count('class="qd-notice"') == 1
+    assert "在这之前没有它的买入记录" in block.proto.body and "（这样的记录有 2 笔）" in block.proto.body
+
+    _journal(root, _buy(date=D_BUY, **stray), _sell(**stray), _sell(**stray))     # 补上一笔 1000 股的买入
+    at = _page(root, REPORT_PAGE)
+    assert not at.exception, at.exception
+    (block,) = _notices(at)
+    assert block.proto.body.count('class="qd-notice"') == 1
+    assert "已经卖完了" in block.proto.body, block.proto.body
+    assert "没有它的买入记录" not in block.proto.body and "这样的记录有" not in block.proto.body
+
+
+def test_a_clean_ledger_shows_no_card_at_all(tmp_path):
+    root = _root(tmp_path)
+    _journal(root, _buy(), _sell())
+    at = _page(root, REPORT_PAGE)
+    assert not at.exception, at.exception
+    assert not _cards(at) and not _notices(at) and not _links(at)
+    assert not at.main.warning
+
+
+def test_the_report_page_carries_no_standing_explanation(tmp_path):
+    """用户的话：「这些数字怎么算的、已知局限——这个说明需要专门做一个下拉框吗？」不需要：
+    它是不会变的解释，按 2026-11-16 定的规矩进「？」。页顶那个折叠区并进了页名后面的帮助圆点。"""
+    root = _root(tmp_path)
+    _journal(root, _buy(), _sell())
+    at = _page(root, REPORT_PAGE)
+    assert not at.exception, at.exception
+    assert not list(at.expander), [e.label for e in at.expander]
+    plain = "\n".join([m.value for m in at.main.markdown] + [c.value for c in at.main.caption])
+    for gone in ("已知局限", "配股", "税务", "券商数据"):
+        assert gone not in plain, f"页面上又常驻着一段说明：{gone}"
+    head = next(b for e in at.get("html") if 'class="qd-head"' in (b := e.proto.body))
+    tip = head.split('class="qd-help-tip">', 1)[1].split("</span></span>", 1)[0]
+    for fragment in ("按你记的账", "不是券商数据", "配股", "税务"):
+        assert fragment in tip, f"页名后面的圆点里缺「{fragment}」：{tip}"
+    assert "qd-help-wide" in head, "两段话加两条，要用宽档的提示框"
+
+
+#: 用户看着页顶那句话问「啥意思」的那几个词（算盈亏那一层自己的说法），外加它们原先的叫法「告警」。
+REPORT_JARGON = ("批次", "配对", "配得上", "成本未知", "告警", "卖超")
+
+
+@pytest.mark.parametrize("state", ["有持仓", "有平仓", "账上对不上"])
+def test_nothing_on_the_report_page_speaks_in_the_engines_words(tmp_path, state):
+    """页顶那句话改了，同一页的「？」里不许还留着同一批词（独立审查指出：平仓明细的读表说明与
+    仪表盘的圆点里原先写着「吃掉两个买入批次」「配对关系」「未配对的股数」「上面会有告警」）。
+    看的是整页的文字，圆点里的也算。"""
+    root = _root(tmp_path)
+    rows = {"有持仓": [_buy()], "有平仓": [_buy(), _sell(shares=500.0)],
+            "账上对不上": [_buy(shares=100.0), _sell(shares=500.0),
+                       _sell(symbol="600036", name="招商银行")]}[state]
+    _journal(root, *rows)
+    _cache(root)
+    at = _page(root, REPORT_PAGE)
+    assert not at.exception, at.exception
+    text = "\n".join(e.proto.body for e in at.get("html")
+                     if not e.proto.body.lstrip().startswith("<style>"))
+    text += "\n".join(c.value for c in at.main.caption) + "\n".join(m.value for m in at.main.markdown)
+    for word in REPORT_JARGON:
+        assert word not in text, f"页面上还有「{word}」：…{text[max(0, text.index(word) - 40):text.index(word) + 40]}…"
+    columns = jui.positions_columns() | jui.matches_columns() | jui.by_source_columns()
+    helps = "".join(str(c.get("help") or "") for c in columns.values())
+    for word in REPORT_JARGON:
+        assert word not in helps, f"列头说明里还有「{word}」"
+
+
+# ================================================================ 仪表盘：两张图各占一整行（2026-11-18）
+#
+# 原先固定两栏。还没有平仓记录时左半边只有一句话，下面空着三百多像素——用户截图圈出来问
+# 「为什么左边要空出一大块空间」。初稿是"两张都有才并排"，独立审查在 1024 宽下量出来不行
+# （占比图的固定边距吃掉了半幅宽的一栏，留给条的地方只剩十几像素）。现在：有哪张画哪张，一张一行。
+# AppTest 没有像素，钉的是：图是不是待在某一栏里。
+
+def _in_a_column(at: AppTest, element) -> bool:
+    return any(getattr(n, "type", "") == "column" for n in path_to_element(at, element))
+
+
+def _dashboard_charts(at: AppTest) -> list:
+    """仪表盘里的图（不算「来源对比」标签页里那张）。"""
+    tabbed = [e for t in at.get("tab") for e in _walk(t)]
+    return [c for c in at.get("plotly_chart") if not any(c is e for e in tabbed)]
+
+
+def test_the_weights_chart_takes_the_whole_row_until_there_is_a_curve(tmp_path):
+    """只有持仓、还没有平仓：占比图独占一行（用它的宽版），曲线的位置不留一栏空着；
+    下面一句话说还缺什么。"""
+    root = _root(tmp_path)
+    _journal(root, _buy())
+    _cache(root)
+    at = _page(root, REPORT_PAGE)
+    assert not at.exception, at.exception
+    (chart,) = _dashboard_charts(at)
+    assert not _in_a_column(at, chart), "占比图还待在半幅宽的那一栏里，另一半是空的"
+    spec = json.loads(chart.proto.spec)
+    assert "持仓占比" in spec["layout"]["title"]["text"]
+    assert spec["layout"]["height"] < 200, "一只持仓：高度按行数给，不撑到三百多像素"
+    captions = [c.value for c in at.main.caption]
+    assert captions == [_guide().JOURNAL_NO_CURVE], captions
+    assert not any(_in_a_column(at, c) for c in at.main.caption), "那句话也不许单独占着半栏"
+
+
+def test_an_unmatched_sell_does_not_count_as_a_closed_trade(tmp_path):
+    """用户的账本就是这样：卖过一笔，但账上找不到它的买入。原先那句「还没有平仓记录——
+    第一笔卖出后这里会出现…」对着这种账本是一句假话；现在说的是「已平仓的交易」。"""
+    root = _root(tmp_path)
+    _journal(root, _buy(), _sell(symbol="600036", name="招商银行"))
+    _cache(root)
+    at = _page(root, REPORT_PAGE)
+    assert not at.exception, at.exception
+    (chart,) = _dashboard_charts(at)
+    assert not _in_a_column(at, chart)
+    note = _guide().JOURNAL_NO_CURVE
+    assert note in [c.value for c in at.main.caption]
+    assert "已平仓" in note and "卖出" not in note, note
+
+
+def test_curve_and_weights_each_take_a_whole_row_once_both_exist(tmp_path):
+    """两张都有：曲线在上、占比在下，各占一整行，谁都不许待在半幅宽的一栏里。"""
+    root = _root(tmp_path)
+    _half_closed(root)
+    at = _page(root, REPORT_PAGE)
+    assert not at.exception, at.exception
+    curve, weights = _dashboard_charts(at)
+    assert not _in_a_column(at, curve) and not _in_a_column(at, weights), "又并排了：1024 宽下条会被挤没"
+    titles = [json.loads(c.proto.spec)["layout"]["title"]["text"] for c in (curve, weights)]
+    assert "累计已实现盈亏" in titles[0] and "持仓占比" in titles[1], f"曲线在上、占比在下：{titles}"
+    assert _guide().JOURNAL_NO_CURVE not in [c.value for c in at.main.caption]
+
+
+def test_the_curve_takes_the_whole_row_when_everything_is_sold(tmp_path):
+    """全部卖光：只有曲线，独占一行。没有持仓这件事，紧挨着的「当前持仓」标签页里已经写着，
+    图表区不再说一遍（同一屏不说两遍）。"""
+    root = _root(tmp_path)
+    _journal(root, _buy(), _sell())
+    at = _page(root, REPORT_PAGE)
+    assert not at.exception, at.exception
+    (chart,) = _dashboard_charts(at)
+    assert not _in_a_column(at, chart)
+    assert "累计已实现盈亏" in json.loads(chart.proto.spec)["layout"]["title"]["text"]
+    assert not list(at.main.caption), [c.value for c in at.main.caption]
+    assert "当前没有持仓" in _texts(at), "「当前持仓」标签页里那句还在"
+    assert _texts(at).count("没有持仓") == 1, "没有持仓这件事同一屏说了两遍"
 
 
 # ================================================================ 记账页改版（2026-11-16）

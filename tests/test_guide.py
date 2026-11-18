@@ -1069,6 +1069,8 @@ def test_every_help_text_renders_cleanly_in_a_help_dot():
     # 2026-11-16 第二轮起进圆点的还有这几批：首页三个区块、各张表的读表说明、仪表盘的口径。
     texts += [v.format(sealed=guide.HOME_SEALED_CLOSE) for v in guide.HOME_SECTION_HELP.values()]
     texts += list(guide.TABLE_HINTS.values()) + [guide.JOURNAL_PNL_HINT]
+    # 2026-11-18：「持仓与盈亏」页名后面的圆点（原先页顶的折叠区）与「不在信号池」那一行的圆点。
+    texts += [guide.JOURNAL_REPORT_INTRO, guide.JOURNAL_OUTSIDE_POOL_HELP]
     for t in texts:
         html = theme.help_dot(t, wide=True)
         assert "**" not in html and "\n" not in html, t[:24]
@@ -1098,3 +1100,41 @@ def test_breadth_facts_reference_the_single_source():
     from quant import market
     assert guide.FACTS["breadth_ready"] == market.BREADTH_READY.strftime("%H:%M")
     assert "分钟" in guide.FACTS["breadth_first_run"]
+
+
+# ================================================================ 「持仓与盈亏」页的话（2026-11-18）
+
+def test_the_report_page_intro_keeps_every_limit_the_expander_used_to_state():
+    """页顶那个折叠区「这些数字怎么算的、已知局限」并进了页名后面的帮助圆点。搬家不许丢东西：
+    按你记的账算（不是券商数据）、配股没自动处理、不做税务口径这三条在这里；
+    「浮动盈亏依赖本地行情」那一条在「仪表盘」小标题的圆点里（同一屏不说两遍）。"""
+    intro = guide.JOURNAL_REPORT_INTRO
+    for fragment in ("按你记的账", "不是券商数据", "配股", "股数调整", "税务", "佣金"):
+        assert fragment in intro, f"页名后面的圆点里缺「{fragment}」"
+    assert "行情" in guide.JOURNAL_PNL_HINT and "不按 0 算" in guide.JOURNAL_PNL_HINT
+    assert "行情" not in intro, "行情那一条在仪表盘的圆点里，这里再说就是同屏第二遍"
+    html = theme.help_dot(intro, wide=True)
+    assert html.count("<li>") == 2 and html.count("<p>") == 2, html
+    assert not hasattr(guide, "JOURNAL_LIMITS"), "折叠区用的那段话已经没有人用了，别留着"
+
+
+def test_the_stray_holding_line_is_short_and_explains_itself_in_the_dot():
+    """明面上只有一句会变的话；信号池是什么、要不要管，在圆点里。链接上的字只说去哪一页。"""
+    line = guide.JOURNAL_OUTSIDE_POOL.format(names="美的集团（000333）")
+    assert line == "美的集团（000333）不在信号池里，出现卖出信号时不会提醒你。"
+    tip = guide.JOURNAL_OUTSIDE_POOL_HELP
+    assert "信号跟踪" in tip and "信号池" in tip and "可以不管" in tip
+    assert guide.JOURNAL_OUTSIDE_POOL_LINK == "去信号池" and guide.JOURNAL_FIX_LINK == "去记账"
+
+
+def test_the_report_page_tips_explain_two_lots_without_the_word_lot():
+    """「一次卖出吃掉两个买入批次」「配对关系」「未配对的股数」「上面会有告警」——页顶那句话改成人话之后，
+    同一页的两个圆点里还留着同一批词（独立审查指出的）。意思要留着：分两次买进的，卖的时候算两笔。"""
+    closings, dashboard = guide.TABLE_HINTS["closings"], guide.JOURNAL_PNL_HINT
+    for word in ("批次", "配对", "告警", "吃掉"):
+        assert word not in closings and word not in dashboard, word
+    assert "分两次买进" in closings and "两行" in closings
+    assert "分两次买进" in dashboard and "算两笔" in dashboard
+    assert "买入记录号" in closings, "那一列的名字还得对得上表头"
+    assert "页面最上方" in closings, "账上找不到买入的那部分列在哪，要指对地方"
+    assert guide.JOURNAL_SAME_PROBLEM.format(message="某句话。", n=2) == "某句话。（这样的记录有 2 笔）"

@@ -134,6 +134,9 @@ class _Book:
     name: str = ""
     lots: list[_Lot] = field(default_factory=list)
     issues: list[Inconsistency] = field(default_factory=list)
+    #: 到眼下这一行为止，账上记没记过它的买入。只给卖超那句话用：「从没记过买入」与
+    #: 「记过、但已经卖完了」是两件事，补救办法也不一样（见 _oversell_message）。
+    ever_bought: bool = False
 
     @property
     def shares(self) -> float:
@@ -165,8 +168,10 @@ def compute_pnl(trades: pd.DataFrame) -> PnlReport:
         if not symbol or kind not in schema.KINDS or day is None:
             issue = Inconsistency(
                 UNUSABLE_ROW, symbol, trade_id,
-                f"这行记录无法解释（类型 {kind!r}、代码 {symbol!r}、日期 "
-                f"{row.get(schema.DATE_COLUMN)!r}），已跳过，不计入持仓与盈亏")
+                f"有一行记录读不出来（类型 {schema.KIND_NAMES.get(kind) or _shown(kind)}、"
+                f"代码 {_shown(symbol)}、日期 "
+                f"{_shown(day if day is not None else row.get(schema.DATE_COLUMN))}），"
+                f"已跳过，没有计入持仓与盈亏。在历史记录里把它改对或删掉。")
             # 连代码都认不出来时挂不到任何一只票上，收进 orphans——
             # 丢掉的话这一行就彻底消失了，而"少了一笔"没有任何迹象。
             (_book(books, symbol).issues if symbol else orphans).append(issue)
@@ -177,7 +182,7 @@ def compute_pnl(trades: pd.DataFrame) -> PnlReport:
             book.name = name                       # 后录的名称覆盖旧的（改过名的票）
 
         if kind == "dividend":
-            if (entry := _apply_dividend(book, row, trade_id)) is not None:
+            if (entry := _apply_dividend(book, row, trade_id, day)) is not None:
                 dividends.append(entry)
         elif kind == "buy":
             _apply_buy(book, row, trade_id, day)
@@ -211,11 +216,13 @@ def _apply_buy(book: _Book, row, trade_id: str, day: date) -> None:
     shares = schema.to_number(row.get("shares"))
     price = schema.to_number(row.get("price"))
     if not (_usable(shares) and _usable(price)):
+        # 跳过而不是当成 0：那会凭空造出一笔 0 成本的持仓。
         book.issues.append(Inconsistency(
             UNUSABLE_ROW, book.symbol, trade_id,
-            f"买入没有可用的股数/价格（{shares}/{price}），已跳过："
-            f"当成 0 会凭空造出一笔 0 成本的持仓"))
+            f"{_which(book, day)} 的买入，股数或成交价是空的或者不是正数，已跳过，"
+            f"没有计入持仓。在历史记录里把它改对。"))
         return
+    book.ever_bought = True
     # 成本基 = 股数×价格 + 买入费用（设计 §4.1）。tax 一并加上：买入通常是 0，
     # 但用户可能把过户费记在那里，认它比忽略它安全。
     book.lots.append(_Lot(
@@ -229,7 +236,8 @@ def _apply_sell(book: _Book, row, trade_id: str, day: date) -> Closing | None:
     if not (_usable(shares) and _usable(price)):
         book.issues.append(Inconsistency(
             UNUSABLE_ROW, book.symbol, trade_id,
-            f"卖出没有可用的股数/价格（{shares}/{price}），已跳过"))
+            f"{_which(book, day)} 的卖出，股数或成交价是空的或者不是正数，已跳过，"
+            f"没有计入盈亏。在历史记录里把它改对。"))
         return None
 
     fee, tax = _fee(row), _tax(row)
@@ -240,11 +248,8 @@ def _apply_sell(book: _Book, row, trade_id: str, day: date) -> Closing | None:
     # 用 _EPS 而不是 `matched < shares`：送股摊薄后的批次股数带浮点尾巴
     # （1300.0000000000002），严格小于会把一次正常的清仓误报成卖超。
     if shares - matched > _EPS:
-        issue = Inconsistency(
-            OVERSELL, book.symbol, trade_id,
-            f"卖出 {shares:g} 股但只有 {matched:g} 股配得上买入批次，"
-            f"未配对的 {shares - matched:g} 股成本未知，不计入已实现盈亏"
-            f"——是不是漏记了一笔买入？")
+        issue = Inconsistency(OVERSELL, book.symbol, trade_id,
+                              _oversell_message(book, day, shares, matched))
         issues.append(issue)
         book.issues.append(issue)                  # 持仓页要持续看得到（设计 §3）
 
@@ -280,7 +285,8 @@ def _apply_sell(book: _Book, row, trade_id: str, day: date) -> Closing | None:
         source=_source(row), matches=matches, issues=tuple(issues))
 
 
-def _apply_dividend(book: _Book, row, trade_id: str) -> tuple[str, float] | None:
+def _apply_dividend(book: _Book, row, trade_id: str, day: date
+                    ) -> tuple[str, float] | None:
     """现金分红：**累加进已实现收益，不动批次**（设计 §4.1）。
 
     A 股蓝筹年化股息 2–4%，长期持有下这部分收益不小，静默忽略是系统性低估。
@@ -290,7 +296,8 @@ def _apply_dividend(book: _Book, row, trade_id: str) -> tuple[str, float] | None
     if amount is None:
         book.issues.append(Inconsistency(
             UNUSABLE_ROW, book.symbol, trade_id,
-            "分红没有到账金额，已跳过：按 0 计会让这笔收益从总数里静默消失"))
+            f"{_which(book, day)} 的分红缺到账金额，已跳过，没有计入已实现收益。"
+            f"在历史记录里把它补全。"))
         return None
     # 减去用户记在 fee/tax 上的扣款（红利税通常记这里）。
     return _source(row), round(amount - _fee(row) - _tax(row), 2)
@@ -307,22 +314,23 @@ def _apply_adjust(book: _Book, row, trade_id: str, day: date) -> None:
     if delta is None or delta == 0:
         book.issues.append(Inconsistency(
             UNUSABLE_ROW, book.symbol, trade_id,
-            f"股数调整没有可用的数量（{delta}），已跳过（送股填正数、缩股填负数）"))
+            f"{_which(book, day)} 的股数调整，数量是空的或者是 0，已跳过。"
+            f"在历史记录里把它改对（送股填正数、缩股填负数）。"))
         return
 
     before = book.shares
     if before <= 0:
         book.issues.append(Inconsistency(
             ADJUST_WITHOUT_POSITION, book.symbol, trade_id,
-            f"{day} 的股数调整（{delta:+g} 股）没有对应的持仓批次，无法按比例摊，"
-            f"已跳过——是不是漏记了买入？"))
+            f"{_which(book, day)} 的股数调整（{_signed(delta)} 股）之前，账上没有它的持仓，"
+            f"没法调整，已跳过——是不是漏记了买入？"))
         return
     after = before + delta
     if after <= 0:
         book.issues.append(Inconsistency(
             NEGATIVE_SHARES, book.symbol, trade_id,
-            f"{day} 的股数调整（{delta:+g} 股）会让持仓从 {before:g} 变成 {after:g} 股，"
-            f"负持仓在现实里不存在，已跳过"))
+            f"{_which(book, day)} 的股数调整（{_signed(delta)} 股）会让持仓从 {_qty(before)} 股"
+            f"变成 {_qty(after)} 股，股数调整不能把持仓调成零或负数，已跳过——是不是数量填错了？"))
         return
 
     factor = after / before
@@ -452,6 +460,69 @@ def _position(book: _Book) -> Position:
 
 def _source(row) -> str:
     return str(row.get("source") or "").strip()
+
+
+# ---------------------------------------------------------------- 一致性标记的那句话
+# 这些句子原样出现在「持仓与盈亏」页上，读的人是记账的人，不是写这个模块的人。三条规矩
+# （2026-11-18，用户看着「卖出 1000 股但只有 0 股配得上买入批次，未配对的 1000 股成本未知」
+# 问「这句话啥意思」之后定的）：
+# 1. **先说是哪只票、哪一天**——原先一句话里连代码都没有，账上有几十笔时无从找起；
+# 2. 不用本模块自己的词（批次、配对、成本基）：说"账上在这之前没有它的买入记录""算不出盈亏"；
+# 3. 最后半句是**下一步做什么**。为什么要跳过（当成 0 会怎样）是写给改代码的人看的，留在注释里。
+
+def _which(book: _Book, day: date) -> str:
+    """是哪只票的哪一天：「名称（代码）2026-09-08」；账上还没出现过它的名称时是「代码 2026-09-08」。"""
+    return f"{book.name}（{book.symbol}）{day}" if book.name else f"{book.symbol} {day}"
+
+
+def _shown(value) -> str:
+    """读不出来的那一行里，某一格原本写的是什么；空着的说「空」
+    （含读回来的 NaN / NaT——照原样打出来就是「nan」「NaT」，那不是给人看的字）。"""
+    if value is None or (not isinstance(value, str) and pd.isna(value)):
+        return "空"
+    return str(value).strip() or "空"
+
+
+def _qty(value: float) -> str:
+    """股数写成给人看的数：整数带千分位（1,000），带小数的最多留四位、去掉末尾的 0。
+    不用 `:g`——它把一百万写成 1e+06。"""
+    if abs(value - round(value)) < 1e-9:
+        return f"{round(value):,}"
+    return f"{value:,.4f}".rstrip("0").rstrip(".")
+
+
+def _signed(value: float) -> str:
+    """股数调整的那个数，带正负号：+300 / -1,500。"""
+    return ("+" if value > 0 else "-") + _qty(abs(value))
+
+
+def _oversell_message(book: _Book, day: date, shares: float, matched: float) -> str:
+    """卖出的股数比那一刻账上有的多。三种情形分开说，因为它们不是一回事、补救办法也不一样：
+
+    1. **账上在这之前从没记过它的买入**（最常见——这只票是开始记账之前买的）：补记那笔买入。
+    2. **记过买入，但在这之前已经卖完了**；
+    3. **记过买入，那时手里还剩一些，但不够**。
+       后两种可能是漏记了一笔买入，也可能是**送股、转增没有记**。必须把后一种说出来：
+       只提「漏记买入」的话，照做的人会凭空补一笔买入——提示是消失了，成本却被悄悄改坏
+       （模块 docstring 第 3 条说的就是这种错）。
+
+    `matched` 是**这一刻账上还剩的股数**，不是"一共记过多少买入"：买 1000、卖 600、再卖 600，
+    第二次卖出时 matched 是 400。初稿把它写成「账上只记了 400 股的买入」，独立审查指出那是句假话
+    （2026-11-18）——所以说的是「那时手里只有 400 股」。
+
+    补记的日期必须早于这笔卖出：先进先出按日期逐笔处理，补一笔日期更晚的记录配不上这笔卖出，
+    账上反而多出一笔并不存在的持仓。所以最后那半句不能省。"""
+    which = _which(book, day)
+    if not book.ever_bought:
+        return (f"{which} 卖出 {_qty(shares)} 股，但账上在这之前没有它的买入记录，"
+                f"这笔的盈亏算不出来、没有计入。"
+                f"补记当初的买入就能算（成交日期要早于这笔卖出）。")
+    cause = "是不是漏记了买入，或者送股、转增没有记？补记的日期要早于这笔卖出。"
+    if matched <= _EPS:
+        return (f"{which} 卖出 {_qty(shares)} 股，但按账上的记录，它在这之前已经卖完了，"
+                f"这笔的盈亏算不出来、没有计入。{cause}")
+    return (f"{which} 卖出 {_qty(shares)} 股，但按账上的记录，那时手里只有 {_qty(matched)} 股，"
+            f"多出来的 {_qty(shares - matched)} 股算不出盈亏、没有计入。{cause}")
 
 
 def _fee(row) -> float:

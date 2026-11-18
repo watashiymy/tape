@@ -740,3 +740,205 @@ def test_works_on_a_dataframe_round_tripped_through_the_store(tmp_path):
     assert report.matches[0].name == "美的集团"
     assert report.summary["realized_pnl"] == 1984.00
     assert report.summary["dividends"] == 500.00
+
+
+# ================================================================ 标记上那句话是写给记账的人看的（2026-11-18）
+#
+# 这些句子原样出现在「持仓与盈亏」页上。原先那一句是「卖出 1000 股但只有 0 股配得上买入批次，
+# 未配对的 1000 股成本未知，不计入已实现盈亏」——用户看着它问「这句话啥意思」：没说是哪只票，
+# 用的全是本模块自己的词。下面钉三件事：点名哪只票哪一天、不用内部的词、说得出下一步做什么。
+
+def _messages(*rows) -> list[str]:
+    return [i.message for i in pnl.compute_pnl(_rows(*rows)).inconsistencies]
+
+
+#: 算盈亏这一层自己的词，记账的人不认识。
+JARGON = ("批次", "配对", "配得上", "成本基", "成本未知", "FIFO", "先进先出")
+
+_NAMED = dict(symbol="600036", name="招商银行")
+_ISSUE_CASES = {
+    "卖出找不到买入": [_sell(date(2026, 9, 8), 1000, 40.5, **_NAMED)],
+    "卖出比买入多": [_buy(date(2026, 8, 20), 100, 49.0, **_NAMED),
+                 _sell(date(2026, 9, 8), 1000, 40.5, **_NAMED)],
+    "买入缺价格": [dict(date=date(2026, 9, 8), kind="buy", shares=1000.0, **_NAMED)],
+    "卖出缺股数": [_buy(date(2026, 8, 20), 100, 49.0, **_NAMED),
+                dict(date=date(2026, 9, 8), kind="sell", price=50.0, **_NAMED)],
+    "分红缺金额": [_buy(date(2026, 8, 20), 100, 49.0, **_NAMED),
+                dict(date=date(2026, 9, 8), kind="dividend", **_NAMED)],
+    "调整缺数量": [_buy(date(2026, 8, 20), 100, 49.0, **_NAMED),
+                dict(date=date(2026, 9, 8), kind="adjust", **_NAMED)],
+    "调整时没有持仓": [_adjust(date(2026, 9, 8), 300, **_NAMED)],
+    "调整成负数": [_buy(date(2026, 8, 20), 100, 49.0, **_NAMED),
+                _adjust(date(2026, 9, 8), -500, **_NAMED)],
+}
+
+
+@pytest.mark.parametrize("case", list(_ISSUE_CASES))
+def test_every_flag_says_which_stock_and_which_day(case):
+    """账上有几十笔时，一句不说是哪只票的话无从找起。名称与代码都要有，日期是出问题的那一笔的。"""
+    messages = _messages(*_ISSUE_CASES[case])
+    assert len(messages) == 1, messages
+    assert messages[0].startswith("招商银行（600036）2026-09-08 "), messages[0]
+
+
+@pytest.mark.parametrize("case", list(_ISSUE_CASES))
+def test_no_flag_speaks_in_the_engines_own_words(case):
+    for message in _messages(*_ISSUE_CASES[case]):
+        for word in JARGON:
+            assert word not in message, f"「{word}」是算盈亏那一层自己的词：{message}"
+        assert "None" not in message and "nan" not in message.lower(), message
+
+
+def test_a_sell_with_no_buy_on_the_books_says_so_and_how_to_fix_it():
+    """最常见的一种：这只票是开始记账之前买的。说清三件事——账上在这之前没有它的买入、这笔的盈亏
+    没算进去、补记买入就行；还有补记时最容易错的一处：日期要早于这笔卖出（补一笔日期更晚的买入
+    配不上它，账上反而多出一笔并不存在的持仓）。"""
+    (message,) = _messages(*_ISSUE_CASES["卖出找不到买入"])
+    assert "卖出 1,000 股" in message
+    assert "在这之前没有它的买入记录" in message
+    assert "没有计入" in message
+    assert "补记" in message and "早于这笔卖出" in message
+
+
+def test_a_sell_larger_than_what_was_left_counts_the_shares():
+    (message,) = _messages(*_ISSUE_CASES["卖出比买入多"])
+    assert "卖出 1,000 股" in message and "那时手里只有 100 股" in message
+    assert "多出来的 900 股" in message and "没有计入" in message
+    assert "早于这笔卖出" in message
+    assert "没有它的买入记录" not in message, "记过一部分的，不能说成一笔都没记"
+
+
+# 独立审查（2026-11-18）指出的三种情形：初稿把"那一刻账上还剩多少股"说成了"一共记过多少买入"，
+# 只有"从没记过买入"这一种情形下两者才是一回事。
+
+def test_a_stock_that_was_bought_and_sold_out_is_not_said_to_have_no_buy():
+    """买 1000 → 卖 1000 → 又卖 500：买入记过，只是已经卖完了。说「账上没有它的买入记录」是假话。"""
+    (message,) = _messages(_buy(date(2026, 8, 3), 1000, 49.0, **_NAMED),
+                           _sell(date(2026, 8, 20), 1000, 50.0, **_NAMED),
+                           _sell(date(2026, 9, 8), 500, 40.5, **_NAMED))
+    assert message.startswith("招商银行（600036）2026-09-08 卖出 500 股"), message
+    assert "已经卖完了" in message, message
+    assert "没有它的买入记录" not in message, message
+    assert "没有计入" in message and "早于这笔卖出" in message
+
+
+def test_the_shares_named_are_what_was_left_not_what_was_ever_bought():
+    """买 1000 → 卖 600 → 又卖 600：记过 1000 股的买入，第二次卖出时账上只剩 400。
+    说「只记了 400 股的买入」是假话；说的应该是那时手里有多少。"""
+    (message,) = _messages(_buy(date(2026, 8, 3), 1000, 49.0, **_NAMED),
+                           _sell(date(2026, 8, 20), 600, 50.0, **_NAMED),
+                           _sell(date(2026, 9, 8), 600, 40.5, **_NAMED))
+    assert "那时手里只有 400 股" in message and "多出来的 200 股" in message, message
+    assert "的买入" not in message.split("多出来的")[0], f"前半句不该说成买入记了多少：{message}"
+
+
+@pytest.mark.parametrize("earlier_sell", [False, True])
+def test_a_shortfall_names_unrecorded_bonus_shares_as_a_possible_cause(earlier_sell):
+    """买 1000，10 送 3 没记，卖 1300：对不上的原因是送股没记，不是漏了买入。只提「漏记买入」的话，
+    照做的人会凭空补一笔买入——提示是消失了，成本却被悄悄改坏。两种"记过买入"的情形都要提到送股。"""
+    rows = [_buy(date(2026, 8, 3), 1000, 49.0, **_NAMED)]
+    if earlier_sell:
+        rows.append(_sell(date(2026, 8, 20), 1000, 50.0, **_NAMED))
+    rows.append(_sell(date(2026, 9, 8), 1300, 40.5, **_NAMED))
+    (message,) = _messages(*rows)
+    assert "送股" in message and "转增" in message, message
+    assert "漏记了买入" in message, message
+
+
+def test_bonus_shares_are_not_offered_as_a_cause_when_nothing_was_ever_bought():
+    """从没记过买入的，不可能是送股没记（没有股可送）——别给一个不可能的原因。"""
+    (message,) = _messages(*_ISSUE_CASES["卖出找不到买入"])
+    assert "送股" not in message, message
+
+
+def test_a_late_buy_does_not_cover_an_earlier_sell():
+    """上一条里那半句「日期要早于这笔卖出」不是客套：补一笔日期更晚的买入，卖出照样对不上，
+    账上还多出一笔持仓。这条钉的是那半句话说的是真的。"""
+    late = pnl.compute_pnl(_rows(_sell(date(2026, 9, 8), 1000, 40.5, **_NAMED),
+                                 _buy(date(2026, 11, 18), 1000, 49.0, **_NAMED)))
+    assert pnl.OVERSELL in codes(late.inconsistencies)
+    assert by_symbol(late)["600036"].shares == 1000.0
+    early = pnl.compute_pnl(_rows(_sell(date(2026, 9, 8), 1000, 40.5, **_NAMED),
+                                  _buy(date(2026, 8, 20), 1000, 49.0, **_NAMED)))
+    assert early.inconsistencies == ()
+    assert "600036" not in by_symbol(early)
+    assert early.summary["n_trades"] == 1
+
+
+def test_a_stock_with_no_name_on_the_books_is_called_by_its_code():
+    (message,) = _messages(_sell(date(2026, 9, 8), 1000, 40.5, symbol="600036"))
+    assert message.startswith("600036 2026-09-08 卖出 1,000 股"), message
+    assert "（）" not in message and "None" not in message
+
+
+def test_a_row_that_cannot_be_read_shows_what_it_says_without_code_quotes(tmp_path):
+    """连类型都认不出来的行：把那一行写了什么说出来（好去历史记录里找），空着的说「空」——
+    不是 Python 的引号、nan，也不是带着 00:00:00 的时间戳。走真实路径：先存盘再读回来。"""
+    frame = _rows(_buy(date(2026, 8, 20), 100, 49.0))
+    frame.loc[0, "kind"] = "split"
+    frame.loc[0, "symbol"] = ""
+    path = tmp_path / "trades.csv"
+    store.save_trades(frame, path)
+    (message,) = [i.message for i in pnl.compute_pnl(store.load_trades(path)).inconsistencies]
+    assert "读不出来" in message and "类型 split" in message and "代码 空" in message, message
+    assert "日期 2026-08-20）" in message, message
+    assert "'" not in message and "nan" not in message.lower() and "00:00" not in message, message
+    assert "已跳过" in message and "没有计入" in message
+
+
+def test_a_row_with_no_readable_date_says_the_date_is_blank():
+    frame = _rows(_buy(date(2026, 8, 20), 100, 49.0, **_NAMED))
+    frame["date"] = frame["date"].astype(object)
+    frame.loc[0, "date"] = pd.NaT
+    (message,) = [i.message for i in pnl.compute_pnl(frame).inconsistencies]
+    assert "读不出来" in message and "日期 空" in message, message
+    assert "NaT" not in message and "None" not in message, message
+
+
+def test_share_counts_are_written_for_people():
+    """千分位，不用科学计数法（一百万股不是 1e+06），带小数的不留一串 0。"""
+    (big,) = _messages(_sell(date(2026, 9, 8), 1_000_000, 40.5, **_NAMED))
+    assert "卖出 1,000,000 股" in big and "e+" not in big, big
+    (odd,) = _messages(_buy(date(2026, 8, 3), 1000, 49.0, **_NAMED),
+                       _adjust(date(2026, 8, 10), 300.5, **_NAMED),
+                       _sell(date(2026, 9, 8), 2000, 40.5, **_NAMED))
+    assert "那时手里只有 1,300.5 股" in odd and "多出来的 699.5 股" in odd, odd
+
+
+@pytest.mark.parametrize("kind, shares, price", [("buy", -100.0, 49.0), ("buy", 100.0, 0.0),
+                                                ("sell", 0.0, 50.0)])
+def test_a_number_that_is_there_but_not_positive_is_not_called_missing(kind, shares, price):
+    """股数填了 -100、成交价填了 0：那一格不是空的，说「缺」对不上——照着去找空格的人找不到。"""
+    frame = _rows(_buy(date(2026, 8, 3), 1000, 49.0, **_NAMED),
+                  _buy(date(2026, 9, 8), 100, 49.0, **_NAMED))
+    frame.loc[1, ["kind", "shares", "price"]] = [kind, shares, price]
+    (message,) = [i.message for i in pnl.compute_pnl(frame).inconsistencies]
+    assert "不是正数" in message and "缺" not in message, message
+    assert message.startswith(f"招商银行（600036）2026-09-08 的{schema.KIND_NAMES[kind]}"), message
+
+
+def test_an_adjustment_of_zero_is_not_called_missing():
+    frame = _rows(_buy(date(2026, 8, 3), 1000, 49.0, **_NAMED),
+                  _adjust(date(2026, 9, 8), 300, **_NAMED))
+    frame.loc[1, "shares"] = 0.0
+    (message,) = [i.message for i in pnl.compute_pnl(frame).inconsistencies]
+    assert "是 0" in message and "缺" not in message, message
+
+
+def test_an_adjustment_down_to_exactly_zero_is_not_called_negative():
+    """缩股正好缩到 0 股：原先那句是「变成 0 股，持仓不可能是负的」——0 不是负的。"""
+    (message,) = _messages(_buy(date(2026, 8, 3), 1000, 49.0, **_NAMED),
+                           _adjust(date(2026, 9, 8), -1000, **_NAMED))
+    assert "从 1,000 股变成 0 股" in message, message
+    assert "零或负数" in message and "不可能是负的" not in message, message
+    (negative,) = _messages(_buy(date(2026, 8, 3), 1000, 49.0, **_NAMED),
+                            _adjust(date(2026, 9, 8), -1500, **_NAMED))
+    assert "（-1,500 股）" in negative and "变成 -500 股" in negative, negative
+
+
+def test_a_row_with_a_valid_kind_but_no_code_names_the_kind_in_chinese():
+    """读不出来的行里，类型是认得的四种之一时写它的中文名（买入），不写文件里存的那个英文词。"""
+    frame = _rows(_buy(date(2026, 8, 20), 100, 49.0))
+    frame.loc[0, "symbol"] = ""
+    (message,) = [i.message for i in pnl.compute_pnl(frame).inconsistencies]
+    assert "类型 买入" in message and "buy" not in message, message

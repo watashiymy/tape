@@ -853,3 +853,56 @@ def test_job_strip_escapes_title_and_status():
 @pytest.mark.parametrize("cls", ["qd-strip", "qd-strip-title", "qd-strip-status"])
 def test_job_strip_classes_have_css_rules(cls):
     assert re.search(rf"^\.{cls} \{{", theme.CSS, re.M), f"{cls} 没有对应的 CSS 规则"
+
+
+# ================================================================ 「要你看一眼」的一行（2026-11-18）
+# 「持仓与盈亏」页上账上对不上的地方、持仓不在信号池的提醒。原先是 st.warning 的黄框；用户的话：
+# 「这两句话啥意思？还搞得那么显眼」。这类话要一直留到处理完为止，所以是正文色的一行字，不带底色。
+
+def test_notice_is_a_plain_line_that_only_understands_bold():
+    """先整体转义、再只认 **加粗**——与帮助圆点、首次引导同一个口径。"""
+    html = theme.notice("**招商银行（600036）** 卖出 <b>1000</b> 股")
+    assert html.startswith('<div class="qd-notice">') and html.endswith("</div>")
+    assert "<b>招商银行（600036）</b>" in html
+    assert "&lt;b&gt;1000" in html and "<b>1000" not in html
+    assert "qd-help-dot" not in html, "没给说明就不出圆点"
+
+
+def test_notice_can_carry_a_help_dot_after_the_sentence():
+    """为什么、要不要管，在句子后面的圆点里（宽档：是两段话）。"""
+    html = theme.notice("美的集团（000333）不在信号池里。", help="第一段。\n\n第二段。")
+    assert html == ('<div class="qd-notice">美的集团（000333）不在信号池里。'
+                    + theme.help_dot("第一段。\n\n第二段。", wide=True) + "</div>")
+
+
+def test_notice_of_nothing_is_nothing():
+    """空串返回空串：调用方据此连元素都不放（st.html("") 也占一个元素位）。"""
+    assert theme.notice("") == "" and theme.notice("  \n") == ""
+    assert theme.notice("", help="有说明也一样") == ""
+
+
+def test_notice_is_quiet_by_design():
+    """不带底色、不带边框、正文色：它天天亮着，做成黄框要么吓人、要么再也没人看。
+    句首那个小点用琥珀——这一行右端有一个可以点的去处。几条摞在一起时留一点空。"""
+    rules = _css_rules()
+    body = rules[".qd-notice"]
+    assert "background" not in body and "border" not in body, body
+    assert "color: var(--qd-text)" in body
+    assert "background: var(--qd-primary)" in rules[".qd-notice::before"]
+    assert "margin-top" in rules[".qd-notice + .qd-notice"]
+
+
+def test_a_notice_anchors_its_tip_to_the_row_not_to_the_dot():
+    """圆点跟在句子末尾，句子多长它就在多靠右的地方。照别处那样从圆点向右展开 22rem，1024 宽下
+    提示框有一百多像素伸到视口外面，悬停时页面还冒出横向滚动条（独立审查量的）。所以这一行里
+    圆点不当定位的参照（static），提示框锚在这一行自己的左缘、出在它下面，宽度不超过这一行。"""
+    rules = _css_rules()
+    assert "position: relative" in rules[".qd-notice"], "这一行自己得是定位的参照"
+    assert "position: static" in rules[".qd-notice .qd-help-dot"]
+    tip = rules[".qd-notice .qd-help-tip"]
+    assert "top: 100%" in tip and "left:" in tip and "max-width:" in tip, tip
+    assert "right:" not in tip
+    # 这两条规则只管这一行里的圆点：别处的圆点照旧锚在自己身上
+    assert "position: relative" in rules[".qd-help-dot"]
+    heads = [h for h, _ in _css_rule_pairs()]
+    assert heads.count(".qd-notice .qd-help-tip") == 1 and heads.count(".qd-notice .qd-help-dot") == 1

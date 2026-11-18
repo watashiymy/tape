@@ -881,7 +881,8 @@ def positions_columns() -> dict:
             FLOAT_PNL_COLUMN, alignment="right",
             help="（最新价 × 股数）− 持仓成本。最新价拿不到时显示 —，不按 0 算。"),
         ISSUE_COLUMN: st.column_config.TextColumn(
-            ISSUE_COLUMN, help="卖超/调整无持仓等；详情见上面的告警。"),
+            ISSUE_COLUMN, help="账上对不上的地方（卖出超过持仓、调整时没有持仓等）。"
+                               "是哪一笔、怎么处理，见页面上方那几行。"),
     }
 
 
