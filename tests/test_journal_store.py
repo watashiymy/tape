@@ -400,7 +400,11 @@ def test_the_backup_sits_next_to_the_journal(tmp_path):
 
 
 def test_a_third_save_overwrites_the_backup_with_the_second_version(tmp_path):
-    """单层备份（设计 §3 明确不做轮转）：.bak 永远是**紧邻的上一版**。"""
+    """单层备份（设计 §3 明确不做轮转）：.bak 永远是**紧邻的上一版**。
+
+    "只留一层"连目录一起看（2026-11-18 补）：只比 .bak 的内容的话，悄悄多留一层
+    （把被换下来的那份另存成别的名字）是看不出来的——第三次保存才有东西可轮转。
+    """
     path = tmp_path / "trades.csv"
     store.append_trade(_row(reason="第一笔"), path, now=NOW)
     store.append_trade(_row(reason="第二笔"), path, now=NOW)
@@ -409,6 +413,8 @@ def test_a_third_save_overwrites_the_backup_with_the_second_version(tmp_path):
     store.append_trade(_row(reason="第三笔"), path, now=NOW)
 
     assert store.backup_path(path).read_bytes() == second
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "trades.csv", "trades.csv.bak", "trades.csv.lock"]
 
 
 def test_a_failed_backup_is_not_swallowed(tmp_path):
@@ -522,6 +528,28 @@ def test_a_failed_write_does_not_conjure_a_backup(tmp_path, monkeypatch):
     assert sorted(p.name for p in tmp_path.iterdir()) == ["trades.csv", "trades.csv.lock"]
 
 
+def test_a_write_interrupted_by_ctrl_c_changes_nothing_either(tmp_path, monkeypatch):
+    """写新内容时被 Ctrl-C 打断（面板与脚本共用这份日志，脚本是会被打断的）：同样两个文件
+    不动、不留临时文件。
+
+    上面几条抛的都是 OSError。收临时文件若只认那一类错，这里就会留下一个——Ctrl-C 不是
+    OSError，连 Exception 都不是。
+    """
+    path, journal, previous = _two_saves(tmp_path)
+
+    def interrupted(*args, **kwargs):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(pd.DataFrame, "to_csv", interrupted)
+
+    with pytest.raises(KeyboardInterrupt):
+        store.append_trade(_row(symbol="600036", name="招商银行", reason="第三笔"), path, now=NOW)
+
+    assert path.read_bytes() == journal
+    assert store.backup_path(path).read_bytes() == previous
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "trades.csv", "trades.csv.bak", "trades.csv.lock"]
+
+
 #: 下面两条用的"单个文件最多能写多大"（字节）：几条记录的表比它小，`_BIG` 那样的表比它大。
 _FILE_SIZE_LIMIT = 4096
 _BIG = (40, "占地方" * 100)       # 四十条、每条备注九百字节：存出来有几十 KB
@@ -560,6 +588,9 @@ def _refused_by_the_system(path: Path, n: int, note: str = "") -> None:
                                            args=(str(path), n, note))
     proc.start()
     proc.join(120)
+    if proc.is_alive():                              # 卡住了：别把它留在后台
+        proc.kill()
+        proc.join()
     assert proc.exitcode == 0, f"前提没成立（退出码 {proc.exitcode}）：没有在写的时候被系统拒绝"
 
 
@@ -604,6 +635,33 @@ def test_a_backup_the_system_refuses_halfway_leaves_the_old_one_whole(tmp_path):
     assert sorted(p.name for p in tmp_path.iterdir()) == ["trades.csv", "trades.csv.bak"]
 
 
+def test_a_backup_that_cannot_be_moved_into_place_leaves_the_old_one_there(tmp_path, monkeypatch):
+    """另存上一版的最后一下——把写好的临时文件改名成 .bak——失败：原来那份上一版得原样还在。
+
+    在一块真的写满的小磁盘上量过：保存失败多半就落在这一下（写内容本身没报错，改名报
+    "No space left on device"），所以它是最该守住的一种。上一条守的是"写到一半"；
+    `test_a_failed_backup_is_not_swallowed` 拿一个目录占着 .bak，比不了内容。
+    "先把旧的 .bak 删掉、再把新的改名过去"在平时看不出任何差别，在这里就把上一版删没了。
+    """
+    path, journal, previous = _two_saves(tmp_path)
+    bak = store.backup_path(path)
+    real_replace = os.replace
+
+    def no_room_for_the_backup(src, dst, *args, **kwargs):
+        if Path(dst) == bak:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_replace(src, dst, *args, **kwargs)
+    monkeypatch.setattr(store.os, "replace", no_room_for_the_backup)
+
+    with pytest.raises(OSError, match="No space left"):
+        store.append_trade(_row(symbol="600036", name="招商银行", reason="第三笔"), path, now=NOW)
+
+    assert path.read_bytes() == journal, "另存上一版没做成，日志却换了"
+    assert bak.exists() and bak.read_bytes() == previous, "另存没做成，却把原来的上一版弄丢了"
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "trades.csv", "trades.csv.bak", "trades.csv.lock"]
+
+
 def test_the_previous_version_is_in_place_before_the_journal_is_replaced(tmp_path, monkeypatch):
     """把"写新内容"挪到前面之后，这条顺序仍然不许反：日志被换掉的**那一刻**，被换掉的
     那一版必须已经躺在 .bak 里。
@@ -633,8 +691,8 @@ def test_the_previous_version_is_in_place_before_the_journal_is_replaced(tmp_pat
 
 def test_the_gap_that_is_left_a_failed_final_rename_costs_the_previous_version(tmp_path, monkeypatch):
     """**没补上的那一小段，如实钉在这里**：新内容写好了、上一版也另存好了，最后把日志换成
-    新内容的那一下改名失败——日志文件被锁定、被别的程序占着时就是这样（在 macOS 上把文件
-    真的锁定之后实测过，报的就是下面这个错）。
+    新内容的那一下改名失败——日志文件被锁定时就是这样（在 macOS 上把文件真的锁定之后
+    实测过，报的就是下面这个错）；磁盘真的写满时，极少数也会落在这一下（独立审查扫出过）。
 
     该守住的都守住了：日志没变、不留临时文件、照样响亮报错。但 .bak 这时已经是**当前这版**
     的拷贝，原来的上一版没了——"换日志之前上一版必须已经到位"这条顺序的代价：两个文件的
