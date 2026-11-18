@@ -3837,3 +3837,155 @@ def test_an_empty_report_table_gets_no_help_line(tmp_path):
     assert not at.exception, at.exception
     assert not [e for e in at.get("html") if 'class="qd-help-line"' in e.proto.body
                 and not e.proto.body.lstrip().startswith("<style>")]
+
+
+# ================================================================ 表格右上角那条浮动工具条的落脚处（2026-11-18）
+#
+# 历史表（st.data_editor）自带一条浮动工具条：右上角四个小图标（显示 / 隐藏列、下载、搜索、全屏）。
+# 平时它是透明的，缩在表格与上一行之间那 1rem 的空隙里；鼠标停在表上、表里选中着一格、
+# 或者鼠标从表格往上移经过它的时候，它显出来并上移——顶边比表格顶边高出 2.65rem（42.4 像素），
+# 贴着表格右缘、宽约 106 像素。于是表格正上方靠右的控件被它盖住：有筛选生效时是「清除筛选」
+# 下面约三分之二（点它的下半截没有反应，再偏一点就点开了表格的搜索框）；筛选框展开时是
+# 「理由关键词」输入框的右下角。真实浏览器里复现过、逐点量过。
+#
+# 表格没有关掉这条工具条的开关，主题样式又只许选我们自己的 .qd-*（不能去藏它、挪它），
+# 所以做法只有一个：**表格正上方靠右，不放可点的东西**——在会紧挨着表格的两处各垫一条空当
+# （ui.toolbar_room）：「筛选」折叠区的最下面（只有展开时才看得见），和「清除筛选」那一行与表格之间
+# （只有筛选生效时才有）。平时——折叠区收着、没有筛选——页面和原先一模一样。
+#
+# AppTest 没有像素。下面钉的是元素树里看得见的东西：谁紧挨在表格上面、空当垫在哪儿、垫的是哪一档；
+# 几何关系（哪一档够高）另有两条：一条按 streamlit 自己的尺寸表算，一条去看装着的前端里
+# 那个上移的距离还是不是 2.65rem。真实浏览器里的量法与结果在
+# docs/superpowers/specs/2026-11-18-table-toolbar-room-design.md。
+
+#: 工具条显出来时，顶边比表格顶边高出多少（rem）。streamlit 1.61.1 前端里写死的数，
+#: 真实浏览器里量到的是 42.4 像素（根字号 16）。
+TOOLBAR_RISE_REM = 2.65
+#: 页面上相邻两个元素之间的空隙（rem）。同样是量出来的：16 像素。
+ELEMENT_GAP_REM = 1.0
+
+FILTER_KEYS = (jui.FILTER_START_KEY, jui.FILTER_END_KEY, jui.FILTER_SYMBOL_KEY,
+               jui.FILTER_KIND_KEY, jui.FILTER_SOURCE_KEY, jui.FILTER_REASON_KEY)
+
+
+def _log_table(at: AppTest):
+    return at.get("dataframe")[_log_table_index(at)]
+
+
+def _just_above(at: AppTest, target):
+    """target 在它所在的那一块里，紧挨着的上一个元素（它已经是第一个时返回 None）。"""
+    siblings = list(path_to_element(at, target)[-1].children.values())
+    index = next(i for i, child in enumerate(siblings) if child is target)
+    return siblings[index - 1] if index else None
+
+
+def _is_room(element) -> bool:
+    return getattr(element, "type", "") == "space"
+
+
+def _filtered_page(tmp_path, **filters) -> AppTest:
+    root = _root(tmp_path)
+    _journal(root, _buy(), _sell())
+    at = _page(root)
+    for key, value in filters.items():
+        widget = next(e for e in _walk(at.main) if getattr(e, "key", None) == key)
+        widget.set_value(value)
+    return at.run() if filters else at
+
+
+def test_the_clear_button_is_kept_out_from_under_the_table_toolbar(tmp_path):
+    """有筛选生效时，「清除筛选」那一行与表格之间垫着一条空当。没有它，按钮下面约三分之二
+    会被表格右上角抬起来的工具条盖住：点过表里的格子之后再去点「清除筛选」的下半截，筛选还在。"""
+    at = _filtered_page(tmp_path, **{jui.FILTER_KIND_KEY: ["sell"]})
+    assert not at.exception, at.exception
+    room = _just_above(at, _log_table(at))
+    assert _is_room(room), f"表格正上方应该是一条空当，实际是 {getattr(room, 'type', room)}"
+    row = _just_above(at, room)
+    assert jui.FILTER_CLEAR_KEY in _keys_inside(row), "空当上面紧挨着的应该是「清除筛选」那一行"
+    # 版式里别的都没动：按钮还在那一行的右端，「筛出几条」还在它左边
+    assert sits_on_the_right(at, jui.FILTER_CLEAR_KEY)
+    assert [c.value for c in _walk(row) if getattr(c, "type", "") == "caption"] == [
+        _guide().JOURNAL_FILTERED.format(shown=1, total=2, summary="类型 卖出")]
+
+
+def test_the_filter_box_ends_with_room_for_the_table_toolbar(tmp_path):
+    """「筛选」折叠区的最下面垫着一条空当：展开而又没有筛选生效时，紧挨在表格上面的就是那六个
+    筛选框——最右边的「理由关键词」右下角会被工具条盖住。垫在折叠区**里面**，收起来时它不占地方。"""
+    at = _filtered_page(tmp_path)
+    box = _expander(at, _guide().JOURNAL_FILTER)
+    children = list(box.children.values())
+    assert _is_room(children[-1]), \
+        f"折叠区里最后一样应该是空当，实际是 {[getattr(c, 'type', '?') for c in children]}"
+    inside = list(_walk(box))
+    for key in FILTER_KEYS:
+        widget = next(e for e in inside if getattr(e, "key", None) == key)
+        assert inside.index(widget) < inside.index(children[-1]), f"{key} 排到空当后面去了"
+    assert [e for e in inside if _is_room(e)] == [children[-1]], "折叠区里只垫这一条"
+
+
+def test_without_a_filter_the_table_still_sits_right_under_the_filter_box(tmp_path):
+    """平时（没有筛选生效）页面和原先一样：表格紧跟在「筛选」折叠区下面，中间不多留空。
+    折叠区收着的时候，表格正上方靠右没有控件可盖——为一条偶尔才出现的工具条天天空着一截，不值。"""
+    at = _filtered_page(tmp_path)
+    above = _just_above(at, _log_table(at))
+    assert above is _expander(at, _guide().JOURNAL_FILTER), \
+        f"表格上面紧挨着的应该是「筛选」折叠区，实际是 {getattr(above, 'type', above)}"
+    rooms = [e for e in _walk(at.main) if _is_room(e)]
+    assert len(rooms) == 1, "没有筛选时，整页只有折叠区里那一条空当"
+
+
+def test_filtering_everything_away_leaves_no_gap_for_a_table_that_is_not_there(tmp_path):
+    """筛到一条不剩：没有表格，也就没有工具条——那句「没有符合条件的记录」紧跟在
+    「清除筛选」那一行下面，不垫空当。"""
+    at = _filtered_page(tmp_path, **{jui.FILTER_REASON_KEY: "根本没有这个词"})
+    assert not at.exception, at.exception
+    said = next(e for e in _walk(at.main)
+                if getattr(e, "type", "") == "markdown" and e.value == _guide().JOURNAL_FILTER_NONE)
+    assert jui.FILTER_CLEAR_KEY in _keys_inside(_just_above(at, said))
+    box = _expander(at, _guide().JOURNAL_FILTER)
+    outside = [e for e in _walk(at.main) if _is_room(e) and not any(e is i for i in _walk(box))]
+    assert outside == [], "没有表格，却在折叠区外面垫了空当"
+
+
+def test_every_gap_left_for_the_table_toolbar_is_the_agreed_size(tmp_path, monkeypatch):
+    """两处空当垫的是同一档（ui.TOOLBAR_ROOM），而且这一档够高：上下各一道元素间的空隙
+    加上它，不小于工具条上移的距离。谁把它调小一档，工具条就又压到按钮上了。"""
+    from streamlit.elements.lib.layout_utils import SIZE_TO_REM_MAPPING
+
+    sizes: list = []
+    monkeypatch.setattr(st, "space", lambda size="small": sizes.append(size))
+    at = _filtered_page(tmp_path)
+    at.multiselect(key=jui.FILTER_KIND_KEY).set_value(["sell"])
+    sizes.clear()                        # 只数筛选生效的这一轮
+    at = at.run()
+    assert not at.exception, at.exception
+    room = app_module("ui").TOOLBAR_ROOM
+    assert len(sizes) == 2, f"有筛选时垫两处（折叠区里面、表格上面），实际 {len(sizes)} 处"
+    assert set(sizes) == {room}, sizes
+    clearance = ELEMENT_GAP_REM + SIZE_TO_REM_MAPPING[room] + ELEMENT_GAP_REM
+    assert clearance >= TOOLBAR_RISE_REM, \
+        f"空当只有 {clearance}rem，工具条要上移 {TOOLBAR_RISE_REM}rem"
+    # 也别垫得太多：再大一档就是 2.5rem，表格上方会空出一大截
+    assert SIZE_TO_REM_MAPPING[room] < 1.0, room
+
+
+def test_streamlit_still_lifts_the_table_toolbar_by_the_distance_we_measured():
+    """绊线：空当的高度是照着 streamlit 前端里的一个数留的——工具条显出来时 `top: -2.65rem`
+    （平时 `-1rem`）。这个数没有任何公开接口，升级 streamlit 时它要是变了（抬得更高），
+    工具条会悄悄地又压回按钮上，上面那些测试一条都不会红。所以直接去装着的前端里看一眼。
+
+    这条红了不等于页面坏了，只说明"当初量的那个数不作数了"：在真实浏览器里把
+    docs/superpowers/specs/2026-11-18-table-toolbar-room-design.md 里的量法重做一遍，
+    再回来改 TOOLBAR_RISE_REM 与 ui.TOOLBAR_ROOM。
+    """
+    static = Path(st.__file__).parent / "static"
+    marker = "top 100ms 100ms"           # 工具条"显出来"那条过渡，整个前端里只有它这么写
+    chunks = [text for path in static.rglob("*.js")
+              if marker in (text := path.read_text(encoding="utf-8", errors="ignore"))]
+    assert chunks, f"在 {static} 里找不到表格工具条的样式了：streamlit 的前端换了写法，重新量一遍"
+    offsets: set[str] = set()
+    for text in chunks:
+        at = text.index(marker)
+        offsets |= set(re.findall(r"-\d+(?:\.\d+)?rem", text[max(0, at - 600):at + 600]))
+    assert offsets == {f"-{TOOLBAR_RISE_REM}rem", f"-{ELEMENT_GAP_REM:g}rem"}, \
+        f"工具条上移的距离变了（现在是 {sorted(offsets)}）：重新量一遍，再改空当的高度"

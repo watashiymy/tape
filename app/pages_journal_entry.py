@@ -39,6 +39,12 @@ v0.3.0 的「交易日志」把五块（录入/历史/持仓/盈亏/导出）堆
   当场失焦提交、引出一次整页重跑，只开一轮的话框闪一下就没了（独立审查在真实浏览器里抓到的）。
   删不成时框不关，原因写在框里——页面最上面的红字，人在表格那儿看不到。
 
+**给表格的工具条让地方**（2026-11-18，docs/superpowers/specs/2026-11-18-table-toolbar-room-design.md）：
+历史表右上角有一条它自带的浮动工具条，鼠标停在表上、或者表里选中着一格时显出来并上移，盖住表格
+正上方靠右的控件——「清除筛选」下面约三分之二、展开的筛选框里「理由关键词」的右下角。藏不了它、
+也挪不了它，所以在这两处各垫一条空当（ui.toolbar_room）：「清除筛选」那一行与表格之间，和「筛选」
+折叠区的最下面。平时——折叠区收着、没有筛选——页面不变。
+
 这一页与面板其余页面有一个根本差别：**它会写一份不可再生的文件**。其余页面最坏的
 后果是显示错了，重跑一次就好；这里最坏的后果是用户真实的交易记录被改错或删错。
 所以版面上有三条纪律（沿自 v0.3.0 §5）：
@@ -371,6 +377,10 @@ def _log_section(trades) -> tuple[bool, tuple | None]:
     # 折叠而不是"点了才渲染"：控件一直在页面上，筛选条件不会因为收起而丢。
     with st.expander(guide.JOURNAL_FILTER, type="compact", key=BOX_FILTER_KEY):
         _filters(trades)
+        # 折叠区最下面垫一条空当（2026-11-18）：展开而又没有筛选生效时，紧挨在表格上面的就是
+        # 这六个筛选框，最右边「理由关键词」的右下角会被表格抬起来的工具条盖住（ui.toolbar_room）。
+        # 垫在折叠区**里面**：收起来时它不占地方，平时的页面一个像素都不变。
+        ui.toolbar_room()
     conditions = journal_ui.current_filter()
     filtered = export.filter_trades(trades, **conditions)
     if summary := journal_ui.filter_summary(conditions):
@@ -387,6 +397,11 @@ def _log_section(trades) -> tuple[bool, tuple | None]:
     if not len(filtered):
         st.write(guide.JOURNAL_FILTER_NONE)
     else:
+        if summary:
+            # 「清除筛选」就在表格正上方靠右，正是工具条抬起来要占的那一块：它与表格之间也垫一条。
+            # 改之前按钮下面约三分之二被盖着——点过表里的格子之后去点它的下半截，筛选还在。
+            # 筛没了（上面那个分支）不垫：没有表格，也就没有工具条。
+            ui.toolbar_room()
         edited = _editor(filtered)
     return _log_actions(filtered, edited), edited
 
