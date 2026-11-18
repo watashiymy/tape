@@ -66,6 +66,9 @@ KIND_NAMES = {"buy": "买入", "sell": "卖出", "adjust": "股数调整", "divi
 #: 校验信息里会点名的那几个数字字段。信息是给填表的人看的：空着表单点一下「记这一笔」，
 #: 页面上第一句话原先是「buy 必须填写 shares」——内部的键原样甩了出去（2026-11-16 真机看到）。
 _FIELD_NAMES = {"shares": "股数", "price": "成交价", "amount": "到账金额"}
+#: 「类型」那两句校验信息（缺少 / 认不出来）里列出的可选项：页面上的名字，顺序同 KINDS。
+#: 原先一句手写着「分红」、另一句把 KINDS 那四个键原样拼了出来（2026-11-18）。
+_KIND_CHOICES = "/".join(KIND_NAMES[kind] for kind in KINDS)
 
 # adjust / dividend 不是可有可无的补丁（设计 §2.2）：
 # 送股不是交易但股数确实变了，没有 adjust 就与券商对不上，而且**不会报错**；
@@ -147,12 +150,20 @@ def validate_trade(row: Mapping, *, today: date, context: Context | None = None)
     ctx = context or _NO_CONTEXT
     issues: list[Issue] = []
 
-    kind = str(row.get("kind") or "").strip()
+    # 空不空一律问 is_blank，不写 `row.get("kind") or ""`：历史表里把「类型」那一格清空，交回来的是
+    # NaN，而 NaN 算真值——那种写法会把它变成 "nan" 三个字母，走进「认不出来」那一支，页面上就是
+    # 「无法解释的记录类型 'nan'，只支持 buy/sell/adjust/dividend」（2026-11-18 真机看到）。
+    raw_kind = row.get("kind")
+    kind = "" if is_blank(raw_kind) else str(raw_kind).strip()
     if not kind:
-        issues.append(Issue(MISSING, "kind", "缺少记录类型（买入/卖出/股数调整/分红）"))
+        issues.append(Issue(MISSING, "kind", f"缺少记录类型（{_KIND_CHOICES}）"))
     elif kind not in KINDS:
+        # 页面上填不出这种值，手改文件才会有。点出那个词（他得知道是哪个不对），可选的用页面上的名字列
+        # ——文件里存的那四个键，使用者在页面上从没见过。说「重新选一种」而不说「只能是……」：
+        # 手改文件的人若写的正是「买入」两个字，「『买入』认不出来，只能是买入……」是一句自相矛盾的话；
+        # 而在历史表那一格的下拉里重新选一次，哪种写错法都改得好。
         issues.append(Issue(BAD_KIND, "kind",
-                            f"无法解释的记录类型 {kind!r}，只支持 {'/'.join(KINDS)}"))
+                            f"记录类型「{kind}」认不出来，要重新选一种（{_KIND_CHOICES}）"))
 
     issues.extend(_check_date(row.get(DATE_COLUMN), today=today, ctx=ctx))
     issues.extend(_check_symbol(row.get("symbol"), ctx=ctx))

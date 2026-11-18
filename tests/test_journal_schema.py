@@ -521,3 +521,56 @@ def test_missing_numbers_are_named_in_chinese():
 
 def test_the_kind_names_cover_every_record_type():
     assert set(schema.KIND_NAMES) == set(schema.KINDS)
+
+
+# ---------------------------------------------------------------- 类型空着 / 类型认不出来（2026-11-18）
+#
+# 历史表里「类型」是个下拉格子，选中它按删除键就清空了。清空的格子交回来的不是 None，是 NaN，
+# 而 NaN 算真值——`str(NaN or "")` 是 "nan" 三个字母。于是点「保存修改」被拦下时（拦下是对的），
+# 页面上那句话成了「无法解释的记录类型 'nan'，只支持 buy/sell/adjust/dividend」：
+# 填表的人没填过 nan 这个词；后面四个是存进文件的键，页面上别处都叫买入 / 卖出 / 股数调整 / 现金分红。
+
+def _about_kind(row: dict) -> list:
+    return [i for i in schema.validate_trade(row, today=TODAY) if i.field == "kind"]
+
+
+@pytest.mark.parametrize("blank", [float("nan"), pd.NA, pd.NaT, None, "", "   "],
+                         ids=["NaN", "NA", "NaT", "None", "空串", "只有空白"])
+def test_a_blank_kind_is_a_missing_kind_whichever_blank_it_is(blank):
+    """空就是空，不管它是哪种空：表格里清空的格子（NaN）与表单里没选（None / 空串）是同一件事，
+    走的都是「缺少」那一支，不是「类型认不出来」——更不许崩（`pd.NA or ""` 会当场抛 TypeError）。"""
+    found = _about_kind(_buy(kind=blank))
+    assert [i.code for i in found] == [schema.MISSING], [(i.code, i.message) for i in found]
+    assert found[0].blocking
+
+
+def test_a_cleared_kind_cell_is_refused_in_the_pages_own_words():
+    """清空的格子，说的是「缺少记录类型」和页面上那四个名字——没有 nan，没有存进文件的键。"""
+    said = "；".join(i.message for i in _about_kind(_buy(kind=float("nan"))))
+    assert "类型" in said, said
+    assert "nan" not in said.lower() and "None" not in said, said
+    for key in schema.KINDS:
+        assert key not in said, f"校验信息里冒出了存进文件的键 {key!r}: {said}"
+    for name in schema.KIND_NAMES.values():
+        assert name in said, f"没告诉他可以选「{name}」: {said}"
+
+
+def test_an_unknown_kind_is_quoted_and_the_choices_are_listed_by_their_page_names():
+    """类型是个认不出来的值（页面上填不出来，手改文件才会有）：点出那个值——他得知道是哪个词不对，
+    再用页面上的名字列出可选的几种。照样是阻断，问题码不变。"""
+    found = _about_kind(_buy(kind="split"))
+    assert [i.code for i in found] == [schema.BAD_KIND] and found[0].blocking
+    said = found[0].message
+    assert "split" in said, said
+    for key in schema.KINDS:
+        assert key not in said, f"校验信息里冒出了存进文件的键 {key!r}: {said}"
+    for name in schema.KIND_NAMES.values():
+        assert name in said, f"没列出「{name}」: {said}"
+
+
+def test_both_kind_messages_list_the_same_names_in_the_same_order():
+    """「缺少类型」与「类型认不出来」里列的那几个名字取自同一处（schema.KIND_NAMES），顺序同文件里的四种：
+    手写两份的话，一句叫「分红」一句叫「现金分红」。"""
+    listed = "/".join(schema.KIND_NAMES[k] for k in schema.KINDS)
+    assert listed in _about_kind(_buy(kind=None))[0].message
+    assert listed in _about_kind(_buy(kind="split"))[0].message

@@ -772,9 +772,20 @@ def blocking_rows(rows: pd.DataFrame, *, today: date) -> list[str]:
     for row in rows.to_dict("records"):
         issues = schema.blocking_issues(schema.validate_trade(row, today=today))
         if issues:
-            out.append(f"{row.get('trade_id')}（{schema.parse_date(row.get('date'))} "
-                       f"{row.get('symbol')}）：" + "；".join(i.message for i in issues))
+            out.append(f"{_which_row(row)}：" + "；".join(i.message for i in issues))
     return out
+
+
+def _which_row(row: Mapping) -> str:
+    """被拦下的是哪一行：「记录号（日期 代码）」。日期、代码哪个空着就不写哪个，都空着只剩记录号。
+
+    这一行多半正是因为某一格被清空了才被拦下的，而清空的格子交回来是 None / NaN / NaT
+    ——照原样拼进去，页面上就是「T1（None 000333）」「T1（2026-08-03 nan）」（2026-11-18 之前
+    一直如此）。缺的是什么，冒号后面那句校验的话会说。
+    """
+    day, symbol = schema.parse_date(row.get("date")), row.get("symbol")
+    seen = [str(part).strip() for part in (day, symbol) if not schema.is_blank(part)]
+    return f"{row.get('trade_id')}（{' '.join(seen)}）" if seen else f"{row.get('trade_id')}"
 
 
 def save_edits(edited: pd.DataFrame, *, path: str | Path, today: date) -> bool:
