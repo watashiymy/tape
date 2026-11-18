@@ -2814,75 +2814,6 @@ def test_clearing_a_date_and_saving_is_refused_in_words(tmp_path):
     assert "成交日期" in "".join(str(e.value) for e in at.error), [e.value for e in at.error]
 
 
-# ---------------------------------------------------------------- 被拦下时那句话里的"程序话"（2026-11-18）
-#
-# 表里把「类型」那一格清空（选中它按删除键）再点保存，被拦下是对的，可页面上那句话是
-# 「无法解释的记录类型 'nan'，只支持 buy/sell/adjust/dividend」：'nan' 是空格子在程序里的样子，
-# 使用者没填过这个词；后面四个是存进文件的键，页面上别处都叫买入 / 卖出 / 股数调整 / 现金分红。
-# 这句话有三个地方会看到：页面顶上「没有保存」那一条、删除确认框里「没有删除，也没有保存」那一段、
-# 「记一笔」表单的报错（表单上类型是个必选的切换，填不出空值，那一处由 schema 层的测试管）。
-
-def _assert_no_program_words(said: str) -> None:
-    """给使用者看的那句拒绝里不许有：空格子在程序里的样子（nan / None / NaT）、存进文件的类型键。"""
-    assert said, "前提：有那句拒绝"
-    for word in ("nan", "none", "nat"):
-        assert not re.search(rf"(?<![a-z]){word}(?![a-z])", said, re.IGNORECASE), \
-            f"拒绝的话里冒出了 {word!r}: {said}"
-    for key in schema.KINDS:
-        assert key not in said, f"拒绝的话里冒出了存进文件的键 {key!r}: {said}"
-
-
-def test_clearing_a_kind_and_saving_is_refused_in_the_pages_own_words(tmp_path):
-    """清空类型再点保存：文件不动，那句话说的是这一行缺类型、可以选哪几种（页面上的名字）。"""
-    root = _root(tmp_path)
-    path = _journal(root, _buy(), _sell())
-    before = path.read_bytes()
-    browser = _Browser(_page(root))
-    at = browser.edit({0: {"kind": None}})
-    assert not at.exception, at.exception
-    assert any("改了 1 行" in note for note in _pending_notes(at)), "清空类型是一处改动"
-    at = browser.rerun(click=jui.SAVE_KEY)
-    assert not at.exception, f"清空类型后保存不该崩页: {at.exception}"
-    assert path.read_bytes() == before, "没有类型的行竟然落盘了"
-    said = "".join(str(e.value) for e in at.error)
-    assert "没有保存" in said and "类型" in said, said
-    # 是哪一行：记录号（日期 代码）。表格交回来的日期带着时分秒，写出来只到日。
-    assert "T1（2026-08-03 000333）：" in said, said
-    _assert_no_program_words(said)
-    for name in jui.KIND_LABELS.values():
-        assert name in said, f"没告诉他可以选「{name}」: {said}"
-
-
-def test_a_refused_row_is_not_introduced_as_none(tmp_path):
-    """被拦下的每一行，前面有一段「是哪一行」：记录号（日期 代码）。清空的正是日期那一格时，
-    这一段原先是「T1（None 000333）」。空着的那一样不写，剩什么写什么。"""
-    root = _root(tmp_path)
-    _journal(root, _buy(), _sell())
-    browser = _Browser(_page(root))
-    browser.edit({0: {"date": None}})
-    at = browser.rerun(click=jui.SAVE_KEY)
-    said = "".join(str(e.value) for e in at.error)
-    assert "T1（000333）：" in said and "成交日期" in said, said
-    _assert_no_program_words(said)
-
-
-@pytest.mark.parametrize("cells, intro", [
-    ({}, "T1（2026-08-03 000333）："),
-    ({"date": pd.NaT}, "T1（000333）："),
-    ({"symbol": float("nan")}, "T1（2026-08-03）："),
-    ({"symbol": "   "}, "T1（2026-08-03）："),
-    ({"symbol": " 000333 "}, "T1（2026-08-03 000333）："),
-    ({"date": None, "symbol": None}, "T1："),
-], ids=["都在", "日期空着", "代码是清空的格子", "代码只有空白", "代码两头带空白", "都空着"])
-def test_a_refused_row_is_named_by_whatever_it_still_has(cells, intro):
-    """那一段「是哪一行」逐种情形钉住：日期、代码哪个空着就不写哪个，都空着就只剩记录号——
-    不写「None」「nan」，也不留一对空括号或者括号里一个孤零零的空格。"""
-    row = {**_record(shares=None), "trade_id": "T1", **cells}      # 缺股数：保证这一行一定被拦下
-    lines = jui.blocking_rows(pd.DataFrame([row]).astype(object), today=TODAY)
-    assert len(lines) == 1 and lines[0].startswith(intro), lines
-    _assert_no_program_words(lines[0])
-
-
 def test_a_refused_trade_does_not_cost_the_table_its_unsaved_edits(tmp_path):
     """表里改了一格、还没保存，这时去上面点了「记这一笔」（表单没填完，被拒）。
     点完之后那一轮：改动还在、提醒还在。初稿里提交完立刻整页重跑——重跑发生在表格**画出来之前**，
@@ -3321,20 +3252,6 @@ def test_a_refused_delete_says_why_inside_the_confirmation(tmp_path):
     assert _dialog(at) is None and list(store.load_trades(path)["trade_id"]) == ["T1", "T2", "T3"]
 
 
-def test_a_cleared_kind_stops_the_delete_in_the_pages_own_words(tmp_path):
-    """确认框里那一段「没有删除，也没有保存」用的是同一句校验的话（删除会连同表里没保存的改动一起
-    保存，所以也过校验）：别的行上把类型清空了再去删，框里说的是缺类型——没有 nan，没有存进文件的键。"""
-    root = _root(tmp_path)
-    path = _three_trades(root)
-    before = path.read_bytes()
-    at = _delete(_page(root), 2, edits={0: {"kind": None}})
-    assert not at.exception, at.exception
-    assert path.read_bytes() == before, "没有类型的行竟然落盘了，或者那一条竟然被删了"
-    said = _dialog_errors(at)
-    assert "没有删除" in said and "T1" in said and "类型" in said, said
-    _assert_no_program_words(said)
-
-
 def test_opening_and_cancelling_the_confirmation_keeps_the_unsaved_edits(tmp_path):
     """点了删除又取消：表里还是那几行，没保存的改动得留着（提醒也还亮着），之后照常保存得进去。"""
     root = _root(tmp_path)
@@ -3435,13 +3352,6 @@ def test_the_readme_describes_the_delete_button_not_the_tick_box():
     for part in ("删除按钮", "确认框", "会一起保存", "换不回来", "on_delete_click"):
         assert part in said, f"README「改与删」一段没写到：{part}"
     assert "勾最左边" not in said and "勾了几行要删" not in said, "README 还在讲那一列勾选框"
-
-
-def test_the_readme_quotes_the_missing_kind_refusal_as_the_page_says_it():
-    """README 里引的那句「缺少记录类型（……）」得是页面上真会出现的那一句：句子再改，文档跟着红。"""
-    [issue] = [i for i in schema.validate_trade(_buy(kind=float("nan")), today=TODAY)
-               if i.field == "kind"]
-    assert f"「{issue.message}」" in _readme_edit_paragraph(README), issue.message
 
 
 # —— 落盘那一层（不经过页面）
@@ -4079,3 +3989,93 @@ def test_streamlit_still_lifts_the_table_toolbar_by_the_distance_we_measured():
         offsets |= set(re.findall(r"-\d+(?:\.\d+)?rem", text[max(0, at - 600):at + 600]))
     assert offsets == {f"-{TOOLBAR_RISE_REM}rem", f"-{ELEMENT_GAP_REM:g}rem"}, \
         f"工具条上移的距离变了（现在是 {sorted(offsets)}）：重新量一遍，再改空当的高度"
+
+
+# ================================================================ 被拦下时那句话里的"程序话"（2026-11-18）
+#
+# 历史表里把「类型」那一格清空（选中它按删除键）再点保存，被拦下是对的，可页面上那句话是
+# 「无法解释的记录类型 'nan'，只支持 buy/sell/adjust/dividend」：'nan' 是空格子在程序里的样子，
+# 使用者没填过这个词；后面四个是存进文件的键，页面上别处都叫买入 / 卖出 / 股数调整 / 现金分红。
+# 这句话有三个地方会看到：页面顶上「没有保存」那一条、删除确认框里「没有删除，也没有保存」那一段、
+# 「记一笔」表单的报错（表单上类型是个必选的切换，填不出空值，那一处由 schema 层的测试管）。
+
+def _assert_no_program_words(said: str) -> None:
+    """给使用者看的那句拒绝里不许有：空格子在程序里的样子（nan / None / NaT）、存进文件的类型键。"""
+    assert said, "前提：有那句拒绝"
+    for word in ("nan", "none", "nat"):
+        assert not re.search(rf"(?<![a-z]){word}(?![a-z])", said, re.IGNORECASE), \
+            f"拒绝的话里冒出了 {word!r}: {said}"
+    for key in schema.KINDS:
+        assert key not in said, f"拒绝的话里冒出了存进文件的键 {key!r}: {said}"
+
+
+def test_clearing_a_kind_and_saving_is_refused_in_the_pages_own_words(tmp_path):
+    """清空类型再点保存：文件不动，那句话说的是这一行缺类型、可以选哪几种（页面上的名字）。"""
+    root = _root(tmp_path)
+    path = _journal(root, _buy(), _sell())
+    before = path.read_bytes()
+    browser = _Browser(_page(root))
+    at = browser.edit({0: {"kind": None}})
+    assert not at.exception, at.exception
+    assert any("改了 1 行" in note for note in _pending_notes(at)), "清空类型是一处改动"
+    at = browser.rerun(click=jui.SAVE_KEY)
+    assert not at.exception, f"清空类型后保存不该崩页: {at.exception}"
+    assert path.read_bytes() == before, "没有类型的行竟然落盘了"
+    said = "".join(str(e.value) for e in at.error)
+    assert "没有保存" in said and "类型" in said, said
+    # 是哪一行：记录号（日期 代码）。表格交回来的日期带着时分秒，写出来只到日。
+    assert "T1（2026-08-03 000333）：" in said, said
+    _assert_no_program_words(said)
+    for name in jui.KIND_LABELS.values():
+        assert name in said, f"没告诉他可以选「{name}」: {said}"
+
+
+def test_a_cleared_kind_stops_the_delete_in_the_pages_own_words(tmp_path):
+    """确认框里那一段「没有删除，也没有保存」用的是同一句校验的话（删除会连同表里没保存的改动一起
+    保存，所以也过校验）：别的行上把类型清空了再去删，框里说的是缺类型——没有 nan，没有存进文件的键。"""
+    root = _root(tmp_path)
+    path = _three_trades(root)
+    before = path.read_bytes()
+    at = _delete(_page(root), 2, edits={0: {"kind": None}})
+    assert not at.exception, at.exception
+    assert path.read_bytes() == before, "没有类型的行竟然落盘了，或者那一条竟然被删了"
+    said = _dialog_errors(at)
+    assert "没有删除" in said and "T1" in said and "类型" in said, said
+    _assert_no_program_words(said)
+
+
+def test_a_refused_row_is_not_introduced_as_none(tmp_path):
+    """被拦下的每一行，前面有一段「是哪一行」：记录号（日期 代码）。清空的正是日期那一格时，
+    这一段原先是「T1（None 000333）」。空着的那一样不写，剩什么写什么。"""
+    root = _root(tmp_path)
+    _journal(root, _buy(), _sell())
+    browser = _Browser(_page(root))
+    browser.edit({0: {"date": None}})
+    at = browser.rerun(click=jui.SAVE_KEY)
+    said = "".join(str(e.value) for e in at.error)
+    assert "T1（000333）：" in said and "成交日期" in said, said
+    _assert_no_program_words(said)
+
+
+@pytest.mark.parametrize("cells, intro", [
+    ({}, "T1（2026-08-03 000333）："),
+    ({"date": pd.NaT}, "T1（000333）："),
+    ({"symbol": float("nan")}, "T1（2026-08-03）："),
+    ({"symbol": "   "}, "T1（2026-08-03）："),
+    ({"symbol": " 000333 "}, "T1（2026-08-03 000333）："),
+    ({"date": None, "symbol": None}, "T1："),
+], ids=["都在", "日期空着", "代码是清空的格子", "代码只有空白", "代码两头带空白", "都空着"])
+def test_a_refused_row_is_named_by_whatever_it_still_has(cells, intro):
+    """那一段「是哪一行」逐种情形钉住：日期、代码哪个空着就不写哪个，都空着就只剩记录号——
+    不写「None」「nan」，也不留一对空括号或者括号里一个孤零零的空格。"""
+    row = {**_record(shares=None), "trade_id": "T1", **cells}      # 缺股数：保证这一行一定被拦下
+    lines = jui.blocking_rows(pd.DataFrame([row]).astype(object), today=TODAY)
+    assert len(lines) == 1 and lines[0].startswith(intro), lines
+    _assert_no_program_words(lines[0])
+
+
+def test_the_readme_quotes_the_missing_kind_refusal_as_the_page_says_it():
+    """README 里引的那句「缺少记录类型（……）」得是页面上真会出现的那一句：句子再改，文档跟着红。"""
+    [issue] = [i for i in schema.validate_trade(_buy(kind=float("nan")), today=TODAY)
+               if i.field == "kind"]
+    assert f"「{issue.message}」" in README, issue.message
