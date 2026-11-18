@@ -14,6 +14,8 @@
   日志等于拿掉了"git 历史 = 免费撤销"那层保护，而面板的 data_editor 支持批量编辑，
   一次误操作可以抹掉多行。备份走同样的原子替换，**失败一律抛出**——悄悄跳过的话，
   用户以为有一层保护，只会在真需要它的那天才发现没有。
+  新内容**先完整写进临时文件、写成了才动 `.bak`**（2026-11-18）：一次没写成的保存
+  不该把这份唯一的上一版换成"当前这版的拷贝"。顺序与还剩的那一小段见 `save_trades`。
 - **`dtype={"symbol": str}` 全程强制**：本项目已两次踩过 `000333` → `333`，
   表现只是"名称又空了""持仓对不上"，不会有任何报错。读、写、追加三条路径
   都必须走同一个 `_coerce`，漏一条就等于没做。
@@ -126,15 +128,35 @@ def locked(path: str | Path = TRADES_PATH) -> Iterator[None]:
 
 
 def save_trades(df: pd.DataFrame, path: str | Path = TRADES_PATH) -> None:
-    """整表原子落盘，**落盘前先把上一版另存为 `.bak`**。列不对一律拒写。
+    """整表原子落盘，**换掉正式文件之前先把它另存为 `.bak`**。列不对一律拒写。
 
     拒写而不是"尽力而为"：列不对的表写进去，就是把一个坏文件留给下一次启动，
     而那时用户已经不记得是哪一步弄坏的。
 
-    备份的顺序是刻意的：**先备份、再写正式文件**。反过来的话，"写坏了"与
-    "备份没做成"会同时发生，那一刻磁盘上就只剩坏数据了。备份失败一律抛出
-    （不 try/except 吞掉）：日志已移出版本控制，这是唯一的撤销手段，
-    悄悄没做等于骗用户说有保护。
+    三步，顺序是刻意的：
+
+    1. **新内容先完整写进临时文件。** 最容易失败的一步（磁盘满）放在最前面：它没成的时候
+       正式文件与 `.bak` 都还没碰过，逐字节是原样，临时文件也收走。
+    2. **写成了，才把正式文件另存为 `.bak`**（`_backup`）。失败一律抛出（不 try/except
+       吞掉），而且什么都不写：日志已移出版本控制，这是唯一的撤销手段，悄悄没做等于
+       骗用户说有保护。
+    3. **最后才把正式文件换成新内容。** 所以它被换掉的那一刻，被换掉的那一版一定已经在
+       `.bak` 里。2、3 反过来（先换正式文件、再补备份）的话，两步之间只要出一点事
+       ——备份没做成、进程被杀——被换掉的那一版磁盘上就哪儿都没有了。
+
+    2026-11-18 之前是 2 → 1 → 3。新内容没写成时正式文件确实没变，可 `.bak` 已经被换成了
+    **当前这版**的拷贝：原来的上一版没了，「恢复上一版」换来换去是两份一样的文件，
+    而页面说的是"日志文件未被修改"。
+
+    **还剩一小段没保护到，不是万无一失**：第 2 步做完之后，第 3 步那一下改名失败。
+    实测过的一种：正式文件被锁定（macOS 上给它勾了「已锁定」），报 `PermissionError`；
+    Windows 上文件正被别的程序打开着，按那边的规矩也换不掉（没有实测）。这时正式文件
+    没变、不留临时文件、照样抛错，但 `.bak` 已经是当前这版的拷贝，原来的上一版丢了。
+    "换正式文件之前上一版必须已经到位"与"换不成就别动上一版"在这一下上只能保一头：
+    两个文件的改名合不成一步。磁盘写满时出事的通常是前两步（要给内容找地方的是它们），
+    轮不到这一下。没有给它补回退（把 `.bak` 再写回去）：那是一段只在出错时才跑的新逻辑，
+    写错了平时看不出来。进程在第 2、3 步之间被杀掉也是同样的结果，另外会留下一个装着
+    新内容的临时文件。
     """
     missing = [c for c in schema.COLUMNS if c not in df.columns]
     extra = [c for c in df.columns if c not in schema.COLUMNS]
@@ -144,15 +166,16 @@ def save_trades(df: pd.DataFrame, path: str | Path = TRADES_PATH) -> None:
     out = serialize(df)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    _backup(path)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
     os.close(fd)
     try:
         # lineterminator 钉成 \n：换行符随平台变的话，一次记账的 git diff 是整个文件。
         out.to_csv(tmp, index=False, encoding=ENCODING, lineterminator="\n")
+        _backup(path)       # 新内容已经完整地在盘上了，这时才动上一版（顺序见上面的说明）
         os.replace(tmp, path)
     finally:
-        Path(tmp).unlink(missing_ok=True)   # 写失败时不留垃圾（成功后已被 replace 走）
+        # 哪一步没成都不留垃圾：新内容没写完、上一版没另存成、最后没换成（换成了它已经不在了）
+        Path(tmp).unlink(missing_ok=True)
 
 
 def _backup(path: Path) -> None:

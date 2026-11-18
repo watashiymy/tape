@@ -18,6 +18,7 @@
 #
 # 删除走每行最前面的按钮 + 确认框（2026-11-18，见下面的 _delete）。
 import base64
+import errno
 import importlib.util
 import json
 import re
@@ -3448,6 +3449,59 @@ def test_delete_trades_reports_a_failed_write_and_leaves_the_file_alone(tmp_path
     assert jui.delete_trades(["T2"], path=path, today=TODAY) is False
     assert path.read_bytes() == before
     assert said[0][0] == "error" and "删除失败" in said[0][1] and "磁盘满了" in said[0][1], said
+
+
+# ---------------------------------------------------------------- 写不成时说"没动"的那三句（2026-11-18）
+#
+# 记一笔、保存修改、删除，三条写入的路在写不成时各有一句话，说的都是"没动"。2026-11-18 之前这句话
+# 只对了一半：日志确实没变，可上一版在写新内容之前就已经被换成了当前这一版——唯一的撤销手段没了，
+# 页面上却没有一个字提到它。上面那条把整个 save_trades 换成了桩，看不到这件事；这里把桩打在最底下
+# （把表写成文件的那一步），另存上一版与替换走的都是真的，再看两个文件是不是真的都没动。
+
+def _write_by_recording(path: Path) -> bool:
+    return jui.submit(_buy(symbol="600036", name="招商银行", shares=500.0, price=40.0),
+                      path=path, costs=COSTS, today=TODAY)
+
+
+def _write_by_saving_an_edit(path: Path) -> bool:
+    shown = jui.editor_frame(store.load_trades(path))
+    edited = shown.copy()
+    edited.loc[0, "note"] = "补一句"
+    return jui.save_edits(edited, path=path, today=TODAY)
+
+
+def _write_by_deleting(path: Path) -> bool:
+    return jui.delete_trades(["T1"], path=path, today=TODAY)
+
+
+@pytest.mark.parametrize("write, verdict", [
+    (_write_by_recording, "这一笔没有记下来"),
+    (_write_by_saving_an_edit, "日志文件未被修改"),
+    (_write_by_deleting, "记录没有被修改"),
+], ids=["记一笔", "保存修改", "删除"])
+def test_a_write_that_fails_leaves_the_journal_and_the_previous_version_as_they_were(
+        tmp_path, monkeypatch, write, verdict):
+    said = _flashes(monkeypatch)
+    path = _three_trades(tmp_path)
+    trades = store.load_trades(path)
+    store.save_trades(trades[trades["trade_id"] != "T3"], path)    # 再存一次：上一版 = 三条都在的那一版
+    journal, previous = path.read_bytes(), store.backup_path(path).read_bytes()
+    assert previous != journal, "前提：上一版与当前这版不一样，换没换才看得出来"
+
+    def disk_full(*args, **kwargs):
+        raise OSError(errno.ENOSPC, "No space left on device")
+    monkeypatch.setattr(pd.DataFrame, "to_csv", disk_full)
+
+    assert write(path) is False
+
+    assert path.read_bytes() == journal, "页面说没动，日志却变了"
+    assert store.backup_path(path).read_bytes() == previous, \
+        "页面说没动，上一版却被换成了当前这一版：点「恢复上一版」再也换不回原来那一版"
+    assert sorted(p.name for p in path.parent.iterdir()) == [
+        "trades.csv", "trades.csv.bak", "trades.csv.lock"]
+    assert len(said) == 1, said
+    level, text = said[0]
+    assert level == "error" and verdict in text and "No space left" in text, said
 
 
 def test_the_delete_plan_gathers_what_the_confirmation_has_to_say(tmp_path):
