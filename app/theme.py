@@ -354,6 +354,17 @@ CSS = f"""@import url("{FONT_IMPORT}");
 .qd-notice + .qd-notice {{
   margin-top: 0.35rem;
 }}
+/* 确认框里的记录清单（2026-11-18，「记账」页的删除确认框）：要删的是哪一条，一条一行。
+   字与正文一样大、数字等宽——这是点「删除」之前要核对的东西，不是小字说明。 */
+.qd-lines {{
+  margin: 0;
+  padding-left: 1.2rem;
+  font-family: var(--qd-sans);
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.7;
+  color: var(--qd-text);
+}}
 /* 这一行里的帮助圆点：提示框锚在**这一行**的左缘、出在这一行的下面，不锚在圆点上。
    圆点跟在句子末尾，句子多长它就在多靠右的地方——照别处那样从圆点向右展开，1024 宽下提示框
    有一百多像素伸到视口外面，悬停时页面还会冒出横向滚动条（独立审查量的）。
@@ -787,6 +798,13 @@ def notice(text: str, *, help: str = "") -> str:
         return ""
     dot = help_dot(help, wide=True) if help else ""
     return f'<div class="qd-notice">{_tip_inline(_esc(text))}{dot}</div>'
+
+
+def record_lines(lines) -> str:
+    """一条一行的清单（「记账」页删除确认框里：要删的是哪一条）。`lines` 是纯文字，逐条转义
+    ——里面有账本里用户自己填的名称。没有东西就返回空串（由调用方据此连元素都不放）。"""
+    items = "".join(f"<li>{_esc(line)}</li>" for line in lines)
+    return f'<ul class="qd-lines">{items}</ul>' if items else ""
 
 
 def subhead(title: str, *, help: str = "") -> str:

@@ -705,9 +705,42 @@ def test_journal_table_hint_keeps_the_one_thing_people_get_wrong():
     """表格上方只留一句。怎么改、怎么删之外，必须留着最容易想当然的那件事：
     改了股数或成交价，金额与费用不会跟着重算。"""
     hint = guide.TABLE_HINTS["journal"]
-    assert "「保存修改」" in hint and "「删除」" in hint, hint
+    assert "「保存修改」" in hint, hint
     assert "不会" in hint and "重算" in hint, hint
     assert "记录号" not in hint, "「改动按记录号定位」是实现上的保证，使用者用不上这句话"
+
+
+def test_journal_table_hint_says_where_the_delete_button_is():
+    """怎么删：点那一行最前面的垃圾桶，会先让人确认。2026-11-18 之前写的是「勾上最左边的『删除』再保存」
+    ——那一列勾选框没有了，删除也不再经过「保存修改」，这句话不许还留着旧说法。"""
+    hint = guide.TABLE_HINTS["journal"]
+    assert "垃圾桶" in hint and "最前面" in hint and "确认" in hint, hint
+    assert "勾" not in hint and "再保存" not in hint, hint
+
+
+def test_the_delete_confirmation_copy_is_short_and_plain():
+    """确认框里的几句话：问的是这一条；另两句各说一件到了这一步才有的事（会一起保存什么、
+    什么会换不回来）；最后一句说删错了怎么办。按钮只有两个字。"""
+    assert guide.JOURNAL_DELETE_ASK.endswith("？")
+    assert "一起保存" in guide.JOURNAL_DELETE_ALSO_SAVES.format(n=2)
+    fading = guide.JOURNAL_DELETE_FADING.format(n=1)
+    assert "换不回来" in fading and "「取消」" in fading and "「恢复上一版」" in fading, fading
+    assert "「恢复上一版」" in guide.JOURNAL_DELETE_UNDO
+    # 最后那句点名说的是「这一条」：它有时紧跟在"下面这 1 条从此换不回来了"后面（真机上看到的），
+    # 不点名的话，一句说换不回来、下一句说可以换回，读着像自相矛盾。
+    assert guide.JOURNAL_DELETE_UNDO.startswith("这一条"), guide.JOURNAL_DELETE_UNDO
+    assert (guide.JOURNAL_DELETE_CANCEL, guide.JOURNAL_DELETE_OK) == ("取消", "删除")
+    for text in (guide.JOURNAL_DELETE_ASK, guide.JOURNAL_DELETE_ALSO_SAVES, guide.JOURNAL_DELETE_FADING,
+                 guide.JOURNAL_DELETE_UNDO, guide.JOURNAL_DELETE_GONE):
+        for banned in ("备份", ".bak", "trade_id", "记录号", "落盘", "写盘"):
+            assert banned not in text, f"确认框里的话是给使用者看的，不该有「{banned}」: {text}"
+
+
+def test_the_save_button_no_longer_claims_to_delete():
+    """「保存修改」只写改动（2026-11-18 起删除有自己的按钮）。它的悬停说明里不许还写着"勾选的删除"。"""
+    text = guide.JOURNAL_EDIT_HINT
+    assert "删除" not in text and "勾" not in text, text
+    assert "不会" in text and "重算" in text and "什么都没改时不会写入" in text, text
 
 
 def test_journal_export_help_covers_both_buttons_and_says_what_gets_exported():
@@ -721,6 +754,8 @@ def test_the_way_to_undo_is_explained_on_the_restore_button_itself():
     2026-11-16 第二轮之前历史表下面另有一行常驻的灰字讲同一件事——那一行拿掉了。"""
     text = guide.JOURNAL_RESTORE_HELP
     assert "上一版" in text and "只留一版" in text and "再点一次" in text, text
+    # 什么时候会留上一版：三种写入都点名（删除自 2026-11-18 起不再是"保存"的一部分）
+    assert "记一笔" in text and "保存修改" in text and "删除" in text, text
     assert ".bak" not in text, text
     for gone in ("JOURNAL_BACKUP_NOTE", "JOURNAL_BACKUP_NOTE_EMPTY"):
         assert not hasattr(guide, gone), f"{gone}：表格下面那行常驻的灰字已经拿掉"

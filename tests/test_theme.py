@@ -1006,3 +1006,19 @@ def test_the_ramp_colors_are_part_of_the_palette_the_css_may_use():
     for i, color in enumerate(theme.PRIMARY_RAMP):
         assert theme.PALETTE[f"PRIMARY_RAMP_{i}"] == color
     assert theme.PRIMARY_RAMP[0] == theme.PRIMARY
+
+
+# ================================================================ 确认框里的记录清单（2026-11-18）
+
+def test_record_lines_is_a_list_with_one_escaped_line_per_record():
+    """「记账」页删除确认框里那几行：要删的是哪一条。文字来自账本（名称、理由是用户填的），一律转义。"""
+    html = theme.record_lines(["2026-08-03 买入 <b>美的集团</b>", "第二条"])
+    assert html.startswith('<ul class="qd-lines">') and html.endswith("</ul>")
+    assert html.count("<li>") == 2
+    assert "&lt;b&gt;美的集团&lt;/b&gt;" in html and "<b>" not in html
+    assert ".qd-lines {" in theme.CSS
+
+
+def test_record_lines_of_nothing_is_empty():
+    """没有记录就连壳都不出（`st.html("")` 也占一个元素位，由调用方据此连元素都不放）。"""
+    assert theme.record_lines([]) == ""

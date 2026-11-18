@@ -121,9 +121,17 @@ SCAN_CLICK_KEY = "journal_scan_record_click"
 RECORD_HELP = ("按这一行预填一笔交易（代码/名称/日期/方向/来源）并跳到「记账」页。"
                "**不预填成交价**：信号那天的收盘价不是你的成交价。")
 
-# 编辑区那一列勾选框。删除刻意是两步（勾选 + 保存）：这份文件不可再生，
-# 一键删除误点一下就没了，而那次改动可能还没提交进 git。
+# 历史表最前面那一列：每行一个删除按钮（2026-11-18）。按钮上只有一个垃圾桶图标，没有字。
+# 点了先弹确认框、写明删的是哪一笔，确认才删（见 pages_journal_entry._delete_dialog）——
+# 这份文件不可再生，一键删除误点一下就没了。
+# 改之前这一列是勾选框：勾了什么也不发生，要去点「保存修改」才真的删（用户：很奇怪的交互）。
 DELETE_COLUMN = "删除"
+DELETE_LABEL = ":material/delete:"
+DELETE_WIDTH = 48                                # 那一列的宽度（像素）：只够放一个图标
+DELETE_CLICK_KEY = "journal_delete_click"        # 那一列的点击：点的是第几行
+DELETE_ASK_KEY = "journal_delete_ask"            # 等着确认的记录号（点击那一轮登记，页面开头取走）
+DELETE_OK_KEY = "journal_delete_ok"              # 确认框里的「删除」
+DELETE_CANCEL_KEY = "journal_delete_cancel"      # 确认框里的「取消」
 
 #: 「持仓与盈亏」页「持仓占比」的画法切换（测试按 key 取控件，别改字面量）。
 WEIGHTS_FORM_KEY = "journal_weights_form"
@@ -152,7 +160,8 @@ LOG_LABELS = {
 #: 历史表的列序（2026-11-16）。**只管显示**：文件与导出的列序仍是 schema.COLUMNS，一个字不动。
 #: 改之前照搬文件的列序——第一列是机器编号，占着最宽的位置；理由在屏幕外；
 #: 「删除」排在最右边，要删一笔得先把表横着拖到头。现在按"人怎么读一笔交易"排：
-#: 删除勾选框、哪天、哪只、买还是卖、多少股、什么价、多少钱、为什么——费用、时刻、备注靠后，
+#: 删除按钮（2026-11-18 之前是勾选框）、哪天、哪只、买还是卖、多少股、什么价、多少钱、为什么
+#: ——费用、时刻、备注靠后，
 #: 记录号排最后（它还在：改删靠它定位，「持仓与盈亏」页的平仓明细也指回它）。
 #: 必须恰好覆盖全部字段（有测试钉住）：漏写一列，那一列会从表里消失且不报错。
 EDITOR_ORDER = (DELETE_COLUMN, "date", "symbol", "name", "kind", "shares", "price", "amount",
@@ -529,20 +538,72 @@ def restore_backup(*, path: str | Path) -> None:
 # ================================================================ 编辑与删除（§5.2）
 
 def editor_frame(filtered: pd.DataFrame) -> pd.DataFrame:
-    """编辑区的表：筛选结果 + 一列「删除」勾选框（显示时排在最前，见 EDITOR_ORDER）。
+    """编辑区的表：筛选结果 + 一列删除按钮（显示时排在最前，见 EDITOR_ORDER）。
 
-    勾选列用**可空**的布尔类型，不用硬邦邦的 bool：选中这一格（或一片包含它的格子）按
-    Delete 键，表格送回来的是"这一格清空"，往 bool 列里塞一个空值是 TypeError——表格连同
-    它下面的保存、恢复、导出整个消失一轮（2026-11-16 复审抓到；这一列挪到最前之后更容易碰到）。
-    清空 = 没勾，下游一律 `fillna(False)`。
+    那一列每格的值就是按钮上的字（DELETE_LABEL，一个垃圾桶图标）。按钮列是只读的：
+    选中它按 Delete 键什么也不会发生，交回来的表里这一列原样不动。
     """
     out = filtered.copy()
-    out[DELETE_COLUMN] = pd.array([False] * len(out), dtype="boolean")
+    out[DELETE_COLUMN] = [DELETE_LABEL] * len(out)
     return out
 
 
-def editor_columns() -> dict:
-    """编辑区的列配置（列序见 EDITOR_ORDER）。
+def on_delete_click(ids: Sequence[str]) -> None:
+    """删除按钮那一列的 on_click：把"点了第几行"换成记录号，登记下来等这一轮页面去问。
+
+    `ids` 是**画那张表的那一轮**各行的记录号（随列配置一起注册，见 editor_columns）。
+    必须用它，不能等这一轮重新读了文件再按行号去查：表里显示的是筛选后的行；而且另一个标签页
+    若刚删过一条，重新读到的表里每一行都上移了一格——按新表的行号去认，认到的是下面那一条。
+    （按钮交回来的行号是原始数据的行号，使用者点表头排序之后也对得上，真实浏览器里验过。）
+    行号对不上一律当没点过。回调跑在重跑之前，这里不画任何东西。
+    """
+    click = st.session_state.get(DELETE_CLICK_KEY)
+    if click is None:
+        return
+    row = int(click["row"])
+    if 0 <= row < len(ids):
+        st.session_state[DELETE_ASK_KEY] = [str(ids[row])]
+
+
+def take_delete_request() -> list[str]:
+    """取走"等着确认删除"的记录号（没有就是空表）。**页面一开头就调用**。
+
+    取走而不是留着看：确认框只在点了删除按钮的那一轮打开。留在 session_state 里的话，
+    这一轮若中途出了岔子（文件读不出来、提前返回），它会留到以后某一轮——一个不请自来的
+    「要删除这一条记录吗」。确认框开着的时候不靠它：streamlit 自己记着那一块，
+    框里的按钮只重跑框里的内容。
+    """
+    return list(st.session_state.pop(DELETE_ASK_KEY, None) or [])
+
+
+def describe_trade(row: Mapping) -> str:
+    """把一笔记录写成一行给人核对的字：哪天、买还是卖、哪只票、多少股、什么价。
+
+    给删除的确认框用。这一行是防删错的最后一道：只写「确定删除吗」的确认框，点的人什么都
+    核对不了。类型用显示名（买入 / 现金分红），不是文件里存的键。
+    送股没有成交价、分红没有股数——各写各有的那个数，不写「0 股 × 0.00」。
+    查不到名称的只写代码（不写一对空括号，也不编一个名字）。
+    **每一段里面用不折行的空格**：确认框窄，「1,000 股 ×」与价钱拆在两行上很难读
+    （真机上看到的）；段与段之间是普通空格，折行只发生在那里。
+    """
+    kind = str(row.get("kind") or "")
+    name, symbol = (str(row.get(k) or "").strip() for k in ("name", "symbol"))
+    shares, price, amount = (schema.to_number(row.get(k)) for k in ("shares", "price", "amount"))
+    day = schema.parse_date(row.get("date"))
+    parts = [f"{day}" if day else "", KIND_LABELS.get(kind, kind),
+             f"{name}（{symbol}）" if name else symbol]
+    if kind in TRADE_KINDS and shares is not None and price is not None:
+        parts.append(f"{_exact(shares, least=0)} 股 × {_exact(price, least=2)}")
+    elif kind == "adjust" and shares is not None:
+        parts.append(f"{'+' if shares > 0 else ''}{_exact(shares, least=0)} 股")
+    elif kind == "dividend" and amount is not None:
+        parts.append(f"到账 {fmt.fmt_amount(amount, decimals=2)} 元")
+    return " ".join(part.replace(" ", "\u00a0") for part in parts if part)
+
+
+def editor_columns(ids: Sequence[str] = ()) -> dict:
+    """编辑区的列配置（列序见 EDITOR_ORDER）。`ids` 是这一轮表里各行的记录号，按显示的行序
+    ——交给删除按钮那一列（见下面 on_delete_click 为什么要它）。
 
     `trade_id` **禁止编辑**：它是改删的唯一定位依据（设计 §2.3），改得动就等于
     换了一笔交易的身份。类型与来源走下拉框而不是自由文本：手打一个 "sel"
@@ -551,19 +612,20 @@ def editor_columns() -> dict:
     下拉框**显示中文、存的仍是键**（2026-11-16，`format_func`）：改之前这两列直接摆着
     buy / sell / discretionary——面板别处从不出现的英文词，而且正是用户点名过的那类
     （「中文里不夹英文值」）。文件里存什么不变，所以导出、盈亏计算一行都不用动。
-    删除勾选框与"这是哪一笔"的三列钉在左边：表横着拖去看备注时，还认得出每一行是谁。
+    删除按钮与"这是哪一笔"的三列钉在左边：表横着拖去看备注时，还认得出每一行是谁、也删得到它。
 
     **数字、名称、代码、日期这些列不许钉死宽度**（2026-11-16 审查后）。初稿为了让理由一列
     不用拖就看得见，把数字列与名称都设成了窄档：数字右对齐、放不下时被截掉的是**左边**——
     1,234,500 股显示成 234500.00，一千五百万的金额少了最高位，名字长的 ETF 只剩半截。
     一个被截掉最高位的数看着完全正常，正是这个项目一路在防的那种错。宽度交给表格按内容自己定。
-    钉了宽度的只有两列：勾选框（就一个框），和理由（长文字，给中档：文字被截的是右边，
+    钉了宽度的只有两列：删除按钮（就一个图标），和理由（长文字，给中档：文字被截的是右边，
     一眼看得出没显示完，点进格子能看全——不给的话一句长理由会把后面的列全挤出屏幕）。
     """
     columns: dict = {
-        DELETE_COLUMN: st.column_config.CheckboxColumn(
-            DELETE_COLUMN, width="small", pinned=True,
-            help="勾上并按「保存修改」才真的删除（两步是刻意的：这份记录不可再生）。"),
+        # 表头不写字（垃圾桶自己就说清了），宽度只够放一个图标；不描边：一列描了边的按钮太吵。
+        DELETE_COLUMN: st.column_config.ButtonColumn(
+            "", width=DELETE_WIDTH, pinned=True, type="tertiary",
+            on_click=on_delete_click, args=(tuple(ids),), key=DELETE_CLICK_KEY),
         "date": st.column_config.DateColumn(LOG_LABELS["date"], format="YYYY-MM-DD", pinned=True),
         "symbol": st.column_config.TextColumn(LOG_LABELS["symbol"], pinned=True),
         "name": st.column_config.TextColumn(LOG_LABELS["name"], pinned=True),
@@ -616,58 +678,54 @@ def _same_cell(column: str, shown, edited) -> bool:
     return _as_saved_text(shown) == _as_saved_text(edited)
 
 
-def pending_changes(shown: pd.DataFrame, edited: pd.DataFrame) -> tuple[int, int]:
-    """历史表里还没保存的改动：(改了几行, 勾了几行删除)。
+def changed_rows(shown: pd.DataFrame, edited: pd.DataFrame, *,
+                 skip: Sequence[str] = ()) -> pd.DataFrame:
+    """历史表里**改过、还没保存**的那几行：整行交回，不带删除按钮那一列。
 
     `shown` 是喂给编辑器的那张表（editor_frame 的产物），`edited` 是它交回来的那张。
-    页面据此在「保存修改」旁边写一句"还有几处没保存"——表里改了却忘了点保存，
-    切到别的页再回来就没了，而改之前屏幕上没有任何东西提醒过这件事。
+    `skip` 里的记录号不算（正要删掉的那一笔——删了，它身上的改动就没有意义）。
+    页面拿它做两件事：数一数还有几行没保存（pending_changes），以及删除时把别的行上
+    没保存的改动一起写进去（delete_trades）。
 
     **比的是值，不是"哪些格子被碰过"**（2026-11-16 审查后改）。初稿读的是编辑器自己记的
-    那份 edited_rows：把原值敲回去、勾上又取消，都会被算成改动，于是页面一边亮着
-    「还没保存」，点下去又说「没有需要保存的改动」。现在两张表逐格对一遍，值一样就是没改。
+    那份 edited_rows：把原值敲回去也会被算成改动，于是页面一边亮着「还没保存」，
+    点下去又说「没有需要保存的改动」。现在两张表逐格对一遍，值一样就是没改。
 
-    又改又勾了删除的那一行**只算删除**（删了，改动就没有意义，同 store.apply_edits）。
-    两张表行数对不上时（固定行数的编辑器不会这样）一律 (0, 0)：宁可不提醒，不乱报。
+    两张表行数对不上时（固定行数的编辑器不会这样）一行都不交：宁可不提醒，不乱报。
+    """
+    columns = [c for c in schema.COLUMNS if c in shown.columns and c in edited.columns]
+    changed: list[int] = []
+    if len(shown) == len(edited):
+        left_out = {str(i) for i in skip}
+        for pos in range(len(edited)):
+            if str(edited["trade_id"].iat[pos]) in left_out:
+                continue
+            if any(not _same_cell(c, shown[c].iat[pos], edited[c].iat[pos]) for c in columns):
+                changed.append(pos)
+    return edited.iloc[changed].loc[:, columns].reset_index(drop=True)
+
+
+def pending_changes(shown: pd.DataFrame, edited: pd.DataFrame) -> int:
+    """历史表里还没保存的改动：改了几行。
+
+    页面据此在「保存修改」下面写一句"还有几行没保存"——表里改了却忘了点保存，
+    切到别的页再回来就没了，而改之前屏幕上没有任何东西提醒过这件事。
+    2026-11-18 之前它还数"勾了几行要删除"：删除那时是表里的一列勾选框，要等保存；
+    现在删除走每行自己的按钮，表里攒着没保存的只有改动。
 
     每一轮渲染都会算一遍，所以先走一条近路：两张表整张相同（绝大多数时候——没人在改）
     就直接交差，只有真不一样时才逐格去对（实测逐格对一千行要两百多毫秒）。
     """
-    if len(shown) != len(edited) or DELETE_COLUMN not in edited.columns:
-        return 0, 0
-    if shown.equals(edited):
-        return 0, 0
-    flags = edited[DELETE_COLUMN].fillna(False).astype(bool).tolist()
-    columns = [c for c in schema.COLUMNS if c in shown.columns and c in edited.columns]
-    changed = 0
-    for pos, flagged in enumerate(flags):
-        if flagged:
-            continue
-        if any(not _same_cell(c, shown[c].iat[pos], edited[c].iat[pos]) for c in columns):
-            changed += 1
-    return changed, sum(flags)
+    if len(shown) == len(edited) and shown.equals(edited):
+        return 0
+    return len(changed_rows(shown, edited))
 
 
-def pending_note(edited: int, deleted: int) -> str:
-    """「保存修改」旁边那句提醒；没有待保存的改动时返回空串（那一句不渲染）。"""
-    parts = ([f"改了 {edited} 行"] if edited else []) + \
-            ([f"勾了 {deleted} 行要删除"] if deleted else [])
-    if not parts:
+def pending_note(edited: int) -> str:
+    """「保存修改」下面那句提醒；没有待保存的改动时返回空串（那一句不渲染）。"""
+    if not edited:
         return ""
-    return "、".join(parts) + "，**还没保存**——点「保存修改」才写入。"
-
-
-def split_editor_result(edited: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
-    """把编辑区交回来的表拆成（要写回的行, 要删掉的 trade_id）。
-
-    勾选列可能是 None（编辑器里那一格从没被碰过）——`fillna(False)` 不是可有可无的：
-    把 None 当成"删"会删掉一整批没勾的行。
-    """
-    if edited.empty or DELETE_COLUMN not in edited.columns:
-        return edited.copy(), []
-    flags = edited[DELETE_COLUMN].fillna(False).astype(bool)
-    deleted = [str(t) for t in edited.loc[flags, "trade_id"]]
-    return edited.loc[~flags].drop(columns=[DELETE_COLUMN]), deleted
+    return f"改了 {edited} 行，**还没保存**——点「保存修改」才写入。"
 
 
 def blocking_rows(rows: pd.DataFrame, *, today: date) -> list[str]:
@@ -686,12 +744,13 @@ def blocking_rows(rows: pd.DataFrame, *, today: date) -> list[str]:
 
 
 def save_edits(edited: pd.DataFrame, *, path: str | Path, today: date) -> bool:
-    """把编辑区的改动与删除写回日志。返回"写进去了没有"。
+    """把编辑区的改动写回日志。返回"写进去了没有"。
 
+    只管改动：删除不走这里（每行自己的删除按钮 → 确认框 → delete_trades）。
     先校验再落盘：编辑器里把股数清空是一秒钟的事，而落盘之后 FIFO 会静默少算一笔。
     拒写时文件没变，表里的内容也就没变，用户那几格改动还留在屏幕上，才改得回来。
     """
-    keep, deleted = split_editor_result(edited)
+    keep = edited.drop(columns=[DELETE_COLUMN], errors="ignore")
     if broken := blocking_rows(keep, today=today):
         flash("error", "**没有保存**（下面这些行改坏了，保存后盈亏会悄悄算错）：\n\n"
               + "\n\n".join(f"- {line}" for line in broken))
@@ -704,12 +763,12 @@ def save_edits(edited: pd.DataFrame, *, path: str | Path, today: date) -> bool:
             # apply_edits 一律按 trade_id 定位、认不出的主键直接拒绝，
             # 落在新表上与落在旧表上语义完全一致（这正是"绝不按行号"的红利）。
             current = store.load_trades(path)
-            merged = store.apply_edits(current, keep, delete_ids=deleted)
-            changed = _changed_rows(current, merged, deleted)
-            if not changed and not deleted:
+            merged = store.apply_edits(current, keep)
+            changed = _changed_rows(current, merged, ())
+            if not changed:
                 # **什么都没改就不写盘**（2026-11-16）。备份只留一版，而每次写盘都会把它
-                # 换成"写之前的样子"——所以一次空保存不是无害的：删错一行并保存之后，
-                # 手一抖再点一下「保存修改」，备份就成了删错之后的那一版，唯一的撤销手段
+                # 换成"写之前的样子"——所以一次空保存不是无害的：删错一笔之后，
+                # 手一抖点一下「保存修改」，备份就成了删错之后的那一版，唯一的撤销手段
                 # 没了，屏幕上却只是又弹了一句"已保存"。
                 flash("ok", "没有需要保存的改动。")
                 return False
@@ -720,11 +779,70 @@ def save_edits(edited: pd.DataFrame, *, path: str | Path, today: date) -> bool:
     # 编辑区不用在这里清：历史表没有 key，落盘之后表里的内容变了，下一轮它就是一个新控件，
     # 这一轮的改动自然作废（见 pages_journal_entry._editor）。v0.5.0 的做法是把编辑器的状态
     # 从 session_state 里删掉——那只清得了后台，清不了浏览器手里那一份。
-    done = [f"改了 {changed} 行"] if changed else []
-    done += [f"删除 {len(deleted)} 行"] if deleted else []
-    # 说的是**真正变了**的行数。改之前写的是 len(keep)——那是"表里有几行"：七行的表
-    # 只删一行，它会说「改动 6 行、删除 1 行」。刚改完删完是最需要知道还能反悔的时刻，顺带说一句。
-    flash("ok", f"已保存：{'、'.join(done)}。改错了可以点「恢复上一版」换回。")
+    # 说的是**真正变了**的行数，不是"表里有几行"。刚改完是最需要知道还能反悔的时刻，顺带说一句。
+    flash("ok", f"已保存：改了 {changed} 行。改错了可以点「恢复上一版」换回。")
+    return True
+
+
+def only_in_backup(trades: pd.DataFrame, path: str | Path) -> list[dict]:
+    """上一版里有、现在已经没有的记录（按记录号比）。`trades` 是当前的整本日志。
+
+    给删除的确认框用。上一版只留一版，而每次写盘都会把它换成"写之前的样子"：连着删两条时，
+    删第二条的那一下，上一版从"两条都在"换成"只少第一条"——第一条从此没有地方可以换回来。
+    这件事得在点「删除」之前说，并写明是哪几条。
+    还没有上一版、或者上一版读不出来，都返回空表：这只是一句提醒，不许因为它连删除都开不了。
+    """
+    backup = store.backup_path(path)
+    if not backup.exists():
+        return []
+    try:
+        previous = store.load_trades(backup)
+    except RuntimeError:
+        return []
+    current = {str(t) for t in trades["trade_id"]}
+    return previous[~previous["trade_id"].isin(current)].to_dict("records")
+
+
+def delete_trades(ids: Sequence[str], *, path: str | Path, today: date,
+                  pending: pd.DataFrame | None = None) -> bool:
+    """按记录号删掉几条。返回"删掉了没有"。结论走 flash 留给下一轮。
+
+    `pending` 是历史表里**别的行上**改过、还没保存的那几行（changed_rows 的产物，可以没有）：
+    删完表里的内容变了，表格会换成一张新的，那些改动留不住——所以和删除**一次写进去**
+    （一次写盘、一份上一版；确认框里事先说明过）。
+
+    纪律与 save_edits 相同：
+    - 一律按 `trade_id` 定位。要删的、要顺带保存的记录里有一条认不出（另一个标签页刚删过），
+      整个不动、如实说——只处理认得出的那几条，等于替用户改了主意；
+    - 顺带要写的改动先过校验，有阻断项就整个不写：不删、不存；
+    - 锁里重新读整本日志再改，不拿渲染那一轮的旧快照整表重写。
+    """
+    wanted = [str(i) for i in ids]
+    extra = pending if pending is not None else pd.DataFrame(columns=["trade_id"])
+    if broken := blocking_rows(extra, today=today):
+        flash("error", "**没有删除，也没有保存**（表里下面这些行改坏了，保存后盈亏会悄悄算错；"
+              "先改好或改回去）：\n\n" + "\n\n".join(f"- {line}" for line in broken))
+        return False
+    try:
+        with store.locked(path):
+            current = store.load_trades(path)
+            known = {str(t) for t in current["trade_id"]}
+            # 要删的、要顺带保存的，都得还在。少一条就整个不动——交给 apply_edits 去拒绝的话，
+            # 页面上冒出来的是一句带着内部字段名的英文异常。
+            if not all(str(i) in known for i in [*wanted, *extra["trade_id"]]):
+                flash("error", "要删除或要一起保存的记录里，有的已经不在了（可能在别处删过）。"
+                               "这一次什么都没有改动。")
+                return False
+            merged = store.apply_edits(current, extra, delete_ids=wanted)
+            changed = _changed_rows(current, merged, wanted)
+            store.save_trades(merged, path)
+    except (OSError, ValueError, RuntimeError) as e:
+        flash("error", f"删除失败（{type(e).__name__}: {e}），记录没有被修改。")
+        return False
+    done = f"已删除 {len(wanted)} 条记录"
+    if changed:
+        done += f"，并保存了表里改动的 {changed} 行"
+    flash("ok", f"{done}。删错了可以点「恢复上一版」换回。")
     return True
 
 

@@ -28,6 +28,14 @@ v0.3.0 的「交易日志」把五块（录入/历史/持仓/盈亏/导出）堆
 - **操作按钮一律靠右**：表单的提交按钮在表单右下角；历史表下面一行，从左到右是恢复上一版
   （连同它的确认框）、两个导出、保存修改——主按钮在最右。
 
+**历史记录的删除**（2026-11-18，用户：「"删除"的选择框为什么放在第一列」「先勾选、再点保存
+——很奇怪的交互」，docs/superpowers/specs/2026-11-18-journal-delete-design.md）：
+- 改之前删除是历史表里的一列勾选框，勾了什么也不发生，要去点「保存修改」才真的删。
+  现在每行最前面一个删除按钮：点了弹确认框、写明删的是哪一条，确认即删；「保存修改」只管改动。
+- 防误删靠确认框与删之前照旧留下的上一版。确认框里另有两句只在适用时出现的话：
+  表里别的行上有没保存的改动（会一起保存）；上一版里还有现在已经没有的记录（这次删除之后
+  就换不回来了——上一版只留一版）。
+
 这一页与面板其余页面有一个根本差别：**它会写一份不可再生的文件**。其余页面最坏的
 后果是显示错了，重跑一次就好；这里最坏的后果是用户真实的交易记录被改错或删错。
 所以版面上有三条纪律（沿自 v0.3.0 §5）：
@@ -77,6 +85,9 @@ def page_journal_entry() -> None:
     journal_ui.show_flash()          # 上一轮写盘/校验留下的结论
     # 上一轮记下了一笔：把那张表单清回空值。必须排在任何录入控件创建之前。
     journal_ui.apply_pending_clear()
+    # 刚才若点了历史表某一行的删除按钮，把它取走，等整页画完去问（见 _confirm_delete）。
+    # 在最前面取：这一轮若中途返回，它也不会留到以后某一轮再冒出来。
+    asked = journal_ui.take_delete_request()
     with st.expander("这一页记什么、四种记录类型的含义", expanded=False, key=BOX_HELP_KEY):
         st.markdown(guide.JOURNAL_KINDS)
 
@@ -97,8 +108,8 @@ def page_journal_entry() -> None:
     # 成本模型读不到时录入区整个不给（entry 是 None），这两种也一样——它们同样要写费用。
     if entry is not None:
         acted = _other_records(*entry) or acted
-    acted = _log_section(trades) or acted
-    if acted:
+    saved, edited = _log_section(trades)
+    if acted or saved:
         # 记了一笔 / 保存了修改之后要整页重跑：成功要让表格跟着变，失败也要让提示显示出来。
         # 但**等整页画完再重跑**（2026-11-16 复审后改）。原先是按钮按下的当场就 st.rerun()，
         # 那时它下面的筛选框、历史表还没画——Streamlit 把一次中途重跑当成"这一轮跑完了"，
@@ -106,6 +117,9 @@ def page_journal_entry() -> None:
         # 「记这一笔」，表格会变回全部记录一轮（筛选框里却还写着卖出），表里没保存的改动也跟着
         # 少报一轮。画完再重跑，每个控件都在场，状态一个不丢。
         st.rerun()
+    if asked:
+        # 确认框也排在整页画完之后，理由相同：它里面的「删除」「取消」都要整页重跑一次。
+        _confirm_delete(asked, trades, edited)
 
 
 # ---------------------------------------------------------------- 录入（§5.1）
@@ -329,8 +343,10 @@ OTHER_OPTIONS = list(journal_ui.OTHER_KINDS)
 
 # ---------------------------------------------------------------- 历史记录与导出（§5.2 / §5.5）
 
-def _log_section(trades) -> bool:
-    """历史记录那一区。返回这一轮有没有按下「保存修改」（页面画完之后要整页重跑）。"""
+def _log_section(trades) -> tuple[bool, tuple | None]:
+    """历史记录那一区。返回两样：这一轮有没有按下「保存修改」（页面画完之后要整页重跑）；
+    以及历史表（_editor 交回的那一对，没有表可改时是 None）——删除的确认框要拿它看
+    表里还有没有没保存的改动。"""
     # 三种空态说的是三件不同的事，混成一句"暂无数据"就等于让用户猜：
     # 一笔都没记过（指路到录入区）、筛没了（指路到筛选条件）、有数据（画表）。
     if not len(trades):
@@ -342,7 +358,7 @@ def _log_section(trades) -> bool:
                           vertical_alignment="center"):
             with _button_group():
                 _restore_block()
-        return False
+        return False, None
     # 怎么改、怎么删、改的时候最容易想当然的那一件事：在小标题后面的帮助圆点里
     # （2026-11-16 第二轮之前是表格上方常驻的一行灰字）。
     st.html(theme.section(guide.JOURNAL_LOG_TITLE.format(n=len(trades)),
@@ -368,7 +384,7 @@ def _log_section(trades) -> bool:
         st.write(guide.JOURNAL_FILTER_NONE)
     else:
         edited = _editor(filtered)
-    return _log_actions(filtered, edited)
+    return _log_actions(filtered, edited), edited
 
 
 def _filters(trades) -> None:
@@ -398,17 +414,25 @@ def _editor(filtered):
     交回来的表仍带全部字段。没填的格子显示 —（面板别处的缺值都是它），
     不显示出厂的灰字 "None"——那是个英文词，还像是真填了什么。
 
+    **最前面那一列是每行一个删除按钮**（2026-11-18）。改之前它是一列叫「删除」的勾选框：
+    勾了什么也不发生，要去点「保存修改」才真的删——用户的话：很奇怪的交互。现在点按钮
+    先弹确认框、写明是哪一条，确认即删（_confirm_delete）。它在最前面而不是行尾：这张表
+    十六列，行尾在屏幕外；这种表格只能把列钉在左边。按钮交回来的是"第几行"，所以把
+    这一轮各行的记录号一起交给它（journal_ui.on_delete_click 说了为什么不能事后再按行号查）。
+
     **这个编辑器刻意不给 key**（2026-11-16 审查后改）。编辑器记的是"第几行的哪一格改成了
     什么"；带 key 的固定行数编辑器，身份只看表的结构（列、行数、索引），不看里面的值
     （streamlit 1.61 的文档原话：edits are matched by row position）。于是两个**行数相同**
-    的筛选结果是同一个控件：在「买入」那两行里勾了第一行删除、没保存，切到「卖出」
-    （也是两行），那个勾就落在另一笔交易上，点保存删掉的是它——真实浏览器里复现过，
-    落盘又是按 trade_id 写的，所以写得"很准"。不给 key 时身份取自表的**内容**：
+    的筛选结果是同一个控件：在「买入」那两行里改了第一行、没保存，切到「卖出」
+    （也是两行），那处改动就落在另一笔交易上，点保存改掉的是它——真实浏览器里复现过
+    （当时用的是删除那一列的勾），落盘又是按 trade_id 写的，所以写得"很准"。
+    不给 key 时身份取自表的**内容**：
     表里换了一批记录、或者保存 / 恢复之后内容变了，它就是一个新控件，旧改动自然作废；
     还是那几行时（在页面别处点了点什么），没保存的改动照常留着。
     """
     shown = journal_ui.editor_frame(filtered)
-    edited = st.data_editor(shown, column_config=journal_ui.editor_columns(),
+    edited = st.data_editor(shown, column_config=journal_ui.editor_columns(
+                                [str(t) for t in shown["trade_id"]]),
                             column_order=journal_ui.EDITOR_ORDER,
                             num_rows="fixed", hide_index=True, width="stretch",
                             disabled=["trade_id"], placeholder=fmt.MISSING)
@@ -431,9 +455,9 @@ def _log_actions(filtered, edited) -> bool:
     pending = ""
     if edited is not None:
         # 表里改了却没点保存，切到别的页再回来就没了——有没保存的改动时，按钮变成主按钮、
-        # 下面一行写明改了几行、勾了几行要删。没有改动时只有一个安静的按钮。
+        # 下面一行写明改了几行。没有改动时只有一个安静的按钮。
         # 比的是交回来的表与喂进去的表（值），不是编辑器记的"哪些格子被碰过"。
-        pending = journal_ui.pending_note(*journal_ui.pending_changes(*edited))
+        pending = journal_ui.pending_note(journal_ui.pending_changes(*edited))
     clicked = False
     # 一行靠右，里面分两组：撤销（确认框 + 按钮）一组，导出与保存一组。分组是为了窄屏：
     # 放不下时整组折到下一行（1024 宽、侧边栏展开时真机量过），而不是把确认框和它的按钮、
@@ -457,6 +481,58 @@ def _log_actions(filtered, edited) -> bool:
         # 拿这一轮渲染时的旧快照整表重写会抹掉另一个标签页刚记的那一笔。
         journal_ui.save_edits(edited[1], path=ui.JOURNAL_PATH, today=date.today())
     return clicked
+
+
+def _confirm_delete(asked: list[str], trades, edited) -> None:
+    """点了历史表某一行的删除按钮之后：开确认框。**整页画完之后才调用**。
+
+    `asked` 是点的那一条的记录号（点击那一轮由 journal_ui.on_delete_click 登记，
+    page_journal_entry 一开头取走）；`trades` 是这一轮读到的整本日志，`edited` 是历史表。
+    要问的东西在这里一次备齐，确认框里只管摆出来：
+    - 要删的是哪一条——从这一轮读到的日志里按记录号取。取不到（另一个标签页刚删过）
+      就不开框，说一句它已经不在了；
+    - 表里**别的行**上没保存的改动——删完表里的内容变了，表格会换成一张新的，它们留不住，
+      所以确认之后一起写进去，框里事先说明；
+    - 上一版里还有、现在已经没有的记录——这次删除会把上一版换掉，它们就换不回来了。
+    """
+    rows = trades[trades["trade_id"].isin(asked)].to_dict("records")
+    if len(rows) != len(asked):
+        st.toast(guide.JOURNAL_DELETE_GONE)
+        return
+    pending = None
+    if edited is not None:
+        pending = journal_ui.changed_rows(*edited, skip=asked)
+    _delete_dialog(rows, pending, journal_ui.only_in_backup(trades, ui.JOURNAL_PATH))
+
+
+@st.dialog(guide.JOURNAL_DELETE_TITLE)
+def _delete_dialog(rows: list[dict], pending, fading: list[dict]) -> None:
+    """删除的确认框（2026-11-18）。写明要删的是**哪一条**——只写一句「确定删除吗」，
+    点的人什么都核对不了。
+
+    防误删靠两样：这个确认框，和删之前照旧留下的上一版（「恢复上一版」换得回来）。
+    另两句只在适用时出现：表里另有没保存的改动（会一起保存）；上一版里还有现在已经没有的
+    记录（这次删除之后就换不回来了——上一版只留一版，连着删第二条时就是这样）。
+    两个按钮靠右、主按钮在最右。点哪个都整页重跑一次：重跑时不再调用本函数，框就关了；
+    从右上角关掉则什么都不发生。删除本身在 journal_ui.delete_trades 里，结论留给下一轮说。
+    """
+    st.write(guide.JOURNAL_DELETE_ASK)
+    st.html(theme.record_lines([journal_ui.describe_trade(row) for row in rows]))
+    if pending is not None and len(pending):
+        st.write(guide.JOURNAL_DELETE_ALSO_SAVES.format(n=len(pending)))
+    if fading:
+        st.write(guide.JOURNAL_DELETE_FADING.format(n=len(fading)))
+        st.html(theme.record_lines([journal_ui.describe_trade(row) for row in fading]))
+    st.caption(guide.JOURNAL_DELETE_UNDO)
+    with st.container(horizontal=True, horizontal_alignment="right"):
+        cancel = st.button(guide.JOURNAL_DELETE_CANCEL, key=journal_ui.DELETE_CANCEL_KEY)
+        confirm = st.button(guide.JOURNAL_DELETE_OK, key=journal_ui.DELETE_OK_KEY,
+                            type="primary", icon=":material/delete:")
+    if confirm:
+        journal_ui.delete_trades([row["trade_id"] for row in rows], path=ui.JOURNAL_PATH,
+                                 today=date.today(), pending=pending)
+    if confirm or cancel:
+        st.rerun()
 
 
 def _button_group():

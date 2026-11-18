@@ -15,6 +15,8 @@
 # 塞一条 WidgetState（{"edited_rows": ...}），于是"改一格 + 点保存 → 文件真的变了"
 # 是端到端验证的。注意：AppTest 不会把 data_editor 的状态带到下一次 run，
 # 所以编辑与点按钮必须在**同一次**注入里发生（helper 已经这么做）。
+#
+# 删除走每行最前面的按钮 + 确认框（2026-11-18，见下面的 _delete）。
 import base64
 import importlib.util
 import json
@@ -685,8 +687,7 @@ def test_restoring_swaps_the_journal_with_its_backup_end_to_end(tmp_path):
     path = _journal(root, _buy(), _sell())
     two_rows = path.read_bytes()
     at = _page(root)
-    at = edit_table(at, {1: {jui.DELETE_COLUMN: True}},
-                    dataframe=_log_table_index(at), click=jui.SAVE_KEY)
+    at = _delete(at, 1)
     assert len(store.load_trades(path)) == 1
     one_row = path.read_bytes()
 
@@ -708,16 +709,15 @@ def test_restoring_swaps_the_journal_with_its_backup_end_to_end(tmp_path):
     assert store.backup_path(path).read_bytes() == two_rows
 
 
-def test_saving_edits_really_leaves_a_backup_behind(tmp_path):
-    """端到端：在页面上删掉一行并保存 → 上一版仍然躺在 .bak 里。
-    这条走的是最危险的那条路（整表重写），也是页面上那行小字承诺的东西。"""
+def test_deleting_really_leaves_a_backup_behind(tmp_path):
+    """端到端：在页面上删掉一条 → 上一版仍然躺在 .bak 里。
+    这条走的是最危险的那条路（整表重写），也是确认框里那句「删错了可以换回」承诺的东西。"""
     root = _root(tmp_path)
     path = _journal(root, _buy(), _sell())
     before = path.read_bytes()
     at = _page(root)
 
-    at = edit_table(at, {1: {jui.DELETE_COLUMN: True}},
-                    dataframe=_log_table_index(at), click=jui.SAVE_KEY)
+    at = _delete(at, 1)
 
     assert not at.exception, at.exception
     assert len(store.load_trades(path)) == 1, "删除没生效，这条测的就不是备份了"
@@ -847,30 +847,101 @@ def test_editing_a_cell_and_saving_rewrites_that_row_only(tmp_path):
     assert list(saved["reason"]) == ["改成别的理由", "跌破20日线"], saved
 
 
-def test_marking_a_row_for_deletion_and_saving_removes_it(tmp_path):
-    """删除是两步（勾选 + 保存）。一键删除对一份不可再生的文件太危险：
-    误点一下就没了，而 git 里那次改动还没提交。"""
-    root = _root(tmp_path)
-    _journal(root, _buy(), _sell())
-    at = _page(root)
-    at = edit_table(at, {1: {jui.DELETE_COLUMN: True}},
-                    dataframe=_log_table_index(at), click=jui.SAVE_KEY)
+def _delete_states(at: AppTest, row: int, edits: dict[int, dict] | None = None):
+    """点历史表第 row 行删除按钮那一下的全部控件状态。`edits` 是表里没保存的改动——
+    浏览器每一轮都会把它们原样送回来，AppTest 不会，所以要自己带上。"""
+    editor = at.get("dataframe")[_log_table_index(at)]
+    assert jui.DELETE_COLUMN in editor.proto.button_click_widgets, \
+        f"历史表没有删除按钮那一列: {dict(editor.proto.button_click_widgets)}"
+    states = at._tree.get_widget_states()
+    if edits:
+        table: WidgetState = states.widgets.add()
+        table.id = editor.proto.id
+        table.string_value = json.dumps({
+            "edited_rows": {str(r): cells for r, cells in edits.items()},
+            "added_rows": [], "deleted_rows": []})
+    click: WidgetState = states.widgets.add()
+    click.id = editor.proto.button_click_widgets[jui.DELETE_COLUMN]
+    click.string_trigger_value.data = json.dumps({"row": row, "label": jui.DELETE_LABEL})
+    return states
 
+
+def _click_delete(at: AppTest, row: int, *, edits: dict[int, dict] | None = None) -> AppTest:
+    """点历史表第 row 行最前面的删除按钮：确认框出来，别的什么都还没发生。"""
+    return at._run(widget_state=_delete_states(at, row, edits))
+
+
+def _delete(at: AppTest, row: int, *, edits: dict[int, dict] | None = None,
+            confirm: bool = True) -> AppTest:
+    """点删除按钮，再在确认框里点「删除」（confirm=False 时点「取消」）。
+
+    真实浏览器里第二下只重跑确认框那一块（它记着打开时的那一笔）。AppTest 只会整页重跑，
+    而整页重跑时确认框开不开看的是"这一轮有没有点删除按钮"——所以第二轮把那一下点击
+    连同确认框里的按钮一起送回去，走到的是同一段代码。"""
+    at = _click_delete(at, row, edits=edits)
     assert not at.exception, at.exception
-    saved = store.load_trades(_trades_path(root))
-    assert list(saved["trade_id"]) == ["T1"], saved
+    assert _dialog(at) is not None, "点了删除按钮，确认框没出来"
+    answer = at.button(key=jui.DELETE_OK_KEY if confirm else jui.DELETE_CANCEL_KEY)
+    states = _delete_states(at, row, edits)
+    pressed: WidgetState = states.widgets.add()
+    pressed.id = answer.id
+    pressed.trigger_value = True
+    return at._run(widget_state=states)
 
 
-def test_ticking_delete_without_saving_changes_nothing(tmp_path):
-    """勾了但没点保存 → 文件一个字节都不许动。"""
+def _dialog(at: AppTest):
+    """页面上开着的确认框（没有就是 None）。它不在页面正文里：streamlit 把它挂在另一棵树上。"""
+    found = [n for n in _walk(at._tree) if getattr(n, "type", "") == "dialog"]
+    assert len(found) <= 1, f"同时开着 {len(found)} 个确认框"
+    return found[0] if found else None
+
+
+def _dialog_text(at: AppTest) -> str:
+    """确认框里能读到的全部文字（不折行的空格换成普通空格，比字面用）。"""
+    box = _dialog(at)
+    assert box is not None, "确认框没开"
+    parts = []
+    for e in _walk(box):
+        parts.append(getattr(getattr(e, "proto", None), "body", "") or "")
+        if getattr(e, "type", "") in ("markdown", "caption"):
+            parts.append(str(e.value))
+    return "\n".join(parts).replace(NBSP, " ")
+
+
+def test_deleting_a_row_asks_first_and_removes_it_on_confirm(tmp_path):
+    """删除是两步，但两步都叫删除：点那一行的删除按钮 → 确认框 → 点「删除」。
+    一键删除对一份不可再生的文件太危险（误点一下就没了）；改之前的两步是"勾一下 + 点保存"，
+    用户的话：很奇怪的交互。"""
     root = _root(tmp_path)
     path = _journal(root, _buy(), _sell())
     before = path.read_bytes()
     at = _page(root)
-    at = edit_table(at, {1: {jui.DELETE_COLUMN: True}}, dataframe=_log_table_index(at))
+
+    at = _click_delete(at, 1)
+    assert not at.exception, at.exception
+    assert _dialog(at) is not None, "点了删除按钮，确认框没出来"
+    assert path.read_bytes() == before, "还没确认，文件一个字节都不许动"
+
+    at = _delete(at, 1)
+    assert not at.exception, at.exception
+    saved = store.load_trades(path)
+    assert list(saved["trade_id"]) == ["T1"], saved
+    assert _dialog(at) is None, "删完了确认框还开着"
+    shown = [f for f in _frames(at) if "trade_id" in getattr(f, "columns", [])][0]
+    assert list(shown["trade_id"]) == ["T1"], "表里还摆着删掉的那一条"
+
+
+def test_cancelling_the_confirmation_changes_nothing(tmp_path):
+    """点了删除按钮又点「取消」→ 文件一个字节都不许动，确认框收起来。"""
+    root = _root(tmp_path)
+    path = _journal(root, _buy(), _sell())
+    before = path.read_bytes()
+    at = _delete(_page(root), 1, confirm=False)
 
     assert not at.exception, at.exception
     assert path.read_bytes() == before
+    assert not store.backup_path(path).exists(), "没删成，却写了一份备份"
+    assert _dialog(at) is None, "取消之后确认框还开着"
 
 
 def test_saving_an_edit_that_breaks_a_row_is_refused(tmp_path):
@@ -1071,22 +1142,77 @@ def test_prefills_default_to_buy_when_there_is_no_action_column():
     assert got["kind"] == "buy" and got["name"] == "美的集团"
 
 
-def test_split_editor_result_separates_edits_from_deletions():
-    edited = pd.DataFrame({"trade_id": ["T1", "T2", "T3"],
-                           "reason": ["甲", "乙", "丙"],
-                           jui.DELETE_COLUMN: [False, True, False]})
-    keep, deleted = jui.split_editor_result(edited)
-
-    assert deleted == ["T2"]
-    assert list(keep["trade_id"]) == ["T1", "T3"]
-    assert jui.DELETE_COLUMN not in keep.columns, "勾选列不许流进日志文件"
+NBSP = "\u00a0"       # 不折行的空格
 
 
-def test_split_editor_result_treats_a_blank_tick_as_not_deleted():
-    """勾选列可能是 None（编辑器交回来的空格）。当成"删"就会删掉没勾的行。"""
-    edited = pd.DataFrame({"trade_id": ["T1"], jui.DELETE_COLUMN: [None]})
-    keep, deleted = jui.split_editor_result(edited)
-    assert deleted == [] and list(keep["trade_id"]) == ["T1"]
+def _record(**over) -> dict:
+    """一行归一过的记录（同日志文件里读出来的样子），给"把一笔写成一行字"那几条用。"""
+    return schema.apply_defaults(_buy(**over), costs=COSTS)
+
+
+def _said(row: dict) -> str:
+    """那一行字，把不折行的空格换成普通空格——比字面用。"""
+    return jui.describe_trade(row).replace(NBSP, " ")
+
+
+def test_a_trade_is_described_in_one_line_a_person_can_check():
+    """确认框里要写明删的是**哪一笔**：哪天、买还是卖、哪只票、多少股、什么价。
+    这一行是防删错的最后一道——只写「确定删除吗」的确认框，点的人什么都核对不了。"""
+    said = _said(_record())
+    for part in ("2026-08-03", "买入", "美的集团（000333）", "1,000 股 × 71.50"):
+        assert part in said, said
+    sold = _said(schema.apply_defaults(_sell(name="美的集团"), costs=COSTS))
+    assert "卖出" in sold and "75.00" in sold, sold
+    for key in ("buy", "sell", "ma_cross"):
+        assert key not in said + sold, f"确认框里冒出了内部键 {key!r}"
+
+
+def test_a_described_trade_never_breaks_inside_a_number():
+    """「1,000 股 ×」与价钱拆在两行上很难读（真机上看到的：确认框窄，正好从乘号后面折）。
+    每一段里面用不折行的空格，段与段之间才许折。"""
+    said = jui.describe_trade(_record())
+    assert f"1,000{NBSP}股{NBSP}×{NBSP}71.50" in said, repr(said)
+    assert " " in said, "段与段之间得留着能折行的普通空格"
+
+
+def test_adjustments_and_dividends_are_described_by_what_they_carry():
+    """送股没有成交价、分红没有股数：各写各有的那个数，不写「0 股 × 0.00」。"""
+    def said(**row) -> str:
+        return _said(schema.apply_defaults(dict(date=D_BUY, symbol="000333", **row), costs=COSTS))
+
+    adjust = said(name="美的集团", kind="adjust", shares=100.0)
+    assert "股数调整" in adjust and "+100 股" in adjust and "×" not in adjust, adjust
+    assert "-50 股" in said(kind="adjust", shares=-50.0)
+    dividend = said(name="美的集团", kind="dividend", amount=320.0)
+    assert "现金分红" in dividend and "到账 320.00 元" in dividend and "股" not in dividend, dividend
+
+
+def test_a_trade_without_a_name_is_described_by_its_code_alone():
+    """查不到名称的票只写代码——不写一对空括号，也不编一个名字。"""
+    said = _said(_record(name=""))
+    assert "000333" in said and "（" not in said, said
+
+
+def test_the_delete_column_is_a_button_on_every_row():
+    """历史表最前面那一列是每行一个删除按钮：只有一个垃圾桶图标，没有字。
+    改之前它是一列叫「删除」的勾选框，勾了什么也不发生，要去点「保存修改」才真的删。"""
+    shown = _shown(_buy(), _sell())
+    assert jui.DELETE_LABEL == ":material/delete:"
+    assert list(shown[jui.DELETE_COLUMN]) == [jui.DELETE_LABEL] * 2
+    assert set(shown.columns) == {*schema.COLUMNS, jui.DELETE_COLUMN}
+
+
+def test_the_delete_buttons_are_wired_to_the_record_ids_on_screen():
+    """按钮点下去交回来的是"第几行"。回调要把它换成记录号，用的必须是**画这张表那一轮**
+    各行的记录号（随列配置一起交给按钮列）——表里显示的是筛选后的行，行号与整本日志对不上。"""
+    column = jui.editor_columns(("T1", "T3"))[jui.DELETE_COLUMN]
+    assert column.key == jui.DELETE_CLICK_KEY
+    assert column.on_click is jui.on_delete_click and column.args == (("T1", "T3"),)
+    config = column.config
+    assert config["type_config"]["type"] == "button"
+    assert config["type_config"]["button_type"] == "tertiary", "一列描了边的按钮太吵"
+    assert config["pinned"] is True, "表横着拖去看备注时，删除按钮得跟着留在左边"
+    assert config["label"] == "", "表头不写字：垃圾桶自己就说清了"
 
 
 def test_price_range_comes_from_the_local_cache(tmp_path):
@@ -1865,27 +1991,26 @@ def _shown(*rows) -> pd.DataFrame:
     return jui.editor_frame(base)
 
 
-def test_pending_changes_counts_edits_and_ticked_deletions_separately():
+def test_pending_changes_counts_the_rows_whose_values_differ():
+    """「还没保存」数的是**改过的行**。2026-11-18 之前它还数"勾了几行要删除"——删除那时是
+    表里的一列勾，要等保存；现在删除走每行自己的按钮，表里攒着没保存的只有改动。"""
     shown = _shown(_buy(), _sell(), _buy(symbol="600519", shares=100.0, price=1600.0),
                    _sell(symbol="600519", shares=100.0, price=1700.0))
     edited = shown.copy()
     edited.loc[0, "reason"] = "改了"
-    edited.loc[2, jui.DELETE_COLUMN] = True
     edited.loc[3, "price"] = 10.0
-    edited.loc[3, jui.DELETE_COLUMN] = True
-    assert jui.pending_changes(shown, edited) == (1, 2), \
-        "又改又勾删除的那一行算删除——删了，改动就没有意义"
+    edited.loc[3, "note"] = "同一行改了两格，还是一行"
+    assert jui.pending_changes(shown, edited) == 2
 
 
 def test_pending_changes_is_about_values_not_about_what_was_touched():
-    """把原来的值又敲了回去、勾上又取消：表里的值和文件里的一样，就没有东西要保存。
-    审查时抓到的：按"编辑器记了哪些格子被碰过"来算，这两种都会报「还没保存」，
+    """把原来的值又敲了回去：表里的值和文件里的一样，就没有东西要保存。
+    审查时抓到的：按"编辑器记了哪些格子被碰过"来算，这种会报「还没保存」，
     而点下去得到的是一句「没有需要保存的改动」——同一屏两句话打架。"""
     shown = _shown(_buy(), _sell())
     edited = shown.copy()
     edited.loc[0, "reason"] = shown.loc[0, "reason"]            # 原值敲回去
-    edited.loc[1, jui.DELETE_COLUMN] = False                    # 勾上又取消
-    assert jui.pending_changes(shown, edited) == (0, 0)
+    assert jui.pending_changes(shown, edited) == 0
 
 
 def test_pending_changes_survives_the_types_an_editor_hands_back():
@@ -1898,15 +2023,15 @@ def test_pending_changes_survives_the_types_an_editor_hands_back():
     edited.loc[0, "stop_plan"] = None                           # 本来就空（NaN）
     edited.loc[1, "note"] = None                                # 本来就空（""）
     edited.loc[1, "date"] = D_SELL                              # 同一天，date 对象
-    assert jui.pending_changes(shown, edited) == (0, 0)
+    assert jui.pending_changes(shown, edited) == 0
     edited.loc[1, "date"] = D_SELL - timedelta(days=1)          # 真改了一天
-    assert jui.pending_changes(shown, edited) == (1, 0)
+    assert jui.pending_changes(shown, edited) == 1
 
 
 def test_pending_changes_of_an_untouched_editor_is_zero():
     shown = _shown(_buy(), _sell())
-    assert jui.pending_changes(shown, shown.copy()) == (0, 0)
-    assert jui.pending_changes(shown.iloc[0:0], shown.iloc[0:0]) == (0, 0)
+    assert jui.pending_changes(shown, shown.copy()) == 0
+    assert jui.pending_changes(shown.iloc[0:0], shown.iloc[0:0]) == 0
 
 
 def test_pending_changes_measures_with_the_same_ruler_as_the_save():
@@ -1916,27 +2041,55 @@ def test_pending_changes_measures_with_the_same_ruler_as_the_save():
     shown = _shown(_buy(), _sell())
     spaces = shown.copy()
     spaces.loc[0, "note"] = "   "                                  # 本来是空串
-    assert jui.pending_changes(shown, spaces) == (1, 0)
+    assert jui.pending_changes(shown, spaces) == 1
     trailing = shown.copy()
     trailing.loc[0, "reason"] = shown.loc[0, "reason"] + " "       # 末尾多一个空格
-    assert jui.pending_changes(shown, trailing) == (1, 0)
+    assert jui.pending_changes(shown, trailing) == 1
     zero = shown.copy()
     zero.loc[0, "stop_plan"] = 0.0                                 # 本来没填
-    assert jui.pending_changes(shown, zero) == (1, 0)
+    assert jui.pending_changes(shown, zero) == 1
     # 而"同一个空"的不同写法仍然不算改动
     blank = shown.astype(object).copy()
     blank.loc[0, "note"] = None
     blank.loc[0, "stop_plan"] = float("nan")
-    assert jui.pending_changes(shown, blank) == (0, 0)
+    assert jui.pending_changes(shown, blank) == 0
 
 
 def test_pending_changes_would_rather_say_nothing_than_guess():
-    """两张表对不上（行数不同、交回来的表没有「删除」列）——固定行数的编辑器不会这样，
-    真遇上了也只是不提醒：这句话是提示，不许因为它把整页打崩，更不许乱报一个数。"""
+    """两张表对不上（行数不同）——固定行数的编辑器不会这样，真遇上了也只是不提醒：
+    这句话是提示，不许因为它把整页打崩，更不许乱报一个数。"""
     shown = _shown(_buy(), _sell())
-    assert jui.pending_changes(shown, shown.iloc[:1].copy()) == (0, 0)
-    assert jui.pending_changes(shown.iloc[:1], shown.copy()) == (0, 0)
-    assert jui.pending_changes(shown, shown.drop(columns=[jui.DELETE_COLUMN])) == (0, 0)
+    assert jui.pending_changes(shown, shown.iloc[:1].copy()) == 0
+    assert jui.pending_changes(shown.iloc[:1], shown.copy()) == 0
+    assert len(jui.changed_rows(shown, shown.iloc[:1].copy())) == 0
+
+
+def test_changed_rows_are_what_a_save_would_write():
+    """改过的那几行整行交回来（保存与"删除时顺带保存"都拿它去写），不带删除按钮那一列。
+    没改过的行不在里面：没碰过的记录不该被这一轮渲染时读到的旧值再写一遍。"""
+    shown = _shown(_buy(), _sell(), _buy(symbol="600519", shares=100.0, price=1600.0))
+    edited = shown.copy()
+    edited.loc[1, "note"] = "补一句"
+    rows = jui.changed_rows(shown, edited)
+    assert list(rows["trade_id"]) == ["T2"] and list(rows["note"]) == ["补一句"]
+    assert list(rows.columns) == list(schema.COLUMNS), "删除按钮那一列不许流进日志文件"
+
+
+def test_changed_rows_can_leave_out_the_ones_being_deleted():
+    """正要删掉的那一笔上没保存的改动不算数——删了，改动就没有意义。"""
+    shown = _shown(_buy(), _sell(), _buy(symbol="600519", shares=100.0, price=1600.0))
+    edited = shown.copy()
+    edited.loc[0, "note"] = "改了也白改"
+    edited.loc[2, "note"] = "这一行要留着"
+    assert list(jui.changed_rows(shown, edited, skip=["T1"])["trade_id"]) == ["T3"]
+    assert list(jui.changed_rows(shown, edited)["trade_id"]) == ["T1", "T3"]
+
+
+def test_the_pending_note_counts_rows_and_says_where_to_save():
+    assert jui.pending_note(0) == ""
+    said = jui.pending_note(2)
+    assert "改了 2 行" in said and "还没保存" in said and "「保存修改」" in said, said
+    assert "删除" not in said, "删除不再等保存，这句话里不该再提它"
 
 
 def test_the_editor_leads_with_what_a_person_reads_and_ends_with_the_record_id():
@@ -1996,16 +2149,15 @@ def _toasts(at: AppTest) -> list[str]:
 
 
 def test_saving_with_nothing_changed_leaves_the_file_and_the_backup_alone(tmp_path):
-    """备份只留一版，每次保存都会把它换成"保存前的样子"。所以一次**什么都没改**的保存
-    不是无害的：删错一行并保存之后，手一抖再点一下「保存修改」，备份就被换成了删错之后
+    """备份只留一版，每次写入都会把它换成"写入前的样子"。所以一次**什么都没改**的保存
+    不是无害的：删错一条之后，手一抖再点一下「保存修改」，备份就被换成了删错之后
     的那一版——唯一的撤销手段没了，而屏幕上只是又弹了一句"已保存"。
     没有改动就不写盘：文件与备份都逐字节不动，并且如实说没有东西要保存。"""
     root = _root(tmp_path)
     path = _journal(root, _buy(), _sell())
     two_rows = path.read_bytes()
     at = _page(root)
-    at = edit_table(at, {1: {jui.DELETE_COLUMN: True}},
-                    dataframe=_log_table_index(at), click=jui.SAVE_KEY)
+    at = _delete(at, 1)
     one_row = path.read_bytes()
     assert store.backup_path(path).read_bytes() == two_rows, "前提：备份是删之前的那一版"
 
@@ -2032,32 +2184,16 @@ def test_the_save_message_counts_the_rows_that_really_changed(tmp_path):
     assert "改了 1 行" in said and "删除" not in said, said
 
 
-def test_the_save_message_for_a_deletion_does_not_claim_edits(tmp_path):
+def test_the_delete_message_says_what_happened_and_how_to_undo(tmp_path):
     root = _root(tmp_path)
     _journal(root, _buy(), _sell(), _buy(symbol="600519", name="贵州茅台", shares=100.0,
                                         price=1600.0, source="discretionary"))
-    at = _page(root)
-    at = edit_table(at, {1: {jui.DELETE_COLUMN: True}},
-                    dataframe=_log_table_index(at), click=jui.SAVE_KEY)
+    at = _delete(_page(root), 1)
 
     assert not at.exception, at.exception
     said = " ".join(_toasts(at))
-    assert "删除 1 行" in said and "改了" not in said, said
+    assert "已删除 1 条" in said and "改" not in said.split("。")[0], said
     assert "恢复上一版" in said, "刚删完是最需要知道'还能换回来'的时刻"
-
-
-def test_the_save_message_reports_both_when_both_happened(tmp_path):
-    root = _root(tmp_path)
-    _journal(root, _buy(), _sell(), _buy(symbol="600519", name="贵州茅台", shares=100.0,
-                                        price=1600.0, source="discretionary"))
-    at = _page(root)
-    at = edit_table(at, {0: {"note": "补一句备注"}, 2: {jui.DELETE_COLUMN: True}},
-                    dataframe=_log_table_index(at), click=jui.SAVE_KEY)
-
-    said = " ".join(_toasts(at))
-    assert "改了 1 行" in said and "删除 1 行" in said, said
-    saved = store.load_trades(_trades_path(root))
-    assert list(saved["note"]) == ["补一句备注", ""] and list(saved["trade_id"]) == ["T1", "T2"]
 
 
 # ---------------------------------------------------------------- 版式（AppTest）
@@ -2221,7 +2357,7 @@ def test_an_empty_journal_shows_the_way_in_and_nothing_to_operate_on(tmp_path):
 
 def test_unsaved_edits_are_called_out_next_to_the_save_button(tmp_path):
     """表里改了却没点保存，切到别的页再回来就没了。有没保存的改动时：
-    按钮变成主按钮，旁边写明改了几行、勾了几行要删。"""
+    按钮变成主按钮，下面写明改了几行。"""
     root = _root(tmp_path)
     path = _journal(root, _buy(), _sell())
     before = path.read_bytes()
@@ -2231,11 +2367,10 @@ def test_unsaved_edits_are_called_out_next_to_the_save_button(tmp_path):
         ("保存修改", ":material/save:", "secondary"), "没有改动时它只是一个安静的按钮"
     assert not any("还没保存" in c.value for c in at.main.caption)
 
-    at = edit_table(at, {0: {"reason": "改一下"}, 1: {jui.DELETE_COLUMN: True}},
-                    dataframe=_log_table_index(at))
+    at = edit_table(at, {0: {"reason": "改一下"}}, dataframe=_log_table_index(at))
     assert not at.exception, at.exception
     said = [c.value for c in at.main.caption if "还没保存" in c.value]
-    assert len(said) == 1 and "改了 1 行" in said[0] and "勾了 1 行要删除" in said[0], \
+    assert len(said) == 1 and "改了 1 行" in said[0] and "删除" not in said[0], \
         [c.value for c in at.main.caption]
     assert at.button(key=jui.SAVE_KEY).proto.type == "primary"
     assert path.read_bytes() == before, "只是提醒，没点保存就不许动文件"
@@ -2420,8 +2555,9 @@ def test_recording_a_share_adjustment_empties_its_share_count_too(tmp_path):
 #
 # data_editor 记的是"第几行的哪一格改成了什么"。带 key 的固定行数编辑器，身份只看表的**结构**
 # （列、行数、索引），不看里面的值（streamlit 1.61 的文档原话：Edits are matched by row position）。
-# 于是两个行数相同的筛选结果是**同一个控件**：在「买入」那两行里勾了第一行删除、没保存，
-# 切到「卖出」（也是两行），那个勾就落在了另一笔交易上——真实浏览器里复现过。
+# 于是两个行数相同的筛选结果是**同一个控件**：在「买入」那两行里改了第一行、没保存，
+# 切到「卖出」（也是两行），那处改动就落在了另一笔交易上——真实浏览器里复现过
+# （当时复现用的是删除那一列的勾，2026-11-18 起那一列是按钮，没有"勾着没保存"这回事了）。
 # AppTest 不会把编辑器的状态带到下一轮，这类问题它天然看不见；下面这个替身照浏览器的规矩来：
 # 记着没保存的改动，**按当时那个控件 id** 每一轮都原样送回去——id 没变就会被套到新表上，变了就作废。
 
@@ -2440,7 +2576,8 @@ class _Browser:
         self.edits = edits
         return self.rerun()
 
-    def rerun(self, click: str | None = None) -> AppTest:
+    def rerun(self, click: str | None = None, delete: int | None = None) -> AppTest:
+        """`click` 是这一轮按下的按钮；`delete` 是这一轮点了历史表第几行的删除按钮。"""
         states = self.at._tree.get_widget_states()
         if self.edits:
             state: WidgetState = states.widgets.add()
@@ -2448,6 +2585,10 @@ class _Browser:
             state.string_value = json.dumps({
                 "edited_rows": {str(row): cells for row, cells in self.edits.items()},
                 "added_rows": [], "deleted_rows": []})
+        if delete is not None:
+            row: WidgetState = states.widgets.add()
+            row.id = self._editor().proto.button_click_widgets[jui.DELETE_COLUMN]
+            row.string_trigger_value.data = json.dumps({"row": delete, "label": jui.DELETE_LABEL})
         if click is not None:
             pressed: WidgetState = states.widgets.add()
             pressed.id = self.at.button(key=click).id
@@ -2457,6 +2598,11 @@ class _Browser:
         if editor is None or editor.proto.id != self.editor_id:
             self.edits = {}                    # 控件换了：浏览器手里那份改动也就没了
         return self.at
+
+    def delete(self, row: int, *, confirm: bool = True) -> AppTest:
+        """点第 row 行的删除按钮，再在确认框里点「删除」/「取消」（两轮，见 _delete 的说明）。"""
+        self.rerun(delete=row)
+        return self.rerun(click=jui.DELETE_OK_KEY if confirm else jui.DELETE_CANCEL_KEY, delete=row)
 
 
 def _four_trades(root: Path) -> Path:
@@ -2470,28 +2616,24 @@ def _pending_notes(at: AppTest) -> list[str]:
     return [c.value for c in at.main.caption if "还没保存" in c.value]
 
 
-def test_an_unsaved_tick_does_not_ride_the_row_position_onto_another_trade(tmp_path):
-    """筛「买入」（T1、T3）→ 勾第一行删除、不保存 → 改筛「卖出」（T2、T4，也是两行）。
-    那个勾绝不能落到 T2 头上：页面不许说还有没保存的改动，点保存也不许删掉任何一笔。"""
+def test_the_delete_button_deletes_the_row_on_screen_not_that_row_of_the_file(tmp_path):
+    """筛「卖出」（T2、T4）→ 点第一行的删除按钮。按钮交回来的是"第一行"——整本日志的第一行是 T1。
+    确认框里写的、最后删掉的，都必须是屏幕上那一行（T2）：换成记录号用的是画这张表那一轮各行的记录号。"""
     root = _root(tmp_path)
     path = _four_trades(root)
-    before = path.read_bytes()
-    browser = _Browser(_page(root))
-    browser.at.multiselect(key=jui.FILTER_KIND_KEY).set_value(["buy"])
-    browser.rerun()
-    at = browser.edit({0: {jui.DELETE_COLUMN: True}})
-    assert any("勾了 1 行要删除" in note for note in _pending_notes(at)), "前提：勾上了"
-
-    browser.at.multiselect(key=jui.FILTER_KIND_KEY).set_value(["sell"])
-    at = browser.rerun()
+    at = _page(root)
+    at.multiselect(key=jui.FILTER_KIND_KEY).set_value(["sell"])
+    at = at.run()
     shown = [f for f in _frames(at) if "trade_id" in getattr(f, "columns", [])][0]
-    assert list(shown["trade_id"]) == ["T2", "T4"], "前提：换成了卖出那两行"
-    assert _pending_notes(at) == [], "换了一批记录，上一批里没保存的勾不该跟过来"
+    assert list(shown["trade_id"]) == ["T2", "T4"], "前提：表里是卖出那两行"
 
-    at = browser.rerun(click=jui.SAVE_KEY)
+    at = _click_delete(at, 0)
+    assert "卖一" not in _dialog_text(at) and "卖出" in _dialog_text(at)
+    assert "美的集团" in _dialog_text(at) or "000333" in _dialog_text(at), _dialog_text(at)
+    at = _delete(at, 0)
     assert not at.exception, at.exception
-    assert path.read_bytes() == before, \
-        f"在买入里勾的删除，删掉的却是别的记录: {list(store.load_trades(path)['trade_id'])}"
+    assert list(store.load_trades(path)["trade_id"]) == ["T1", "T3", "T4"], \
+        f"点的是屏幕上第一行（T2），删掉的却是别的: {list(store.load_trades(path)['trade_id'])}"
 
 
 def test_an_unsaved_edit_does_not_ride_the_row_position_onto_another_trade(tmp_path):
@@ -2600,10 +2742,10 @@ def test_whitespace_typed_into_a_blank_cell_is_announced_before_it_is_saved(tmp_
     assert list(store.load_trades(path)["note"]) == ["   ", ""]
 
 
-def test_pressing_delete_on_the_delete_tick_does_not_take_the_table_down(tmp_path):
-    """选中「删除」那一格（或一片包含它的格子）按 Delete 键，表格送回来的是"这一格清空"。
-    勾选列若是硬邦邦的 bool，清空这一下就是 TypeError：表格连同它下面的保存、恢复、导出
-    整个消失一轮。这一列 2026-11-16 起排在最前面，比以前好碰得多。清空 = 没勾。"""
+def test_a_blanked_delete_cell_does_not_take_the_table_down(tmp_path):
+    """删除按钮那一列是只读的，正常情况下表格不会送回"这一格被清空"。真送回来了（2026-11-16 那一列
+    还是勾选框时，选中它按 Delete 键就是这样，表格连同下面的保存、恢复、导出整个消失一轮）
+    也不许出事：这一列的值不参与任何判断——不算改动，保存不动文件，更不会被当成"要删"。"""
     root = _root(tmp_path)
     path = _journal(root, _buy(), _sell())
     before = path.read_bytes()
@@ -2611,7 +2753,8 @@ def test_pressing_delete_on_the_delete_tick_does_not_take_the_table_down(tmp_pat
     at = browser.edit({0: {jui.DELETE_COLUMN: None}})
     assert not at.exception, at.exception
     assert [e for e in at.get("dataframe") if e.proto.id], "表格不见了"
-    assert _pending_notes(at) == [], "清空的勾不是待删除"
+    assert _pending_notes(at) == [], "那一格被清空不是一处改动"
+    assert _dialog(at) is None
     at = browser.rerun(click=jui.SAVE_KEY)
     assert not at.exception, at.exception
     assert path.read_bytes() == before
@@ -2634,19 +2777,19 @@ def test_clearing_a_date_and_saving_is_refused_in_words(tmp_path):
 
 
 def test_a_refused_trade_does_not_cost_the_table_its_unsaved_edits(tmp_path):
-    """表里勾了一行删除、还没保存，这时去上面点了「记这一笔」（表单没填完，被拒）。
-    点完之后那一轮：勾还在、提醒还在。初稿里提交完立刻整页重跑——重跑发生在表格**画出来之前**，
-    后台就把表格这一轮的状态当成"控件不在了"丢掉，提醒少报一轮，而浏览器里那个勾明明还勾着。"""
+    """表里改了一格、还没保存，这时去上面点了「记这一笔」（表单没填完，被拒）。
+    点完之后那一轮：改动还在、提醒还在。初稿里提交完立刻整页重跑——重跑发生在表格**画出来之前**，
+    后台就把表格这一轮的状态当成"控件不在了"丢掉，提醒少报一轮，而浏览器里那一格明明还是改过的。"""
     root = _root(tmp_path)
     path = _journal(root, _buy(), _sell())
     before = path.read_bytes()
     browser = _Browser(_page(root))
-    browser.edit({1: {jui.DELETE_COLUMN: True}})
+    browser.edit({1: {"note": "还没保存的备注"}})
     at = browser.rerun(click=jui.SUBMIT_KEY)             # 表单是空的：这一笔会被拒
     assert path.read_bytes() == before, "前提：没记下来"
     assert "".join(str(e.value) for e in at.error), "前提：被拒了，有那句为什么"
-    assert any("勾了 1 行要删除" in note for note in _pending_notes(at)), \
-        f"点了一下「记这一笔」，表里没保存的勾就不提了: {_pending_notes(at)}"
+    assert any("改了 1 行" in note for note in _pending_notes(at)), \
+        f"点了一下「记这一笔」，表里没保存的改动就不提了: {_pending_notes(at)}"
 
 
 def test_recording_does_not_drop_the_history_filter_for_a_round(tmp_path):
@@ -2702,6 +2845,432 @@ def test_the_first_refusal_a_newcomer_sees_is_in_plain_chinese(tmp_path):
     assert "没有" in said and "股数" in said and "成交价" in said, said
     for key in ("buy", "shares", "price"):
         assert key not in said, f"报错里冒出了内部键 {key!r}: {said}"
+
+
+# ================================================================ 删除：每行一个按钮 + 确认框（2026-11-18）
+#
+# 用户的话：「"删除"的交互有点太奇怪了：1. 为什么"删除"的选择框要放在第一列的位置
+# 2. "先勾选要删除的记录、再点击保存"——很奇怪的交互」。
+# 改之前删除是表里的一列勾选框：勾了什么也不发生，要去点一个叫「保存修改」的按钮才真的删。
+# 现在每行最前面一个删除按钮：点了弹确认框、写明删的是哪一条，确认即删，不再经过「保存修改」。
+# 防误删靠两样：确认框（点的人能核对是哪一条），和删之前照旧留下的上一版（「恢复上一版」换得回来）。
+# 没变的纪律：落盘按记录号，不按"表里第几行"；备份只留一版，所以它什么时候会被换掉要说在前面。
+
+def _three_trades(root: Path) -> Path:
+    return _journal(root, _buy(), _sell(),
+                    _buy(symbol="600519", name="贵州茅台", shares=100.0, price=1600.0,
+                         source="discretionary", reason="跌到心理价位"))
+
+
+def test_the_history_table_leads_with_a_delete_button_not_a_tick_box(tmp_path):
+    root = _root(tmp_path)
+    _journal(root, _buy(), _sell())
+    at = _page(root)
+    editor = at.get("dataframe")[_log_table_index(at)]
+    columns = json.loads(editor.proto.columns)
+    kinds = {name: (c.get("type_config") or {}).get("type") for name, c in columns.items()}
+    assert kinds[jui.DELETE_COLUMN] == "button", columns[jui.DELETE_COLUMN]
+    assert "checkbox" not in kinds.values(), f"表里不该再有勾选框那一列: {kinds}"
+    assert list(editor.proto.column_order)[0] == jui.DELETE_COLUMN
+    assert list(editor.proto.button_click_widgets) == [jui.DELETE_COLUMN], "按钮列没有接上点击"
+    assert list(editor.value[jui.DELETE_COLUMN]) == [jui.DELETE_LABEL] * 2
+    assert _dialog(at) is None, "没点删除，确认框不许自己冒出来"
+
+
+def test_the_confirmation_names_the_record_and_says_how_to_undo(tmp_path):
+    """确认框里写的是**哪一条**（哪天、买还是卖、哪只票、多少股、什么价）和删错了怎么办。
+    只写一句「确定删除吗」的确认框，点的人什么都核对不了。"""
+    root = _root(tmp_path)
+    _journal(root, _buy(), _sell())
+    at = _click_delete(_page(root), 0)
+    assert not at.exception, at.exception
+    guide = _guide()
+    assert _dialog(at).proto.dialog.title == guide.JOURNAL_DELETE_TITLE
+    said = _dialog_text(at)
+    assert guide.JOURNAL_DELETE_ASK in said, said
+    for part in ("2026-08-03", "买入", "美的集团（000333）", "1,000 股 × 71.50"):
+        assert part in said, f"确认框里没写 {part}: {said}"
+    assert "2026-08-24" not in said, "没点的那一条不该出现在确认框里"
+    assert guide.JOURNAL_DELETE_UNDO in said and "「恢复上一版」" in guide.JOURNAL_DELETE_UNDO
+    assert "还没保存" not in said and "换不回来" not in said, f"没有的事不许说: {said}"
+    for key in ("buy", "T1", "trade_id", "ma_cross"):
+        assert key not in said, f"确认框里冒出了 {key!r}: {said}"
+
+
+def test_the_confirmation_ends_with_cancel_then_a_primary_delete_on_the_right(tmp_path):
+    """确认框里两个按钮靠右，主按钮在最右（全站的规矩：操作按钮一律靠右）。"""
+    root = _root(tmp_path)
+    _journal(root, _buy(), _sell())
+    at = _click_delete(_page(root), 0)
+    guide = _guide()
+    cancel, confirm = at.button(key=jui.DELETE_CANCEL_KEY), at.button(key=jui.DELETE_OK_KEY)
+    assert (cancel.label, cancel.proto.type) == (guide.JOURNAL_DELETE_CANCEL, "secondary")
+    assert (confirm.label, confirm.proto.type, confirm.proto.icon) == \
+        (guide.JOURNAL_DELETE_OK, "primary", ":material/delete:")
+    row = element_path(at, jui.DELETE_OK_KEY)[-1]
+    assert row is element_path(at, jui.DELETE_CANCEL_KEY)[-1], "两个按钮应在同一行"
+    flex = row.proto.flex_container
+    assert flex.direction == flex.Direction.HORIZONTAL and flex.justify == flex.Justify.JUSTIFY_END
+    assert [k for e in _walk(row) if (k := getattr(e, "key", None))] == \
+        [jui.DELETE_CANCEL_KEY, jui.DELETE_OK_KEY], "主按钮在最右"
+    assert any(n is _dialog(at) for n in element_path(at, jui.DELETE_OK_KEY)), "按钮得在确认框里"
+
+
+def test_the_confirmation_does_not_come_back_on_a_later_rerun(tmp_path):
+    """确认框只在"点了删除按钮的那一轮"打开。之后页面再整页重跑（断线重连、别处触发的刷新），
+    它不许自己又冒出来——一个不请自来的「要删除这一条记录吗」是会吓到人的。"""
+    root = _root(tmp_path)
+    path = _journal(root, _buy(), _sell())
+    before = path.read_bytes()
+    at = _click_delete(_page(root), 0)
+    assert _dialog(at) is not None, "前提：确认框开了"
+    at.text_input(key=jui.SYMBOL_KEY).set_value("600519")
+    at = at.run()
+    assert not at.exception, at.exception
+    assert _dialog(at) is None
+    assert jui.DELETE_ASK_KEY not in at.session_state
+    assert path.read_bytes() == before
+
+
+def test_a_pending_request_never_outlives_the_run_it_was_made_in(tmp_path):
+    """"等着确认的那一条"在页面一开头就被取走：这一轮哪怕中途出了岔子（文件读不出来、提前返回），
+    它也不会留到以后某一轮再冒出来。"""
+    root = _root(tmp_path)
+    path = _journal(root, _buy(), _sell())
+    at = _page(root)
+    good = path.read_bytes()
+    path.write_text("这不是一份交易记录\n", encoding="utf-8")
+    at.session_state[jui.DELETE_ASK_KEY] = ["T1"]
+    at = at.run()
+    assert at.error, "前提：这一轮文件读不出来，页面只剩那句报错"
+    assert jui.DELETE_ASK_KEY not in at.session_state, "那一条没被取走，会留到下一轮"
+    path.write_bytes(good)
+    at = at.run()
+    assert not at.exception and _dialog(at) is None
+
+
+def test_a_click_on_a_row_that_is_not_there_is_ignored(tmp_path):
+    """行号对不上（表格与点击之间数据变了）一律当没点过：按错位的行号去认，认到的是别人那一条。"""
+    root = _root(tmp_path)
+    path = _journal(root, _buy(), _sell())
+    before = path.read_bytes()
+    at = _click_delete(_page(root), 7)
+    assert not at.exception, at.exception
+    assert _dialog(at) is None and path.read_bytes() == before
+
+
+def test_the_click_is_resolved_against_the_table_that_was_on_screen(tmp_path):
+    """这一页的表里是 T1、T2、T3，另一个标签页刚删了 T1。在这一页点第二行（T2）的删除按钮：
+    确认框里必须是 T2。按"这一轮重新读到的表的第二行"去认，就成了 T3——点的人看着美的集团，
+    确认框里写着贵州茅台还好，写错了没看出来就是删错。"""
+    root = _root(tmp_path)
+    path = _three_trades(root)
+    at = _page(root)
+    trades = store.load_trades(path)
+    store.save_trades(trades[trades["trade_id"] != "T1"], path)        # 另一个标签页删了 T1
+    at = _click_delete(at, 1)                                           # 屏幕上第二行是 T2
+    said = _dialog_text(at)
+    assert "卖出" in said and "美的集团" in said and "贵州茅台" not in said, said
+    # 确认（这一轮的表已经是 T2、T3，T2 在第一行——见 _delete 的说明）
+    states = _delete_states(at, 0)
+    pressed: WidgetState = states.widgets.add()
+    pressed.id = at.button(key=jui.DELETE_OK_KEY).id
+    pressed.trigger_value = True
+    at = at._run(widget_state=states)
+    assert list(store.load_trades(path)["trade_id"]) == ["T3"]
+
+
+def test_clicking_delete_on_a_record_that_is_already_gone_says_so(tmp_path):
+    """另一个标签页刚把这一条删了，这一页的表里它还在。点它的删除按钮：不开确认框，说一句它已经不在了；
+    别的什么都不动。"""
+    root = _root(tmp_path)
+    path = _journal(root, _buy(), _sell())
+    at = _page(root)
+    trades = store.load_trades(path)
+    store.save_trades(trades[trades["trade_id"] != "T2"], path)
+    after = path.read_bytes()
+    at = _click_delete(at, 1)
+    assert not at.exception, at.exception
+    assert _dialog(at) is None
+    assert any(_guide().JOURNAL_DELETE_GONE in t for t in _toasts(at)), _toasts(at)
+    assert path.read_bytes() == after
+
+
+def test_deleting_leaves_every_other_record_exactly_as_it_was(tmp_path):
+    """删掉中间一条：其余几条的内容与先后一个字不变——文件里就是少了那一行。"""
+    root = _root(tmp_path)
+    path = _four_trades(root)
+    lines = path.read_text(encoding="utf-8-sig").splitlines()
+    at = _delete(_page(root), 1)
+    assert not at.exception, at.exception
+    assert path.read_text(encoding="utf-8-sig").splitlines() == [l for l in lines if not l.startswith("T2,")]
+
+
+def test_deleting_with_a_filter_on_keeps_the_filter(tmp_path):
+    """筛着「卖出」删一条：删完表里还得是筛过的（剩下的那一条卖出），筛选框里也还写着卖出。
+    确认框是整页画完之后才开的——开早了，它里面那次整页重跑会让还没画出来的控件丢一轮状态
+    （2026-11-16「记这一笔」栽过的同一个坑）。"""
+    root = _root(tmp_path)
+    path = _four_trades(root)
+    browser = _Browser(_page(root))
+    browser.at.multiselect(key=jui.FILTER_KIND_KEY).set_value(["sell"])
+    browser.rerun()
+    at = browser.delete(0)
+    assert not at.exception, at.exception
+    assert list(store.load_trades(path)["trade_id"]) == ["T1", "T3", "T4"]
+    shown = [f for f in _frames(at) if "trade_id" in getattr(f, "columns", [])][0]
+    assert list(shown["trade_id"]) == ["T4"], f"筛选条件丢了一轮: {list(shown['trade_id'])}"
+    assert at.multiselect(key=jui.FILTER_KIND_KEY).value == ["sell"]
+    assert any("筛出 1 / 3 条" in c.value for c in at.main.caption), [c.value for c in at.main.caption]
+
+
+def test_deleting_with_unsaved_edits_elsewhere_says_so_and_saves_them_too(tmp_path):
+    """表里别的行上有没保存的改动时去删一条。删完表里的内容变了，表格会换成一张新的，
+    那些改动留不住——所以确认框里当场说明"会一起保存"，确认之后一次写进去（一次写入、一份上一版）。"""
+    root = _root(tmp_path)
+    path = _three_trades(root)
+    before = path.read_bytes()
+    edits = {0: {"note": "补一句备注"}}
+    at = _click_delete(_page(root), 2, edits=edits)
+    assert _guide().JOURNAL_DELETE_ALSO_SAVES.format(n=1) in _dialog_text(at), _dialog_text(at)
+    assert path.read_bytes() == before, "还没确认"
+
+    at = _delete(at, 2, edits=edits)
+    assert not at.exception, at.exception
+    saved = store.load_trades(path)
+    assert list(saved["trade_id"]) == ["T1", "T2"] and list(saved["note"]) == ["补一句备注", ""]
+    assert store.backup_path(path).read_bytes() == before, "删除与那处改动应是同一次写入"
+    said = " ".join(_toasts(at))
+    assert "已删除 1 条" in said and "保存了" in said and "1 行" in said, said
+
+
+def test_unsaved_edits_on_the_record_being_deleted_are_not_announced(tmp_path):
+    """正要删的那一条上没保存的改动不算数：删了，改动就没有意义——确认框里不提，也不会有东西被保存。"""
+    root = _root(tmp_path)
+    path = _three_trades(root)
+    edits = {2: {"note": "改了也白改"}}
+    at = _click_delete(_page(root), 2, edits=edits)
+    assert "还没保存" not in _dialog_text(at), _dialog_text(at)
+    at = _delete(at, 2, edits=edits)
+    assert list(store.load_trades(path)["note"]) == ["", ""]
+    assert "保存了" not in " ".join(_toasts(at)), _toasts(at)
+
+
+def test_a_broken_unsaved_edit_stops_the_delete_and_nothing_is_written(tmp_path):
+    """别的行上没保存的改动是坏的（把股数清空了）。删除会连它一起写进去——那就整个不写：
+    不删、不存，并说明是哪一行坏了。落盘之后盈亏会悄悄少算一笔，比删不成糟得多。"""
+    root = _root(tmp_path)
+    path = _three_trades(root)
+    before = path.read_bytes()
+    at = _delete(_page(root), 2, edits={0: {"shares": None}})
+    assert not at.exception, at.exception
+    assert path.read_bytes() == before, "坏行竟然落盘了，或者那一条竟然被删了"
+    assert not store.backup_path(path).exists()
+    said = "".join(str(e.value) for e in at.error)
+    assert "没有删除" in said and "T1" in said and "股数" in said, said
+
+
+def test_opening_and_cancelling_the_confirmation_keeps_the_unsaved_edits(tmp_path):
+    """点了删除又取消：表里还是那几行，没保存的改动得留着（提醒也还亮着），之后照常保存得进去。"""
+    root = _root(tmp_path)
+    path = _journal(root, _buy(), _sell())
+    browser = _Browser(_page(root))
+    browser.edit({0: {"note": "先写着"}})
+    at = browser.delete(1, confirm=False)
+    assert not at.exception, at.exception
+    assert any("改了 1 行" in note for note in _pending_notes(at)), _pending_notes(at)
+    browser.rerun(click=jui.SAVE_KEY)
+    saved = store.load_trades(path)
+    assert list(saved["trade_id"]) == ["T1", "T2"] and list(saved["note"]) == ["先写着", ""]
+
+
+def test_the_second_delete_in_a_row_says_the_first_can_no_longer_come_back(tmp_path):
+    """上一版只留一版。连着删两条：删第二条时上一版会换成"删掉第一条之后"的样子——第一条从此换不回来。
+    这件事要在确认框里当场说，并写明是哪一条（还想要它，得先取消、去恢复）。
+    第一次删的时候没有这回事，不许喊。"""
+    root = _root(tmp_path)
+    path = _three_trades(root)
+    at = _page(root)
+    guide = _guide()
+    assert "换不回来" not in _dialog_text(_click_delete(at, 0)), "第一次删：没有哪一条会因此换不回来"
+
+    at = _delete(at, 0)                                  # 删掉 T1（2026-08-03 买入 美的集团）
+    assert list(store.load_trades(path)["trade_id"]) == ["T2", "T3"], "前提：T1 删掉了"
+    at = _click_delete(at, 1)                            # 再删 T3（贵州茅台）
+    said = _dialog_text(at)
+    assert guide.JOURNAL_DELETE_FADING.format(n=1) in said, said
+    assert "换不回来" in guide.JOURNAL_DELETE_FADING and "「恢复上一版」" in guide.JOURNAL_DELETE_FADING
+    asked, fading = said.index("贵州茅台"), said.index("美的集团")
+    assert asked < said.index(guide.JOURNAL_DELETE_FADING.format(n=1)) < fading, \
+        f"先说要删哪一条，再说哪一条会跟着换不回来: {said}"
+    assert "2026-08-03 买入 美的集团（000333） 1,000 股 × 71.50" in " ".join(said[fading - 20:].split()), \
+        f"换不回来的那一条也要写明是哪一条: {said}"
+
+
+def test_no_warning_when_the_previous_version_holds_nothing_the_ledger_lacks(tmp_path):
+    """上一版里没有"现在已经没有"的记录时（上一次是改了一格、或者刚恢复过），不提这回事。"""
+    root = _root(tmp_path)
+    path = _three_trades(root)
+    at = _page(root)
+    at = edit_table(at, {0: {"note": "补一句"}}, dataframe=_log_table_index(at), click=jui.SAVE_KEY)
+    assert store.backup_path(path).exists(), "前提：有上一版了"
+    assert "换不回来" not in _dialog_text(_click_delete(at, 1))
+
+
+def test_deleting_the_last_record_leaves_the_empty_state_with_a_way_back(tmp_path):
+    """删到一条不剩：页面回到空账本的样子，「恢复上一版」是亮着的——刚删光是最需要它的时刻。"""
+    root = _root(tmp_path)
+    path = _journal(root, _buy())
+    one_row = path.read_bytes()
+    at = _delete(_page(root), 0)
+    assert not at.exception, at.exception
+    assert len(store.load_trades(path)) == 0
+    assert _guide().JOURNAL_EMPTY in _texts(at)
+    assert any("已删除 1 条" in t for t in _toasts(at)), _toasts(at)
+    assert not at.checkbox(key=jui.RESTORE_CONFIRM_KEY).disabled, "删光之后恢复不了"
+    at.checkbox(key=jui.RESTORE_CONFIRM_KEY).check().run()
+    at.button(key=jui.RESTORE_KEY).click().run()
+    assert path.read_bytes() == one_row
+
+
+def test_saving_no_longer_deletes_anything(tmp_path):
+    """「保存修改」只写改动。删除有它自己的按钮和确认框——一个叫保存的按钮不该顺带删东西。"""
+    root = _root(tmp_path)
+    path = _journal(root, _buy(), _sell())
+    at = _page(root)
+    at = edit_table(at, {0: {"note": "补一句"}}, dataframe=_log_table_index(at), click=jui.SAVE_KEY)
+    assert list(store.load_trades(path)["trade_id"]) == ["T1", "T2"]
+    assert all("删除" not in t for t in _toasts(at)), _toasts(at)
+    assert "删除" not in _guide().JOURNAL_EDIT_HINT and "勾" not in _guide().JOURNAL_EDIT_HINT
+
+
+def _readme_edit_paragraph(text: str) -> str:
+    """README「改与删」那一段。"""
+    return next(line for line in text.splitlines() if line.startswith("**改与删**"))
+
+
+def test_the_readme_describes_the_delete_button_not_the_tick_box():
+    """README 那一段要跟着页面走：删除是每行一个按钮 + 确认框，不再是"勾一下再保存"。
+    文档停在旧做法上，照着做的人会去表里找一列已经不存在的勾选框。"""
+    said = _readme_edit_paragraph(README)
+    for part in ("删除按钮", "确认框", "会一起保存", "换不回来", "on_delete_click"):
+        assert part in said, f"README「改与删」一段没写到：{part}"
+    assert "勾最左边" not in said and "勾了几行要删" not in said, "README 还在讲那一列勾选框"
+
+
+# —— 落盘那一层（不经过页面）
+
+def _flashes(monkeypatch) -> list[tuple[str, str]]:
+    """把 journal_ui 留给下一轮的提示截下来（脱离页面时没有会话可存）。"""
+    said: list[tuple[str, str]] = []
+    monkeypatch.setattr(jui, "flash", lambda level, text: said.append((level, text)))
+    return said
+
+
+def test_delete_trades_removes_by_record_id_and_leaves_the_previous_version(tmp_path, monkeypatch):
+    said = _flashes(monkeypatch)
+    path = _three_trades(tmp_path)
+    before = path.read_bytes()
+    assert jui.delete_trades(["T2"], path=path, today=TODAY) is True
+    assert list(store.load_trades(path)["trade_id"]) == ["T1", "T3"]
+    assert store.backup_path(path).read_bytes() == before, "删之前的那一版得留着"
+    assert [level for level, _ in said] == ["ok"], said
+    assert "已删除 1 条" in said[0][1] and "「恢复上一版」" in said[0][1], said
+
+
+def test_delete_trades_touches_nothing_when_the_record_is_already_gone(tmp_path, monkeypatch):
+    """要删的记录不在了（另一个标签页刚删过）：这一次什么都不动——连上一版都不换——并如实说。
+    一半在、一半不在也一样：只删认得出的那几条，等于替用户改了主意。"""
+    said = _flashes(monkeypatch)
+    path = _three_trades(tmp_path)
+    before = path.read_bytes()
+    for ids in (["T9"], ["T1", "T9"]):
+        assert jui.delete_trades(ids, path=path, today=TODAY) is False
+        assert path.read_bytes() == before and not store.backup_path(path).exists()
+    assert [level for level, _ in said] == ["error", "error"] and "不在" in said[0][1], said
+    assert "T9" not in said[0][1] and "trade_id" not in said[0][1], f"这句话是给使用者看的: {said[0][1]}"
+
+
+def test_delete_trades_touches_nothing_when_an_edited_record_is_already_gone(tmp_path, monkeypatch):
+    """表里改过、要顺带保存的那一行，另一个标签页刚把它删了：同样整个不动、用人话说
+    ——不许把「日志里没有这些 trade_id」这种话甩到页面上。"""
+    said = _flashes(monkeypatch)
+    path = _three_trades(tmp_path)
+    shown = jui.editor_frame(store.load_trades(path))
+    edited = shown.copy()
+    edited.loc[0, "note"] = "补一句"
+    pending = jui.changed_rows(shown, edited, skip=["T2"])
+    trades = store.load_trades(path)
+    store.save_trades(trades[trades["trade_id"] != "T1"], path)        # 另一个标签页删了 T1
+    after, previous = path.read_bytes(), store.backup_path(path).read_bytes()
+    assert jui.delete_trades(["T2"], path=path, today=TODAY, pending=pending) is False
+    assert path.read_bytes() == after and store.backup_path(path).read_bytes() == previous
+    level, text = said[0]
+    assert level == "error" and "不在" in text, said
+    for leaked in ("trade_id", "ValueError", "T1"):
+        assert leaked not in text, f"这句话是给使用者看的，不该有 {leaked!r}: {text}"
+
+
+def test_delete_trades_writes_the_unsaved_edits_of_other_rows_in_the_same_go(tmp_path, monkeypatch):
+    said = _flashes(monkeypatch)
+    path = _three_trades(tmp_path)
+    before = path.read_bytes()
+    shown = jui.editor_frame(store.load_trades(path))
+    edited = shown.copy()
+    edited.loc[0, "note"] = "补一句"
+    pending = jui.changed_rows(shown, edited, skip=["T2"])
+    assert jui.delete_trades(["T2"], path=path, today=TODAY, pending=pending) is True
+    saved = store.load_trades(path)
+    assert list(saved["trade_id"]) == ["T1", "T3"] and list(saved["note"]) == ["补一句", ""]
+    assert store.backup_path(path).read_bytes() == before, "一次写入、一份上一版"
+    assert "已删除 1 条" in said[0][1] and "保存了" in said[0][1] and "1 行" in said[0][1], said
+
+
+def test_delete_trades_refuses_everything_when_an_unsaved_edit_is_broken(tmp_path, monkeypatch):
+    said = _flashes(monkeypatch)
+    path = _three_trades(tmp_path)
+    before = path.read_bytes()
+    shown = jui.editor_frame(store.load_trades(path))
+    edited = shown.astype(object).copy()
+    edited.loc[0, "shares"] = None
+    pending = jui.changed_rows(shown, edited, skip=["T2"])
+    assert len(pending) == 1, "前提：那一行算改过"
+    assert jui.delete_trades(["T2"], path=path, today=TODAY, pending=pending) is False
+    assert path.read_bytes() == before and not store.backup_path(path).exists()
+    assert said[0][0] == "error" and "没有删除" in said[0][1], said
+
+
+def test_delete_trades_reports_a_failed_write_and_leaves_the_file_alone(tmp_path, monkeypatch):
+    """写盘失败必须如实说，不能弹一句"已删除"：用户会以为删掉了。"""
+    said = _flashes(monkeypatch)
+    path = _three_trades(tmp_path)
+    before = path.read_bytes()
+
+    def boom(*args, **kwargs):
+        raise OSError("磁盘满了")
+    monkeypatch.setattr(store, "save_trades", boom)
+    assert jui.delete_trades(["T2"], path=path, today=TODAY) is False
+    assert path.read_bytes() == before
+    assert said[0][0] == "error" and "删除失败" in said[0][1] and "磁盘满了" in said[0][1], said
+
+
+def test_only_in_backup_is_what_a_restore_could_still_bring_back(tmp_path):
+    """上一版里有、现在已经没有的记录——再写一次盘，它们就换不回来了。"""
+    path = _three_trades(tmp_path)
+    assert jui.only_in_backup(store.load_trades(path), path) == [], "还没有上一版"
+    trades = store.load_trades(path)
+    store.save_trades(trades[trades["trade_id"] != "T2"], path)        # 上一版 = 三条都在
+    left = jui.only_in_backup(store.load_trades(path), path)
+    assert [row["trade_id"] for row in left] == ["T2"] and left[0]["kind"] == "sell", left
+    store.restore_backup(path)                                         # 换回来：现在三条，上一版两条
+    assert jui.only_in_backup(store.load_trades(path), path) == []
+
+
+def test_only_in_backup_shrugs_at_a_previous_version_it_cannot_read(tmp_path):
+    """上一版读不出来（被手工改坏了）：这只是确认框里的一句提醒，不许因为它连删除都开不了。"""
+    path = _three_trades(tmp_path)
+    store.backup_path(path).write_text("symbol,kind\n600519,buy\n", encoding="utf-8")
+    assert jui.only_in_backup(store.load_trades(path), path) == []
 
 
 # ================================================================ 第二轮：减字、重排、按钮靠右（2026-11-16）
