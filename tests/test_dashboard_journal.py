@@ -1470,6 +1470,46 @@ def test_the_pool_reminder_sits_above_the_positions_table_not_at_the_top(tmp_pat
     assert "可以不管" not in shown and len(shown) < 90, shown
 
 
+def test_the_pool_reminder_link_is_kept_out_from_under_the_table_toolbar(tmp_path):
+    """那条提醒右端的「去信号池」正好在持仓表的正上方靠右——表格右上角那条浮动工具条抬起来时，
+    会把它**整个**盖住（真实浏览器里量的：鼠标一停在表上，链接上的点全部落在工具条上，点不中）。
+    所以提醒那一行与表格之间垫一条空当（ui.toolbar_room，与「记账」页的「清除筛选」是同一件事；
+    下面用到的 _just_above / _is_room 在本文件末尾那一节）。"""
+    _root(tmp_path)
+    _journal(tmp_path, _buy(symbol="000333"))
+    _set_pool(tmp_path, ("600519",))
+    at = _page(tmp_path, REPORT_PAGE)
+    assert not at.exception, at.exception
+
+    tab = _tab(at, "当前持仓")
+    table = next(e for e in _walk(tab) if any(e is t for t in at.get("dataframe")))
+    room = _just_above(at, table)
+    assert _is_room(room), f"表格正上方应该是一条空当，实际是 {getattr(room, 'type', room)}"
+    row = list(_walk(_just_above(at, room)))
+    (notice,) = _notices(at)
+    assert any(e is notice for e in row), "空当上面紧挨着的应该是那条提醒"
+    links = [e.proto.label for e in row if getattr(e, "type", "") == "page_link"]
+    assert links == [_guide().JOURNAL_OUTSIDE_POOL_LINK], f"「去信号池」应该还在那一行里: {links}"
+    assert [e for e in _walk(at.main) if _is_room(e)] == [room], "整页只垫这一处"
+
+
+def test_the_positions_table_gets_no_gap_when_there_is_no_reminder(tmp_path):
+    """没有那条提醒时不垫：表格上面就是标签页那一排，右端没有可点的东西——
+    为一条偶尔才出现的工具条天天空着一截，不值（与「记账」页同一个口径）。"""
+    _root(tmp_path)
+    _journal(tmp_path, _buy(symbol="600519", name="贵州茅台"),
+             _sell(symbol="600519", shares=500.0))            # 卖掉一半：有持仓，也有平仓明细
+    _set_pool(tmp_path, ("600519",))
+    at = _page(tmp_path, REPORT_PAGE)
+    assert not at.exception, at.exception
+    assert not _notices(at), "前提：这一页没有任何提醒"
+    tables = list(at.get("dataframe"))
+    assert len(tables) == 3, "前提：三个标签页里的表都画出来了"
+    assert [e for e in _walk(at.main) if _is_room(e)] == [], "没有提醒，却垫了空当"
+    held = next(e for e in _walk(_tab(at, "当前持仓")) if any(e is t for t in tables))
+    assert _just_above(at, held) is None, "「当前持仓」里表格应该是第一样东西"
+
+
 def test_the_pool_reminder_names_every_stray_holding_once(tmp_path):
     """几只都不在池子里：一行说完，用顿号连。没有名称的只说代码，后面补一个空格。"""
     _root(tmp_path)
@@ -1505,6 +1545,8 @@ def test_the_pool_reminder_is_skipped_when_the_pool_cannot_be_read(tmp_path):
     at = _page(tmp_path, REPORT_PAGE)
     assert not at.exception, at.exception
     assert not _notices(at), _notice_texts(at)
+    # 没有那条提醒，表格上面也就不垫给工具条的空当（变异自查抓到这一处没人钉）
+    assert not [e for e in _walk(at.main) if _is_room(e)], "没有提醒，却垫了空当"
 
 
 # ================================================================ 账上对不上的地方（2026-11-18）
@@ -3907,8 +3949,11 @@ def test_an_empty_report_table_gets_no_help_line(tmp_path):
 # （ui.toolbar_room）：「筛选」折叠区的最下面（只有展开时才看得见），和「清除筛选」那一行与表格之间
 # （只有筛选生效时才有）。平时——折叠区收着、没有筛选——页面和原先一模一样。
 #
-# AppTest 没有像素。下面钉的是元素树里看得见的东西：谁紧挨在表格上面、空当垫在哪儿、垫的是哪一档；
-# 几何关系（哪一档够高）另有两条：一条按 streamlit 自己的尺寸表算，一条去看装着的前端里
+# 「持仓与盈亏」页有同一件事（那条提醒右端的「去信号池」），它的两条测试在上面「持仓与信号池对账」
+# 那一节里，用的是这里的 _just_above / _is_room。
+#
+# AppTest 没有像素。下面钉的是元素树里看得见的东西：谁紧挨在表格上面、空当垫在哪儿、垫多高；
+# 几何关系（多高才够）另有两条：一条照量出来的几个数算，一条去看装着的前端里
 # 那个上移的距离还是不是 2.65rem。真实浏览器里的量法与结果在
 # docs/superpowers/specs/2026-11-18-table-toolbar-room-design.md。
 
@@ -3917,6 +3962,11 @@ def test_an_empty_report_table_gets_no_help_line(tmp_path):
 TOOLBAR_RISE_REM = 2.65
 #: 页面上相邻两个元素之间的空隙（rem）。同样是量出来的：16 像素。
 ELEMENT_GAP_REM = 1.0
+#: 根字号（像素）：1rem 在页面上是多少像素。量出来的。
+ROOT_PX = 16
+#: st.page_link 的链接可点的范围，比它在版面上占的位置上下各多出多少（像素）。量出来的：
+#: 链接自己高 28 像素，占的那一行只有 20 像素。按钮没有这回事（占多大就能点多大）。
+LINK_OVERHANG_PX = 4
 
 FILTER_KEYS = (jui.FILTER_START_KEY, jui.FILTER_END_KEY, jui.FILTER_SYMBOL_KEY,
                jui.FILTER_KIND_KEY, jui.FILTER_SOURCE_KEY, jui.FILTER_REASON_KEY)
@@ -4002,10 +4052,10 @@ def test_filtering_everything_away_leaves_no_gap_for_a_table_that_is_not_there(t
 
 
 def test_every_gap_left_for_the_table_toolbar_is_the_agreed_size(tmp_path, monkeypatch):
-    """两处空当垫的是同一档（ui.TOOLBAR_ROOM），而且这一档够高：上下各一道元素间的空隙
-    加上它，不小于工具条上移的距离。谁把它调小一档，工具条就又压到按钮上了。"""
-    from streamlit.elements.lib.layout_utils import SIZE_TO_REM_MAPPING
-
+    """两处空当垫的是同一个高度（ui.TOOLBAR_ROOM，像素），而且够高：上下各一道元素间的空隙加上它，
+    不小于工具条上移的距离**再加上链接多出来的那一截**——按钮占多大地方就能点多大地方，
+    st.page_link 的链接却比它占的位置上下各多出 4 像素。初稿垫的是 12 像素：按钮够了（余 1.6 像素），
+    「持仓与盈亏」页的「去信号池」最下面 1.4 像素仍在工具条底下（真实浏览器里逐点量出来的）。"""
     sizes: list = []
     monkeypatch.setattr(st, "space", lambda size="small": sizes.append(size))
     at = _filtered_page(tmp_path)
@@ -4016,11 +4066,22 @@ def test_every_gap_left_for_the_table_toolbar_is_the_agreed_size(tmp_path, monke
     room = app_module("ui").TOOLBAR_ROOM
     assert len(sizes) == 2, f"有筛选时垫两处（折叠区里面、表格上面），实际 {len(sizes)} 处"
     assert set(sizes) == {room}, sizes
-    clearance = ELEMENT_GAP_REM + SIZE_TO_REM_MAPPING[room] + ELEMENT_GAP_REM
-    assert clearance >= TOOLBAR_RISE_REM, \
-        f"空当只有 {clearance}rem，工具条要上移 {TOOLBAR_RISE_REM}rem"
-    # 也别垫得太多：再大一档就是 2.5rem，表格上方会空出一大截
-    assert SIZE_TO_REM_MAPPING[room] < 1.0, room
+    assert isinstance(room, int) and not isinstance(room, bool), f"空当的高度按像素给: {room!r}"
+    clearance = 2 * ELEMENT_GAP_REM * ROOT_PX + room
+    needed = TOOLBAR_RISE_REM * ROOT_PX + LINK_OVERHANG_PX
+    assert clearance >= needed, f"表格上方只让出 {clearance} 像素，要让出 {needed} 像素"
+    # 也别垫得太多：每多一像素都是表格上方的空白
+    assert room <= 20, room
+
+
+def test_gaps_for_the_table_toolbar_all_go_through_the_one_helper():
+    """给工具条垫空当只走 ui.toolbar_room 一处。各页自己写 st.space 的话，垫多高就各说各的了
+    ——「持仓与盈亏」页那条链接正是照搬一个不够高的数才没让开的。"""
+    app = ROOT / "app"
+    elsewhere = sorted(p.name for p in app.glob("*.py")
+                       if p.name != "ui.py" and ".space(" in p.read_text(encoding="utf-8"))
+    assert elsewhere == [], f"这些页面自己垫了空当: {elsewhere}"
+    assert (app / "ui.py").read_text(encoding="utf-8").count(".space(") == 1
 
 
 def test_streamlit_still_lifts_the_table_toolbar_by_the_distance_we_measured():

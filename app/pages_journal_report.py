@@ -19,6 +19,10 @@
 
 页面上不再有常驻的说明（2026-11-18）：原先页顶那个折叠区「这些数字怎么算的、已知局限」
 并进了页名后面的帮助圆点（guide.JOURNAL_REPORT_INTRO）。
+
+「当前持仓」里那条「不在信号池」的提醒与表格之间留着一条空当（2026-11-19，ui.toolbar_room）：
+表格右上角那条浮动工具条抬起来时，会把正上方靠右的「去信号池」整个盖住、点不中。
+docs/superpowers/specs/2026-11-18-table-toolbar-room-design.md 的 §7。
 """
 from __future__ import annotations
 
@@ -81,8 +85,9 @@ def _ledger_notices(report: pnl.PnlReport) -> None:
                     label=guide.JOURNAL_FIX_LINK, icon=":material/edit_note:")
 
 
-def _pool_notice(report: pnl.PnlReport) -> None:
-    """持仓里有票**不在信号池**时，在持仓表上面提醒一句。
+def _pool_notice(report: pnl.PnlReport) -> bool:
+    """持仓里有票**不在信号池**时，在持仓表上面提醒一句。返回这一句出没出
+    （出了的话，调用方要在它与表格之间垫一条空当，见 _positions_section）。
 
     项目自己把这件事称为"最容易踩的坑"（说明页原话：不加进信号池的票没有任何人管它的卖出），
     而唯一能发现它的页面——这一页知道你持着什么——之前从不看信号池。
@@ -100,17 +105,18 @@ def _pool_notice(report: pnl.PnlReport) -> None:
     try:
         in_pool = set(pool.current(ui.CONFIG_PATH))
     except pool.CONFIG_ERRORS:
-        return
+        return False
     outside = [f"{p.name}（{p.symbol}）" if p.name else p.symbol
                for p in report.positions if p.shares > 0 and p.symbol not in in_pool]
     if not outside:
-        return
+        return False
     names = "、".join(outside)
     if not names.endswith("）"):
         names += " "        # 全角括号自己带着空；以代码结尾时与后面的字之间补一个空格
     _notice_row(theme.notice(guide.JOURNAL_OUTSIDE_POOL.format(names=names),
                              help=guide.JOURNAL_OUTSIDE_POOL_HELP),
                 page="universe", label=guide.JOURNAL_OUTSIDE_POOL_LINK, icon=":material/list:")
+    return True
 
 
 def _notice_row(html: str, *, page: str, label: str, icon: str) -> None:
@@ -221,7 +227,12 @@ def _weight_texts(row: dict) -> tuple[str, str, str, str]:
 
 
 def _positions_section(report: pnl.PnlReport) -> None:
-    _pool_notice(report)
+    if _pool_notice(report):
+        # 那条提醒右端的「去信号池」正好在持仓表的正上方靠右——表格右上角那条浮动工具条
+        # 抬起来时会把它整个盖住（真实浏览器里量的：鼠标一停在表上，链接就点不中了）。
+        # 垫一条空当让出地方（ui.toolbar_room，与「记账」页的「清除筛选」是同一件事）。
+        # 没有那条提醒时不垫：表格上面是标签页那一排，右端没有可点的东西。
+        ui.toolbar_room()
     ui.data_table(journal_ui.positions_table(report.positions, ui.CACHE_DIR),
                   journal_ui.positions_columns(),
                   "当前没有持仓（还没记过买入，或者都已经卖光了）。")
