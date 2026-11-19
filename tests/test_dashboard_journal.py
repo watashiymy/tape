@@ -3564,11 +3564,13 @@ def test_when_the_previous_version_did_get_replaced_the_page_says_so(
     journal = path.read_bytes()
     real_replace = store.os.replace
 
-    def the_journal_is_locked(src, dst, *args, **kwargs):
+    def no_room_to_swap_the_journal(src, dst, *args, **kwargs):
+        # 盘满时落在这一下，报的是普通的 OSError（落盘那一层的同名测试用的是文件被锁定的 PermissionError：
+        # 两种都得接上那句话，不许只认其中一种）
         if Path(dst) == path:
-            raise PermissionError(errno.EPERM, "Operation not permitted")
+            raise OSError(errno.ENOSPC, "No space left on device")
         return real_replace(src, dst, *args, **kwargs)
-    monkeypatch.setattr(store.os, "replace", the_journal_is_locked)
+    monkeypatch.setattr(store.os, "replace", no_room_to_swap_the_journal)
 
     assert write(path) is False
 
@@ -3576,7 +3578,7 @@ def test_when_the_previous_version_did_get_replaced_the_page_says_so(
     assert store.backup_path(path).read_bytes() == journal, "前提：上一版这时确实已经被换成了当前这一版"
     assert len(said) == 1, said
     level, text = said[0]
-    assert level == "error" and verdict in text and "Operation not permitted" in text, said
+    assert level == "error" and verdict in text and "No space left" in text, said
     assert text.endswith(verdict + "。" + store.PREVIOUS_VERSION_SPENT), \
         f"上一版被换掉了，页面却没有提: {text}"
 
@@ -3628,7 +3630,9 @@ def test_a_restore_stuck_halfway_is_never_reported_as_nothing_changed(tmp_path, 
 
     def only_the_first_rename_works(src, dst, *args, **kwargs):
         renames.append(Path(dst).name)
-        if len(renames) > 1:
+        if len(renames) == 2:                       # 换上一版：没成（这是停在半路的原因）
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+        if len(renames) == 3:                       # 把日志换回去：也没成，报的是另一种错
             raise OSError(errno.ENOSPC, "No space left on device")
         return real_replace(src, dst, *args, **kwargs)
     monkeypatch.setattr(store.os, "replace", only_the_first_rename_works)
@@ -3642,11 +3646,32 @@ def test_a_restore_stuck_halfway_is_never_reported_as_nothing_changed(tmp_path, 
     level, text = said[0]
     assert level == "error" and "只恢复了一半" in text, said
     assert "未被修改" not in text and "没有被修改" not in text, f"记录明明已经换了: {text}"
-    assert f"`{kept[0].name}`" in text, f"得写明那一版在哪个文件里: {text}"
+    # 三件事逐件钉，少说哪一件都不行
+    assert "记录已经换成了上一版" in text, f"没说现在是什么样: {text}"
+    assert "换不回它" in text, f"没说再点一次没用: {text}"
+    assert "它没有丢" in text, f"没说那一版还在: {text}"
+    # 两处都要点名：先说它在哪（"在记录文件旁边的某某里"），后面的步骤里再说拿哪个文件去改名
+    assert text.count(f"`{kept[0].name}`") == 2, f"得写明那一版在哪个文件里: {text}"
     # 带着反引号比：那个临时文件的名字本身就是以 trades.csv.bak 开头的，光比名字分不出说没说
     assert f"改名为 `{bak.name}`" in text and "恢复上一版" in text, f"得说怎么把它换回来: {text}"
-    assert "No space left" in text, f"没换成的原因要带上: {text}"
-    assert "RestoreHalfDone" not in text and str(path.parent) not in text, f"这句话是给使用者看的: {text}"
+    # 文件夹里这时已经有一个同名的文件，访达不让改成已有的名字——得先说把它删掉，并说明删了不丢东西
+    assert f"先把文件夹里现有的 `{bak.name}` 删掉" in text and "一模一样" in text, \
+        f"照这句话在访达里做不下去: {text}"
+    # 括号里是**为什么停在了半路**（上一版没换成），不是后来换回去为什么没成
+    assert "Operation not permitted" in text and "No space left" not in text, f"原因说的不是那一下: {text}"
+    assert "RestoreHalfDone" not in text, f"这句话是给使用者看的: {text}"
+
+
+def test_only_our_own_sentence_is_carried_onto_the_page():
+    """异常上可以附好几句话（别的库也会附）。页面只认落盘那一层附的那一句，别的不搬。"""
+    plain, ours, both = OSError("写不进去"), OSError("写不进去"), OSError("写不进去")
+    plain.add_note("some library: retry later")
+    ours.add_note(store.PREVIOUS_VERSION_SPENT)
+    both.add_note("some library: retry later")
+    both.add_note(store.PREVIOUS_VERSION_SPENT)
+
+    assert jui.spent_note(OSError("写不进去")) == "" and jui.spent_note(plain) == ""
+    assert jui.spent_note(ours) == jui.spent_note(both) == store.PREVIOUS_VERSION_SPENT
 
 
 def test_an_unreadable_previous_version_is_reported_as_such(tmp_path, monkeypatch):

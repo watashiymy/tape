@@ -165,20 +165,23 @@ def test_a_copy_the_system_refuses_halfway_leaves_nothing_behind(tmp_path, big):
     assert _names(path) == ["trades.csv", "trades.csv.bak", "trades.csv.lock"]
 
 
-def test_when_the_second_temp_file_cannot_be_made_the_first_is_cleaned_up(tmp_path, monkeypatch):
+@pytest.mark.parametrize("failure", [OSError(errno.ENOSPC, "No space left on device"), KeyboardInterrupt()],
+                         ids=["没有空间", "被打断"])
+def test_when_the_second_temp_file_cannot_be_made_the_first_is_cleaned_up(tmp_path, monkeypatch, failure):
     """第一个临时文件（当前这版）已经写好，第二个建不出来：两个文件不动，第一个也得收走。
-    2026-11-19 之前它会留在目录里——里面是一整份当前的记录。"""
+    2026-11-19 之前它会留在目录里——里面是一整份当前的记录。
+    抄文件这一段，不管是系统报错还是被 Ctrl-C 打断都收：这时两个文件都还没碰过，临时文件纯属多余。"""
     path, journal, previous = _two_versions(tmp_path)
     real_mkstemp, made = tempfile.mkstemp, []
 
-    def no_room_for_a_second(*args, **kwargs):
+    def no_second_one(*args, **kwargs):
         made.append(1)
         if len(made) == 2:
-            raise OSError(errno.ENOSPC, "No space left on device")
+            raise failure
         return real_mkstemp(*args, **kwargs)
-    monkeypatch.setattr(store.tempfile, "mkstemp", no_room_for_a_second)
+    monkeypatch.setattr(store.tempfile, "mkstemp", no_second_one)
 
-    with pytest.raises(OSError, match="No space left"):
+    with pytest.raises(type(failure)):
         store.restore_backup(path)
 
     assert len(made) == 2, "前提：失败的是第二个"
@@ -202,6 +205,65 @@ def test_when_the_journal_cannot_be_replaced_nothing_changes(tmp_path, monkeypat
         store.restore_backup(path)
 
     assert path.read_bytes() == journal and store.backup_path(path).read_bytes() == previous
+    assert _names(path) == ["trades.csv", "trades.csv.bak", "trades.csv.lock"]
+
+
+def test_an_interrupt_right_after_the_journal_is_swapped_does_not_throw_that_version_away(
+        tmp_path, monkeypatch):
+    """第一下改名**做成之后**才落下的打断（脚本里的 Ctrl-C 正好落在那一下返回的时候）。
+
+    这时日志已经是上一版，点恢复之前的那一版只剩在临时文件里——"出了错就把临时文件收走"在这里
+    等于把那一版删掉，哪儿都没有了。所以改名这一下只认系统报的错（它报错就是没换成）；别的异常
+    不去猜到底换没换，一个文件都不删。独立审查用定时信号实测过：改之前随机打断五千来次，
+    二百多次是这个结果（页面上走不到——回调不在主线程——但直接调用的脚本走得到）。
+    """
+    path, journal, previous = _two_versions(tmp_path)
+    real_replace = os.replace
+
+    def interrupted_just_after(src, dst, *args, **kwargs):
+        real_replace(src, dst, *args, **kwargs)
+        if Path(dst) == path:
+            raise KeyboardInterrupt
+    monkeypatch.setattr(store.os, "replace", interrupted_just_after)
+
+    with pytest.raises(KeyboardInterrupt):
+        store.restore_backup(path)
+
+    assert path.read_bytes() == previous, "前提：日志确实已经换成了上一版"
+    kept = [p for p in path.parent.iterdir() if p.name.endswith(".tmp")]
+    assert len(kept) == 1 and kept[0].read_bytes() == journal, "点恢复之前的那一版被当成垃圾收走了"
+
+
+def test_an_interrupt_right_after_the_backup_is_swapped_is_not_mistaken_for_a_failure(
+        tmp_path, monkeypatch):
+    """第二下改名**做成之后**才落下的打断：这时已经全换完了——日志是上一版、刚才那版成了新的上一版。
+    不许把它当成"上一版没换成"去往回换：装着刚才那版的临时文件已经改名走了，往回换只会换出一个
+    "停在半路、那一版在某某文件里"的假报告，指向一个不存在的文件。"""
+    path, journal, previous = _two_versions(tmp_path)
+    bak = store.backup_path(path)
+    real_replace = os.replace
+
+    def interrupted_just_after(src, dst, *args, **kwargs):
+        real_replace(src, dst, *args, **kwargs)
+        if Path(dst) == bak:
+            raise KeyboardInterrupt
+    monkeypatch.setattr(store.os, "replace", interrupted_just_after)
+
+    with pytest.raises(KeyboardInterrupt):
+        store.restore_backup(path)
+
+    assert path.read_bytes() == previous and bak.read_bytes() == journal, "其实已经换完了"
+    assert _names(path) == ["trades.csv", "trades.csv.bak", "trades.csv.lock"]
+
+
+def test_restore_brings_the_journal_back_when_only_the_backup_is_left(tmp_path):
+    """日志文件不在了、只剩一份上一版：恢复把它放回来。没有"刚才那版"可换成备份，上一版原样留着。"""
+    path, _, previous = _two_versions(tmp_path)
+    path.unlink()
+
+    assert store.restore_backup(path) == 1
+
+    assert path.read_bytes() == previous and store.backup_path(path).read_bytes() == previous
     assert _names(path) == ["trades.csv", "trades.csv.bak", "trades.csv.lock"]
 
 

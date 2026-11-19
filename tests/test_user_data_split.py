@@ -51,6 +51,21 @@ def test_no_user_data_file_is_in_the_index(rel):
     assert proc.returncode != 0, f"{rel} 还在 git 索引里：先 git rm --cached 停止跟踪"
 
 
+def test_leftover_temp_files_beside_the_journal_are_ignored_too(tmp_path):
+    """落盘用的临时文件（`<文件名>.<随机>.tmp`，与日志同目录）里是**一整本真实交易记录**，也不许进版本库。
+
+    平时它们存在不到一秒。两种时候会留下来：进程在写到一半时被杀；以及「恢复上一版」停在半路
+    ——那时页面还会**叫使用者留着它**（点恢复之前的那一版只在那个文件里，见 store.RestoreHalfDone）。
+    2026-11-19 之前它们不在忽略规则里：在 `git status` 里是未跟踪文件，一次 `git add -A` 就进了暂存区。
+    名字现造（在临时目录里真的走一遍落盘用的那个函数），不照抄一个样子：哪天命名变了，这里跟着变。
+    """
+    for target in (store.TRADES_PATH, store.backup_path(store.TRADES_PATH)):
+        made = Path(store._write_beside(tmp_path / target.name, b""))
+        rel = f"{target.parent.as_posix()}/{made.name}"
+        proc = _git("check-ignore", rel)
+        assert proc.returncode == 0, f"{rel} 没有被忽略：它是一整本真实交易记录"
+
+
 def test_the_journal_directory_itself_is_not_ignored():
     """忽略的是**那两个文件**，不是 `journal/` 整个目录（设计 §2.1 明写）。
     整目录忽略的话，将来往里放个 README 都得跟 .gitignore 打架。"""

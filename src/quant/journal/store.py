@@ -58,7 +58,7 @@ ENCODING = "utf-8-sig"
 #: `save_trades` 落在"还剩的那一小段"时（见它的说明）附在异常上的那句话。**是说给使用者听的**：
 #: 页面把它原样接在「保存失败（…），日志文件未被修改。」后面——那句话对日志是真的，
 #: 可唯一的撤销手段这时已经没用了，不说等于瞒着。
-PREVIOUS_VERSION_SPENT = "但留着的那份上一版已经被换成了和现在一样的内容，点「恢复上一版」换不回更早的记录了。"
+PREVIOUS_VERSION_SPENT = "不过留着的那份上一版已经被换成了和现在的记录一样的内容，点「恢复上一版」换不回更早的记录了。"
 
 
 def backup_path(path: str | Path = TRADES_PATH) -> Path:
@@ -247,9 +247,11 @@ def restore_backup(path: str | Path = TRADES_PATH) -> int:
     - 正式文件已经换成了上一版、**备份却没换成**（备份文件被锁定；磁盘写满时也碰得到）：
       把正式文件**换回刚才那版**——等于什么都没发生，然后抛出原来的错。调用方这时说
       "没有改动"是真话。
-    - 连换回去也没成：抛 `RestoreHalfDone`。这是唯一停在半路的情形，如实说：正式文件是
-      上一版、备份也还是上一版，刚才那版**只在 `kept` 那个临时文件里，没有删**。
-    - 进程在两次改名之间被杀掉：与上一条同样的落点，但没有任何人能报这个错。
+    - 连换回去也没成：抛 `RestoreHalfDone`。各步自己报错时，这是唯一停在半路的情形，如实说：
+      正式文件是上一版、备份也还是上一版，刚才那版**只在 `kept` 那个临时文件里，没有删**。
+    - 两次改名之间进程被杀掉、或者调用它的线程正好在那时被打断：同样的落点，但没有任何人
+      能报这个错。能保证的只有一条——装着刚才那版的临时文件不会被收走：两下改名都只在系统
+      报错（`OSError`，即确实没换成）时才清理或退回，别的异常不去猜"到底换没换"。
     """
     path = Path(path)
     bak = backup_path(path)
@@ -264,16 +266,27 @@ def restore_backup(path: str | Path = TRADES_PATH) -> int:
                 f"上一版备份读不出来：{bak}（{type(why).__name__}: {why}）") from e
         current = path.read_bytes() if path.exists() else None
         tmp_current = tmp_restored = None
+
+        def discard_copies() -> None:
+            for tmp in (tmp_restored, tmp_current):
+                if tmp is not None:
+                    Path(tmp).unlink(missing_ok=True)
+
         try:
             if current is not None:
                 tmp_current = _write_beside(bak, current)
             tmp_restored = _write_beside(path, bak.read_bytes())
-            os.replace(tmp_restored, path)      # 正式文件 = 上一版
         except BaseException:
-            # 换正式文件是这一段的最后一步：走到这里两个文件都还没变，把临时文件收走就等于没发生
-            for tmp in (tmp_restored, tmp_current):
-                if tmp is not None:
-                    Path(tmp).unlink(missing_ok=True)
+            # 还在抄：两个文件都没碰过，抄了一半的东西纯属多余——不管是报错还是被打断，都收走
+            discard_copies()
+            raise
+        try:
+            os.replace(tmp_restored, path)      # 正式文件 = 上一版
+        except OSError:
+            # 系统报错 = 这一下没换成，两个文件仍是原样：收走临时文件，等于没发生。
+            # **只认 OSError**：别的异常（正好在这一下返回时落下的打断）说不清到底换没换，而换了的话
+            # 刚才那版就只剩 tmp_current 这一份——所以那时一个文件都不删。
+            discard_copies()
             raise
         if tmp_current is not None:
             try:
