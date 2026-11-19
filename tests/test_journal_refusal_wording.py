@@ -7,6 +7,9 @@
 # 「记一笔」表单的报错。句子本身出自 quant.journal.schema（tests/test_journal_schema.py 管），
 # 这里钉的是它们到了页面上的样子，以及页面自己拼的那段「是哪一行」。
 #
+# 同一个病根还有一处不只是措辞（2026-11-19）：按删除键清空的「代码」被当成"不是 6 位数字"的警告放行了，
+# 点保存会存进去一条代码是空的记录——见下面「代码空着」那一节。
+#
 # 夹具与小工具取自 tests/test_dashboard_journal.py（同 test_engine_constraints 取 test_engine_basic 的做法）。
 # 单独成文件而不是加进那个文件：那里已经近四千行，而且同一时间有几条分支在往里加测试。
 import re
@@ -14,10 +17,10 @@ import re
 import pandas as pd
 import pytest
 
-from quant.journal import schema
+from quant.journal import schema, store
 from tests.test_dashboard_journal import (README, TODAY, _Browser, _buy, _delete, _dialog_errors,
-                                          _journal, _page, _pending_notes, _record, _root, _sell,
-                                          _three_trades, jui)
+                                          _fill_entry, _journal, _page, _pending_notes, _record,
+                                          _root, _sell, _three_trades, _toasts, jui)
 
 
 def _assert_no_program_words(said: str) -> None:
@@ -101,6 +104,71 @@ def test_a_refused_row_is_named_by_whatever_it_still_has(cells, intro):
     lines = jui.blocking_rows(pd.DataFrame([row]).astype(object), today=TODAY)
     assert len(lines) == 1 and lines[0].startswith(intro), lines
     _assert_no_program_words(lines[0])
+
+
+# ================================================================ 代码空着（2026-11-19）
+#
+# 历史表里把「代码」那一格清空有两种清法，交回来的东西不一样（真实浏览器里在后台逐个看过，streamlit 1.61）：
+# - 选中那一格按删除键：交回空值（NaN），格子里显示「—」；
+# - 点进去把字删光再回车：交回空串，格子里什么都不显示。
+# 校验原先只认得空串。NaN 被当成了 "nan" 三个字母，判成「代码 'nan' 不是 6 位数字」——一条警告，而保存只看
+# 阻断项：按删除键清空再点「保存修改」，提示是「已保存：改了 1 行」，文件里那一行的代码是空的。
+# 设计上「缺少标的代码」是该当场拦下的：不知道是哪只票的记录，之后算持仓与盈亏时只能跳过它。
+# 所以两种清法各钉一条：漏的是前一种（下面送 None），后一种一直拦得住（送空串），别改着改着又漏一种。
+
+@pytest.mark.parametrize("cleared", [None, ""], ids=["按删除键清空", "把字删光"])
+def test_clearing_a_code_and_saving_is_refused_and_nothing_is_written(tmp_path, cleared):
+    root = _root(tmp_path)
+    path = _journal(root, _buy(), _sell())
+    before = path.read_bytes()
+    browser = _Browser(_page(root))
+    at = browser.edit({0: {"symbol": cleared}})
+    assert any("改了 1 行" in note for note in _pending_notes(at)), "清空代码是一处改动"
+    at = browser.rerun(click=jui.SAVE_KEY)
+    assert not at.exception, at.exception
+    assert path.read_bytes() == before, "代码是空的一行竟然落盘了"
+    assert not store.backup_path(path).exists(), "没存成，却换了一份上一版"
+    assert not any("已保存" in t for t in _toasts(at)), _toasts(at)
+    said = _page_errors(at)
+    assert "没有保存" in said and "T1（2026-08-03）：" in said and "缺少标的代码" in said, said
+    _assert_no_program_words(said)
+
+
+def test_a_cleared_code_stops_the_delete_too(tmp_path):
+    """删除会把表里别的行上没保存的改动一起写进去：其中一行的代码清空了，就整个不写——不删、不存。"""
+    root = _root(tmp_path)
+    path = _three_trades(root)
+    before = path.read_bytes()
+    at = _delete(_page(root), 2, edits={0: {"symbol": None}})
+    assert not at.exception, at.exception
+    assert path.read_bytes() == before, "代码是空的一行竟然落盘了，或者那一条竟然被删了"
+    said = _dialog_errors(at)
+    assert "没有删除" in said and "T1" in said and "缺少标的代码" in said, said
+    _assert_no_program_words(said)
+
+
+# ================================================================ 记下之后那句「请复核」里的数与代码（2026-11-19）
+
+def test_a_million_share_odd_lot_is_written_out_in_full(tmp_path):
+    """一百万股以上的数原先写成「买入 1.00005e+06 股不是 100 股的整数倍」。写全，带千分位。"""
+    root = _root(tmp_path)
+    at = _fill_entry(_page(root), shares=1000050.0, price=1.234)
+    at = at.button(key=jui.SUBMIT_KEY).click().run()
+    assert not at.exception, at.exception
+    said = " ".join(str(w.value) for w in at.warning)
+    assert "买入 1,000,050 股不是 100 股的整数倍" in said, said
+    assert "e+" not in said, said
+
+
+def test_a_short_code_is_quoted_the_way_the_page_quotes_things(tmp_path):
+    """填了三位的代码，记下之后提醒复核：原先是「代码 '333' 不是 6 位数字」——那对英文单引号是程序的写法。"""
+    root = _root(tmp_path)
+    at = _fill_entry(_page(root), symbol="333", shares=100.0, price=7.1)
+    at = at.button(key=jui.SUBMIT_KEY).click().run()
+    assert not at.exception, at.exception
+    said = " ".join(str(w.value) for w in at.warning)
+    assert "代码「333」不是 6 位数字" in said, said
+    assert "'" not in said, said
 
 
 # ================================================================ 文档

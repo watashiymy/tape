@@ -574,3 +574,103 @@ def test_both_kind_messages_list_the_same_names_in_the_same_order():
     listed = "/".join(schema.KIND_NAMES[k] for k in schema.KINDS)
     assert listed in _about_kind(_buy(kind=None))[0].message
     assert listed in _about_kind(_buy(kind="split"))[0].message
+
+
+# ---------------------------------------------------------------- 代码空着（2026-11-19）
+#
+# 历史表里选中「代码」那一格按删除键，交回来的是 NaN（点进去把字删光交回的是空串，那种一直拦得住）。
+# 原先只有空串 / None 算缺代码；NaN 被当成 "nan" 三个字母，判成「代码 'nan' 不是 6 位数字」——那是一条**警告**。
+# 保存只看阻断项，于是代码是空的一行存得进去，之后算持仓与盈亏时只能跳过它。
+
+def _about_symbol(row: dict) -> list:
+    return [i for i in schema.validate_trade(row, today=TODAY) if i.field == "symbol"]
+
+
+@pytest.mark.parametrize("blank", [float("nan"), pd.NA, pd.NaT, None, "", "   "],
+                         ids=["NaN", "NA", "NaT", "None", "空串", "只有空白"])
+def test_a_blank_symbol_is_a_missing_symbol_whichever_blank_it_is(blank):
+    found = _about_symbol(_buy(symbol=blank))
+    assert [i.code for i in found] == [schema.MISSING], [(i.code, i.message) for i in found]
+    assert found[0].blocking, "缺代码的行不许存进去"
+    assert "代码" in found[0].message and "nan" not in found[0].message.lower(), found[0].message
+
+
+@pytest.mark.parametrize("symbol", ["333", "00700", "ABC123", "0003330", "nan"])
+def test_a_symbol_that_was_typed_still_only_warns(symbol):
+    """反过来不能矫枉过正：填了东西、只是不像 6 位数字（港股通、基金、打错一位），照旧只提醒、照记。
+    连真的敲了 nan 三个字母也一样——那是他填的，不是空格子。"""
+    found = _about_symbol(_buy(symbol=symbol))
+    assert [i.code for i in found] == [schema.SYMBOL_FORMAT] and not found[0].blocking, found
+
+
+def test_spaces_around_a_good_symbol_are_not_a_problem():
+    """代码两头带了空白（粘贴进来的）：照去掉空白之后的 6 位数字认，不提醒。"""
+    assert _about_symbol(_buy(symbol=" 000333 ")) == []
+
+
+# ---------------------------------------------------------------- 校验信息里的数与引号（2026-11-19）
+#
+# 原先信息里的数用的是「最多六位有效数字」的写法：到一百万就成了科学计数法（买入 1.00005e+06 股），
+# 一百二十三万四千五百六十七股的持仓写成 1.23457e+06（还舍掉了一位），1688.125 的成交价写成 1688.12。
+# 值外面的引号是程序的写法（代码 '333'）。这些话是给填表的人看的。
+
+def _message(code: str, row: dict, **facts) -> str:
+    issues = schema.validate_trade(row, today=TODAY, context=schema.Context(**facts))
+    return next(i.message for i in issues if i.code == code)
+
+
+def _dividend(amount: float) -> dict:
+    return dict(date=date(2026, 8, 27), symbol="000333", kind="dividend", amount=amount)
+
+
+def test_big_share_counts_and_amounts_are_written_out_in_full():
+    """写全，带千分位——页面上别处的股数与金额都这么写。"""
+    assert "买入 1,000,050 股不是 100 股的整数倍" in _message(schema.ODD_LOT, _buy(shares=1000050.0))
+    over = _message(schema.OVERSELL, _sell(shares=1500000.0), position_shares=1234567.0)
+    assert "卖出 1,500,000 股" in over and "当前持仓 1,234,567 股" in over, over
+    assert "实际 -1,500,000" in _message(schema.BAD_NUMBER, _buy(shares=-1500000.0))
+    assert "实际 -1,500,000" in _message(schema.BAD_NUMBER, _dividend(-1500000.0))
+
+
+def test_everyday_numbers_read_exactly_as_before():
+    assert "买入 150 股不是 100 股的整数倍" in _message(schema.ODD_LOT, _buy(shares=150.0))
+    over = _message(schema.OVERSELL, _sell(shares=500.0), position_shares=100.0)
+    assert "卖出 500 股，超过当前持仓 100 股" in over, over
+    assert _message(schema.BAD_NUMBER, _buy(shares=-100.0)).endswith("实际 -100")
+    assert _message(schema.BAD_NUMBER, _buy(price=-7.1)).endswith("实际 -7.1")
+    assert _message(schema.BAD_NUMBER, _dividend(-5.0)).endswith("实际 -5")
+    assert _message(schema.BAD_NUMBER, _buy(shares=0.0)).endswith("实际 0")
+    # 写出来是 0 的数不带负号：表里敲 -0，或者一个小到写不出来的负数
+    assert _message(schema.BAD_NUMBER, _buy(shares=-0.0)).endswith("实际 0")
+    assert _message(schema.BAD_NUMBER, _buy(shares=-1e-9)).endswith("实际 0")
+    assert "成交价 715 不在当日区间 [70.10, 72.30] 内" in _message(
+        schema.PRICE_OUT_OF_RANGE, _buy(price=715.0), price_range=(70.1, 72.3))
+
+
+def test_a_price_is_written_as_typed_not_rounded_to_six_digits():
+    """成交价照输入的原样写，不带千分位——与紧跟着的当日区间是同一种写法（区间一直是 1600.00 这样）。"""
+    said = _message(schema.PRICE_OUT_OF_RANGE, _buy(price=1688.125), price_range=(1600.0, 1650.0))
+    assert "成交价 1688.125 不在当日区间 [1600.00, 1650.00] 内" in said, said
+    assert _message(schema.BAD_NUMBER, _buy(price=-1688.125)).endswith("实际 -1688.125")
+    assert "成交价 0.9855 不在" in _message(
+        schema.PRICE_OUT_OF_RANGE, _buy(price=0.9855), price_range=(1.1, 1.2))
+
+
+@pytest.mark.parametrize("row, facts", [
+    (_buy(shares=1000050.0), {}),
+    (_buy(shares=-12345678.0, price=-1234567.5), {}),
+    (_sell(shares=98765432.0), {"position_shares": 12345678.0}),
+    (_buy(shares=100.0, price=1234567.125), {"price_range": (1.0, 2.0)}),
+    (_dividend(-98765432.1), {}),
+    (dict(date=date(2026, 8, 27), symbol="000333", kind="adjust", shares=0.0), {}),
+], ids=["非整手", "负的股数与价格", "卖超", "价格越界", "负的分红", "调整为 0"])
+def test_no_validation_message_is_in_scientific_notation(row, facts):
+    said = "；".join(i.message for i in schema.validate_trade(
+        row, today=TODAY, context=schema.Context(**facts)))
+    assert said, "前提：这一行有话可说"
+    assert "e+" not in said and "e-" not in said, said
+
+
+def test_an_odd_symbol_is_quoted_the_way_the_page_quotes_things():
+    said = _message(schema.SYMBOL_FORMAT, _buy(symbol="333"))
+    assert "代码「333」不是 6 位数字" in said and "'" not in said, said

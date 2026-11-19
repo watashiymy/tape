@@ -201,12 +201,16 @@ def _check_date(value, *, today: date, ctx: Context) -> list[Issue]:
 
 
 def _check_symbol(value, *, ctx: Context) -> list[Issue]:
-    symbol = str(value or "").strip()
+    # 空不空问 is_blank，理由同 validate_trade 里的类型，后果却重得多（2026-11-19）：历史表里选中「代码」
+    # 那一格按删除键，交回来的是 NaN（点进去把字删光交回的是空串，那种一直拦得住）。`str(value or "")`
+    # 把 NaN 变成 "nan" 三个字母，于是落到下面那条"不是 6 位数字"的**警告**上——保存只看阻断项，
+    # 代码是空的一行就这么存进去了。
+    symbol = "" if is_blank(value) else str(value).strip()
     if not symbol:
         return [Issue(MISSING, "symbol", "缺少标的代码：不知道是哪只票的记录没有意义")]
     if len(symbol) != 6 or not symbol.isdigit():
         # 不阻断：港股通/基金/未来的新代码规则都可能不是 6 位数字，而这是日志——先记下来。
-        return [Issue(SYMBOL_FORMAT, "symbol", f"代码 {symbol!r} 不是 6 位数字，请确认没打错")]
+        return [Issue(SYMBOL_FORMAT, "symbol", f"代码「{symbol}」不是 6 位数字，请确认没打错")]
     if ctx.names is not None and symbol not in ctx.names:
         # 不阻断：新股、退市股、清单滞后（is_fresh 最多允许 7 天）都会落到这里。
         return [Issue(SYMBOL_UNKNOWN, "symbol", f"{symbol} 不在全市场清单里（新股或已退市？）")]
@@ -230,33 +234,46 @@ def _check_numbers(row: Mapping, *, kind: str, ctx: Context) -> list[Issue]:
 
     if kind in ("buy", "sell"):
         if shares is not None and shares <= 0:
-            issues.append(Issue(BAD_NUMBER, "shares", f"{kind_name}的股数必须为正，实际 {shares:g}"))
+            issues.append(Issue(BAD_NUMBER, "shares", f"{kind_name}的股数必须为正，实际 {_num(shares)}"))
         if price is not None and price <= 0:
-            issues.append(Issue(BAD_NUMBER, "price", f"成交价必须为正，实际 {price:g}"))
+            issues.append(Issue(BAD_NUMBER, "price", f"成交价必须为正，实际 {_num(price, grouping=False)}"))
     elif kind == "adjust" and shares is not None and shares == 0:
         issues.append(Issue(BAD_NUMBER, "shares", "股数调整为 0 没有意义（送股填正数、缩股填负数）"))
     elif kind == "dividend":
         amount = to_number(row.get("amount"))
         if amount is not None and amount <= 0:
-            issues.append(Issue(BAD_NUMBER, "amount", f"分红到账金额必须为正，实际 {amount:g}"))
+            issues.append(Issue(BAD_NUMBER, "amount", f"分红到账金额必须为正，实际 {_num(amount)}"))
 
     # 以下三条一律是警告。见模块 docstring 的"阻断 vs 警告"。
     if kind == "buy" and shares is not None and shares > 0 and shares % LOT:
         issues.append(Issue(ODD_LOT, "shares",
-                            f"买入 {shares:g} 股不是 {LOT} 股的整数倍（可转债/科创板另有规则）"))
+                            f"买入 {_num(shares)} 股不是 {LOT} 股的整数倍（可转债/科创板另有规则）"))
     if (kind == "sell" and shares is not None and ctx.position_shares is not None
             and shares > ctx.position_shares):
         issues.append(Issue(OVERSELL, "shares",
-                            f"卖出 {shares:g} 股，超过当前持仓 {ctx.position_shares:g} 股，"
+                            f"卖出 {_num(shares)} 股，超过当前持仓 {_num(ctx.position_shares)} 股，"
                             f"是不是漏记了一笔买入？"))
     if kind in ("buy", "sell") and price is not None and ctx.price_range is not None:
         low, high = ctx.price_range
         if not low <= price <= high:
             # 本功能最实用的一条：录入时打错一位（7.15 记成 71.5）在通用记账软件里无人可查。
             issues.append(Issue(PRICE_OUT_OF_RANGE, "price",
-                                f"成交价 {price:g} 不在当日区间 [{low:.2f}, {high:.2f}] 内，"
+                                f"成交价 {_num(price, grouping=False)} 不在当日区间 [{low:.2f}, {high:.2f}] 内，"
                                 f"是不是小数点错位了？"))
     return issues
+
+
+def _num(value: float, *, grouping: bool = True) -> str:
+    """校验信息里的数，照原样写给人看：1,500,000 / -100 / 0.985。末尾多出来的 0 与小数点不拖着。
+
+    不用 `:g`（2026-11-19 之前用的）：它只留六位有效数字——一百万股写成 1e+06，
+    1,234,567 股的持仓写成 1.23457e+06（还舍掉了一位），1688.125 的成交价写成 1688.12。
+    最多写到六位小数：A 股里价格最细到厘，六位之外的只可能是浮点尾数，不是谁敲进去的。
+    股数与金额带千分位（页面上别处都这么写）；成交价不带（`grouping=False`）——它在句子里紧挨着
+    当日区间，而区间一直写成 [1600.00, 1700.00] 这样。
+    """
+    text = (f"{value:,.6f}" if grouping else f"{value:.6f}").rstrip("0").rstrip(".")
+    return "0" if text == "-0" else text       # 写出来是 0 的数不带负号（负零、小到写不出来的负数）
 
 
 # ---------------------------------------------------------------- 可推导字段的默认值
