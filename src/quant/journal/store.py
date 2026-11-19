@@ -55,6 +55,11 @@ LOCK_SUFFIX = filelock.LOCK_SUFFIX
 #: 的文件照样打得开。
 ENCODING = "utf-8-sig"
 
+#: `save_trades` 落在"还剩的那一小段"时（见它的说明）附在异常上的那句话。**是说给使用者听的**：
+#: 页面把它原样接在「保存失败（…），日志文件未被修改。」后面——那句话对日志是真的，
+#: 可唯一的撤销手段这时已经没用了，不说等于瞒着。
+PREVIOUS_VERSION_SPENT = "但留着的那份上一版已经被换成了和现在一样的内容，点「恢复上一版」换不回更早的记录了。"
+
 
 def backup_path(path: str | Path = TRADES_PATH) -> Path:
     """上一版备份的位置：日志旁边的 `<文件名>.bak`。
@@ -164,6 +169,10 @@ def save_trades(df: pd.DataFrame, path: str | Path = TRADES_PATH) -> None:
     两个文件的改名合不成一步。没有给它补回退（把 `.bak` 再写回去）：那是一段只在出错时
     才跑的新逻辑，写错了平时看不出来，而且它自己也要写文件、改名，盘满的时候未必写得成。
     进程在第 2、3 步之间被杀掉也是同样的结果，另外会留下一个装着新内容的临时文件。
+
+    补不上，就得说出来（2026-11-19）：落在这一小段、而且原先确实有一份上一版时，抛出的错上
+    附着 `PREVIOUS_VERSION_SPENT` 那句话（`add_note`，异常的类型与原话不变）。页面把它接在
+    失败提示后面——"日志文件未被修改"是真的，但只说这一句等于瞒着使用者退路已经没了。
     """
     missing = [c for c in schema.COLUMNS if c not in df.columns]
     extra = [c for c in df.columns if c not in schema.COLUMNS]
@@ -178,8 +187,14 @@ def save_trades(df: pd.DataFrame, path: str | Path = TRADES_PATH) -> None:
     try:
         # lineterminator 钉成 \n：换行符随平台变的话，一次记账的 git diff 是整个文件。
         out.to_csv(tmp, index=False, encoding=ENCODING, lineterminator="\n")
+        had_previous = path.exists() and backup_path(path).exists()
         _backup(path)       # 新内容已经完整地写进临时文件了，这时才动上一版（顺序见上面的说明）
-        os.replace(tmp, path)
+        try:
+            os.replace(tmp, path)
+        except OSError as e:
+            if had_previous:    # 还剩的那一小段：正式文件没换成，原来的上一版却已经被换掉了——说出来
+                e.add_note(PREVIOUS_VERSION_SPENT)
+            raise
     finally:
         # 哪一步没成都不留垃圾：新内容没写完、上一版没另存成、最后没换成（换成了它已经不在了）
         Path(tmp).unlink(missing_ok=True)
@@ -217,40 +232,90 @@ def restore_backup(path: str | Path = TRADES_PATH) -> int:
 
     纪律与 save_trades 相同：
     - 全程在同一把锁里（另一个标签页正在记账时不许中途插进来换文件）；
-    - **先校验备份能读**（load_trades 对坏文件响亮抛错），任何文件都还没动；
+    - **先校验备份能读**，任何文件都还没动。读不出来报的是"上一版备份读不出来"
+      ——不照搬 load_trades 那句"日志坏了、上一版在 `<它>.bak`"：坏的是备份自己，
+      那句话会让人去找一个从来不存在的 `trades.csv.bak.bak`；
     - 每一步都是原子替换，正式文件与备份文件在任何时刻都是**完整**的一版：
-      先把当前版写进临时文件（留在磁盘上），再原子换正式文件，最后把临时文件
-      原子换成备份。两次替换之间崩掉，最坏是当前版留在一个临时文件里——
-      不会有半截文件，也不会丢任何一版。
+      先把两版各抄进一个临时文件，再原子换正式文件，最后把装着刚才那版的临时文件
+      原子换成备份；
     - 没有备份 → FileNotFoundError（第一次保存之后才有备份，这不是坏文件）。
+
+    **中途失败时留下什么**（2026-11-19 理过一遍，之前的毛病见设计记录
+    `docs/superpowers/specs/2026-11-18-backup-on-failed-save-design.md`）：
+
+    - 换正式文件之前（含那一下改名）哪一步没成：两个文件都没动，临时文件收走，照样抛出。
+    - 正式文件已经换成了上一版、**备份却没换成**（备份文件被锁定；磁盘写满时也碰得到）：
+      把正式文件**换回刚才那版**——等于什么都没发生，然后抛出原来的错。调用方这时说
+      "没有改动"是真话。
+    - 连换回去也没成：抛 `RestoreHalfDone`。这是唯一停在半路的情形，如实说：正式文件是
+      上一版、备份也还是上一版，刚才那版**只在 `kept` 那个临时文件里，没有删**。
+    - 进程在两次改名之间被杀掉：与上一条同样的落点，但没有任何人能报这个错。
     """
     path = Path(path)
     bak = backup_path(path)
     with locked(path):
         if not bak.exists():
             raise FileNotFoundError("还没有上一版备份：第一次保存之后才会有。")
-        restored = load_trades(bak)             # 坏备份在这里响亮抛错，什么都还没动
-        current = path.read_bytes() if path.exists() else None
-        tmp_current = None
-        if current is not None:
-            fd, tmp_current = tempfile.mkstemp(dir=bak.parent, prefix=bak.name + ".",
-                                               suffix=".tmp")
-            with os.fdopen(fd, "wb") as f:
-                f.write(current)
-        fd, tmp_restored = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".",
-                                            suffix=".tmp")
         try:
-            with os.fdopen(fd, "wb") as f:
-                f.write(bak.read_bytes())
+            restored = load_trades(bak)         # 坏备份在这里响亮抛错，什么都还没动
+        except RuntimeError as e:
+            why = e.__cause__ or e
+            raise RuntimeError(
+                f"上一版备份读不出来：{bak}（{type(why).__name__}: {why}）") from e
+        current = path.read_bytes() if path.exists() else None
+        tmp_current = tmp_restored = None
+        try:
+            if current is not None:
+                tmp_current = _write_beside(bak, current)
+            tmp_restored = _write_beside(path, bak.read_bytes())
             os.replace(tmp_restored, path)      # 正式文件 = 上一版
         except BaseException:
-            Path(tmp_restored).unlink(missing_ok=True)
-            if tmp_current is not None:
-                Path(tmp_current).unlink(missing_ok=True)
+            # 换正式文件是这一段的最后一步：走到这里两个文件都还没变，把临时文件收走就等于没发生
+            for tmp in (tmp_restored, tmp_current):
+                if tmp is not None:
+                    Path(tmp).unlink(missing_ok=True)
             raise
         if tmp_current is not None:
-            os.replace(tmp_current, bak)        # 备份 = 刚才那版
+            try:
+                os.replace(tmp_current, bak)    # 备份 = 刚才那版
+            except OSError as e:
+                # 正式文件已经是上一版了、备份却没换成：把正式文件换回刚才那版，等于什么都没发生
+                try:
+                    os.replace(tmp_current, path)
+                except OSError:
+                    # 退不回去。刚才那版只剩 tmp_current 这一份——留着，并说清楚它在哪
+                    raise RestoreHalfDone(tmp_current, path) from e
+                raise
     return len(restored)
+
+
+class RestoreHalfDone(RuntimeError):
+    """`restore_backup` 停在了半路，而且退不回去。
+
+    正式文件已经换成了上一版，`.bak` 没换成、也还是上一版；点恢复之前的那一版**只在
+    `kept` 这个文件里**——一个没有收走的临时文件，它是那一版唯一的下落，所以不许删。
+    把 `kept` 改名成 `.bak`，得到的就是这次恢复本该有的结果。没换成的原因在 `__cause__`。
+    """
+
+    def __init__(self, kept: str | Path, journal: Path):
+        self.kept = Path(kept)
+        super().__init__(f"只恢复了一半：{journal} 已经换成了上一版，但换之前的那一版没能存成"
+                         f"新的上一版——它在 {self.kept} 里，没有删")
+
+
+def _write_beside(target: Path, content: bytes) -> str:
+    """把 `content` 写进 `target` 旁边的一个临时文件，交回它的路径；没写成就把它收走再抛出。
+
+    与 `target` 同目录、名字是 `<target 的文件名>.<随机>.tmp`：之后要靠一次改名把它换成 `target`。
+    """
+    fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=target.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(content)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+    return tmp
 
 
 def append_trade(row: Mapping, path: str | Path = TRADES_PATH, *,

@@ -191,6 +191,17 @@ def flash(level: str, text: str) -> None:
     st.session_state.setdefault(FLASH_KEY, []).append((level, text))
 
 
+def spent_note(e: BaseException) -> str:
+    """写盘失败、而留着的那份上一版偏偏已经被换掉时，接在失败提示后面的那一句；别的失败是空串。
+
+    落盘那一层把它附在异常上（store.save_trades 的说明里"还剩的一小段"）。那时"日志文件未被修改"
+    是真话，可只说这一句等于瞒着：使用者以为点「恢复上一版」还能退回去。
+    只认这一句，不把异常上别的附言也搬到页面上。
+    """
+    said = getattr(e, "__notes__", ())
+    return store.PREVIOUS_VERSION_SPENT if store.PREVIOUS_VERSION_SPENT in said else ""
+
+
 def show_flash() -> None:
     """渲染并清掉上一轮留下的提示。
 
@@ -455,7 +466,7 @@ def submit(row: Mapping, *, path: str | Path, costs: Costs,
         trade_id = store.append_trade(record, path)
     except (OSError, ValueError, RuntimeError) as e:
         # 写盘失败必须如实说，不能只 toast 一句"已记录"：用户会以为记下了。
-        flash("error", f"保存失败（{type(e).__name__}: {e}），这一笔没有记下来。")
+        flash("error", f"保存失败（{type(e).__name__}: {e}），这一笔没有记下来。{spent_note(e)}")
         return False
     flash("ok", f"已记下 {KIND_LABELS.get(record['kind'], record['kind'])} "
                 f"{record['symbol']}（记录号 {trade_id}）")
@@ -528,7 +539,19 @@ def restore_backup(*, path: str | Path) -> None:
     except FileNotFoundError as e:
         flash("error", str(e))
         return
+    except store.RestoreHalfDone as e:
+        # 唯一停在半路的情形（换日志成了、换上一版没成、把日志换回去也没成）。这里**不许**说"未被修改"：
+        # 记录已经是上一版了。要说清三件事——现在是什么样、点恢复之前的那一版在哪、怎么换回来。
+        # 指名文件是这条规矩的例外：那就是修法（它在一个名字随机的文件里，不说没人找得到）。
+        why = e.__cause__ or e
+        flash("error", f"只恢复了一半（{type(why).__name__}: {why}）：记录已经换成了上一版，"
+                       f"但点恢复之前的那一版没能留成新的上一版，现在点「恢复上一版」换不回它。"
+                       f"它没有丢，在记录文件旁边的 `{e.kept.name}` 里——先解决括号里的问题，"
+                       f"再把这个文件改名为 `{store.backup_path(path).name}`，"
+                       f"就能用「恢复上一版」把它换回来。")
+        return
     except (OSError, ValueError, RuntimeError) as e:
+        # 走到这里的失败，落盘那一层都已经退回原样（见 store.restore_backup），这句话是真的
         flash("error", f"恢复失败（{type(e).__name__}: {e}），记录未被修改。")
         return
     # 编辑区里没保存的改动不用在这里清：历史表没有 key，表里的内容一换它就是一个新控件，
@@ -819,7 +842,7 @@ def save_edits(edited: pd.DataFrame, *, path: str | Path, today: date) -> bool:
                 return False
             store.save_trades(merged, path)
     except (OSError, ValueError, RuntimeError) as e:
-        flash("error", f"保存失败（{type(e).__name__}: {e}），日志文件未被修改。")
+        flash("error", f"保存失败（{type(e).__name__}: {e}），日志文件未被修改。{spent_note(e)}")
         return False
     # 编辑区不用在这里清：历史表没有 key，落盘之后表里的内容变了，下一轮它就是一个新控件，
     # 这一轮的改动自然作废（见 pages_journal_entry._editor）。v0.5.0 的做法是把编辑器的状态
@@ -903,7 +926,7 @@ def delete_trades(ids: Sequence[str], *, path: str | Path, today: date,
             changed = _changed_rows(current, merged, wanted)
             store.save_trades(merged, path)
     except (OSError, ValueError, RuntimeError) as e:
-        flash("error", f"删除失败（{type(e).__name__}: {e}），记录没有被修改。")
+        flash("error", f"删除失败（{type(e).__name__}: {e}），记录没有被修改。{spent_note(e)}")
         return False
     done = f"已删除 {len(wanted)} 条记录"
     if changed:

@@ -708,7 +708,7 @@ def test_the_gap_that_is_left_a_failed_final_rename_costs_the_previous_version(t
         return real_replace(src, dst, *args, **kwargs)
     monkeypatch.setattr(store.os, "replace", refuse_the_journal)
 
-    with pytest.raises(PermissionError):
+    with pytest.raises(PermissionError) as caught:
         store.append_trade(_row(symbol="600036", name="招商银行", reason="第三笔"), path, now=NOW)
 
     assert path.read_bytes() == journal
@@ -716,6 +716,69 @@ def test_the_gap_that_is_left_a_failed_final_rename_costs_the_previous_version(t
         "trades.csv", "trades.csv.bak", "trades.csv.lock"]
     assert store.backup_path(path).read_bytes() == journal, \
         "已知的缺口变了：若是补上了回退，这里该是 == previous，把这条断言改过去"
+    # 补不上，就得说出来（2026-11-19）：抛出的错上附着一句给使用者的话，页面会接在失败提示后面
+    assert store.PREVIOUS_VERSION_SPENT in _notes(caught.value), \
+        "上一版被换掉了，却没有任何一句话告诉调用方"
+
+
+def _notes(error: BaseException) -> list[str]:
+    """附在异常上的话（没有就是空表）。"""
+    return list(getattr(error, "__notes__", []))
+
+
+def test_the_spent_note_is_only_said_when_a_previous_version_was_really_lost(tmp_path, monkeypatch):
+    """那句"上一版已经被换掉"只在它是真话时才说。
+
+    - 新内容没写成、上一版没另存成：上一版原样还在，不说；
+    - 还没有上一版时落在最后那一下：没有东西可丢，也不说（这时会多出一份与日志相同的 .bak，
+      没有补，见设计记录）；
+    - 日志文件不在了、只剩一份上一版：这一回根本没有另存，那份上一版原样还在，不说。
+    说多了与不说一样糟：使用者会以为退路没了，其实还在。
+    """
+    path, journal, previous = _two_saves(tmp_path)
+    more = _row(symbol="600036", name="招商银行", reason="第三笔")
+
+    with monkeypatch.context() as patch:                    # ① 新内容没写成
+        _disk_full(patch)
+        with pytest.raises(OSError) as caught:
+            store.append_trade(more, path, now=NOW)
+    assert _notes(caught.value) == []
+
+    real_replace = os.replace
+
+    def refuse(target: Path):
+        def replace(src, dst, *args, **kwargs):
+            if Path(dst) == target:
+                raise OSError(errno.ENOSPC, "No space left on device")
+            return real_replace(src, dst, *args, **kwargs)
+        return replace
+
+    with monkeypatch.context() as patch:                    # ② 上一版没另存成
+        patch.setattr(store.os, "replace", refuse(store.backup_path(path)))
+        with pytest.raises(OSError) as caught:
+            store.append_trade(more, path, now=NOW)
+    assert _notes(caught.value) == []
+    assert path.read_bytes() == journal and store.backup_path(path).read_bytes() == previous
+
+    fresh = tmp_path / "fresh" / "trades.csv"               # ③ 只保存过一次：还没有上一版
+    store.append_trade(_row(reason="第一笔"), fresh, now=NOW)
+    with monkeypatch.context() as patch:
+        patch.setattr(store.os, "replace", refuse(fresh))
+        with pytest.raises(OSError) as caught:
+            store.append_trade(more, fresh, now=NOW)
+    assert _notes(caught.value) == []
+
+    gone = tmp_path / "gone" / "trades.csv"                 # ④ 日志文件不在了，只剩一份上一版
+    store.append_trade(_row(reason="第一笔"), gone, now=NOW)
+    store.append_trade(more, gone, now=NOW)
+    gone.unlink()
+    kept = store.backup_path(gone).read_bytes()
+    with monkeypatch.context() as patch:
+        patch.setattr(store.os, "replace", refuse(gone))
+        with pytest.raises(OSError) as caught:
+            store.save_trades(store.empty_trades(), gone)
+    assert _notes(caught.value) == []
+    assert store.backup_path(gone).read_bytes() == kept
 
 
 # ================================================================ 仓库里的那份（v0.3.2 §2.1：移出版本控制）

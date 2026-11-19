@@ -3516,11 +3516,15 @@ def _write_by_deleting(path: Path) -> bool:
     return jui.delete_trades(["T1"], path=path, today=TODAY)
 
 
-@pytest.mark.parametrize("write, verdict", [
-    (_write_by_recording, "这一笔没有记下来"),
-    (_write_by_saving_an_edit, "日志文件未被修改"),
-    (_write_by_deleting, "记录没有被修改"),
-], ids=["记一笔", "保存修改", "删除"])
+#: 三条写入的路，各自写不成时说的那句"没动"。
+_WAYS_TO_WRITE = [
+    pytest.param(_write_by_recording, "这一笔没有记下来", id="记一笔"),
+    pytest.param(_write_by_saving_an_edit, "日志文件未被修改", id="保存修改"),
+    pytest.param(_write_by_deleting, "记录没有被修改", id="删除"),
+]
+
+
+@pytest.mark.parametrize("write, verdict", _WAYS_TO_WRITE)
 def test_a_write_that_fails_leaves_the_journal_and_the_previous_version_as_they_were(
         tmp_path, monkeypatch, write, verdict):
     said = _flashes(monkeypatch)
@@ -3544,6 +3548,122 @@ def test_a_write_that_fails_leaves_the_journal_and_the_previous_version_as_they_
     assert len(said) == 1, said
     level, text = said[0]
     assert level == "error" and verdict in text and "No space left" in text, said
+    assert store.PREVIOUS_VERSION_SPENT not in text, f"上一版好好的，页面却说它没用了: {text}"
+
+
+@pytest.mark.parametrize("write, verdict", _WAYS_TO_WRITE)
+def test_when_the_previous_version_did_get_replaced_the_page_says_so(
+        tmp_path, monkeypatch, write, verdict):
+    """还剩的那一小段（上一版另存好了、最后把日志换成新内容的那一下没成——日志文件被锁定时必然如此）：
+    日志没变，那句"没动"照说；但后面得接一句，说明留着的那份上一版已经没用了。2026-11-19 之前只有
+    前半句——对日志是真话，对使用者是瞒着：他以为退路还在。"""
+    said = _flashes(monkeypatch)
+    path = _three_trades(tmp_path)
+    trades = store.load_trades(path)
+    store.save_trades(trades[trades["trade_id"] != "T3"], path)    # 再存一次：上一版 = 三条都在的那一版
+    journal = path.read_bytes()
+    real_replace = store.os.replace
+
+    def the_journal_is_locked(src, dst, *args, **kwargs):
+        if Path(dst) == path:
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+        return real_replace(src, dst, *args, **kwargs)
+    monkeypatch.setattr(store.os, "replace", the_journal_is_locked)
+
+    assert write(path) is False
+
+    assert path.read_bytes() == journal, "页面说没动，日志却变了"
+    assert store.backup_path(path).read_bytes() == journal, "前提：上一版这时确实已经被换成了当前这一版"
+    assert len(said) == 1, said
+    level, text = said[0]
+    assert level == "error" and verdict in text and "Operation not permitted" in text, said
+    assert text.endswith(verdict + "。" + store.PREVIOUS_VERSION_SPENT), \
+        f"上一版被换掉了，页面却没有提: {text}"
+
+
+# ---------------------------------------------------------------- 「恢复上一版」没做成时说的话（2026-11-19）
+#
+# 恢复要分两下改名。2026-11-19 之前，第二下没成时日志已经换成了上一版，页面说的却是
+# 「恢复失败（…），记录未被修改。」；点恢复之前的那一版只剩在一个名字随机的临时文件里，没有人提。
+# 现在第二下没成就把日志换回去（那句话成了真的）；连换回去也不成，才如实说"只恢复了一半"。
+
+def _two_versions_on_disk(root: Path) -> tuple[Path, bytes, bytes]:
+    """日志 = 两条的那一版，上一版 = 三条都在的那一版。交回（路径、日志的字节、上一版的字节）。"""
+    path = _three_trades(root)
+    trades = store.load_trades(path)
+    store.save_trades(trades[trades["trade_id"] != "T3"], path)
+    return path, path.read_bytes(), store.backup_path(path).read_bytes()
+
+
+def test_a_restore_that_could_not_finish_is_undone_and_says_nothing_changed(tmp_path, monkeypatch):
+    said = _flashes(monkeypatch)
+    path, journal, previous = _two_versions_on_disk(tmp_path)
+    bak = store.backup_path(path)
+    real_replace = store.os.replace
+
+    def the_backup_is_locked(src, dst, *args, **kwargs):
+        if Path(dst) == bak:
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+        return real_replace(src, dst, *args, **kwargs)
+    monkeypatch.setattr(store.os, "replace", the_backup_is_locked)
+
+    jui.restore_backup(path=path)
+
+    assert path.read_bytes() == journal and bak.read_bytes() == previous, "页面说没动，文件却变了"
+    assert sorted(p.name for p in path.parent.iterdir()) == [
+        "trades.csv", "trades.csv.bak", "trades.csv.lock"]
+    assert len(said) == 1, said
+    level, text = said[0]
+    assert level == "error" and "恢复失败" in text and text.endswith("记录未被修改。"), said
+    assert "Operation not permitted" in text, said
+
+
+def test_a_restore_stuck_halfway_is_never_reported_as_nothing_changed(tmp_path, monkeypatch):
+    """换日志成了、换上一版没成、把日志换回去也没成：这是唯一停在半路的情形。页面不许再说"未被修改"，
+    得说清三件事——记录现在是上一版；点恢复之前的那一版没有丢、在哪个文件里；怎么把它换回来。"""
+    said = _flashes(monkeypatch)
+    path, journal, previous = _two_versions_on_disk(tmp_path)
+    bak = store.backup_path(path)
+    real_replace, renames = store.os.replace, []
+
+    def only_the_first_rename_works(src, dst, *args, **kwargs):
+        renames.append(Path(dst).name)
+        if len(renames) > 1:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_replace(src, dst, *args, **kwargs)
+    monkeypatch.setattr(store.os, "replace", only_the_first_rename_works)
+
+    jui.restore_backup(path=path)
+
+    kept = [p for p in path.parent.iterdir() if p.name.endswith(".tmp")]
+    assert len(kept) == 1 and kept[0].read_bytes() == journal, "点恢复之前的那一版得原样留着"
+    assert path.read_bytes() == previous and bak.read_bytes() == previous, "前提：确实停在了半路"
+    assert len(said) == 1, said
+    level, text = said[0]
+    assert level == "error" and "只恢复了一半" in text, said
+    assert "未被修改" not in text and "没有被修改" not in text, f"记录明明已经换了: {text}"
+    assert f"`{kept[0].name}`" in text, f"得写明那一版在哪个文件里: {text}"
+    # 带着反引号比：那个临时文件的名字本身就是以 trades.csv.bak 开头的，光比名字分不出说没说
+    assert f"改名为 `{bak.name}`" in text and "恢复上一版" in text, f"得说怎么把它换回来: {text}"
+    assert "No space left" in text, f"没换成的原因要带上: {text}"
+    assert "RestoreHalfDone" not in text and str(path.parent) not in text, f"这句话是给使用者看的: {text}"
+
+
+def test_an_unreadable_previous_version_is_reported_as_such(tmp_path, monkeypatch):
+    """上一版读不出来：说的是"上一版读不出来"，不是"交易日志文件损坏"，更不让人去找一个不存在的文件。"""
+    said = _flashes(monkeypatch)
+    path, journal, _ = _two_versions_on_disk(tmp_path)
+    bak = store.backup_path(path)
+    bak.write_text("symbol,kind\n600519,buy\n", encoding="utf-8")       # 列不对
+    broken = bak.read_bytes()
+
+    jui.restore_backup(path=path)
+
+    assert path.read_bytes() == journal and bak.read_bytes() == broken
+    assert len(said) == 1, said
+    level, text = said[0]
+    assert level == "error" and "上一版备份读不出来" in text and text.endswith("记录未被修改。"), said
+    assert ".bak.bak" not in text and "交易日志文件损坏" not in text and "不要删" not in text, said
 
 
 def test_the_delete_plan_gathers_what_the_confirmation_has_to_say(tmp_path):
